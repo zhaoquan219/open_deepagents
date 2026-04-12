@@ -11,7 +11,7 @@ from unittest.mock import patch
 from deepagents.backends import FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.protocol import BackendProtocol
 
-from backend.deepagents_integration import (
+from deepagents_integration import (
     DeepAgentsRuntimeConfig,
     SandboxConfig,
     build_deep_agent,
@@ -150,7 +150,7 @@ class DeepAgentsConfigTests(unittest.TestCase):
                 }
             )
 
-            with patch("backend.deepagents_integration.agent_factory.create_deep_agent") as mocked_create:
+            with patch("deepagents_integration.agent_factory.create_deep_agent") as mocked_create:
                 mocked_create.return_value = object()
                 result = build_deep_agent(config)
 

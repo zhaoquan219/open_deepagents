@@ -6,7 +6,7 @@ import importlib.util
 import inspect
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Mapping
 
 from deepagents import FilesystemPermission
 from deepagents.backends import FilesystemBackend, LocalShellBackend, StateBackend
@@ -37,7 +37,9 @@ def load_middleware_extensions(middleware_specs: list[str] | tuple[str, ...]) ->
     return _flatten_loaded_specs(middleware_specs)
 
 
-def build_permissions(permission_specs: list[dict[str, Any]] | tuple[dict[str, Any], ...]) -> list[FilesystemPermission]:
+def build_permissions(
+    permission_specs: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+) -> list[FilesystemPermission]:
     permissions: list[FilesystemPermission] = []
     for spec in permission_specs:
         permissions.append(

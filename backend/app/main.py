@@ -6,6 +6,8 @@ from fastapi import FastAPI
 from app.api.router import api_router
 from app.core.config import Settings, get_settings
 from app.core.database import DatabaseState
+from app.services.runs import RunManager, RunService
+from deepagents_integration import build_deep_agent
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -28,6 +30,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = resolved_settings
     app.state.database = database
+    app.state.run_manager = RunManager()
+    app.state.run_service = RunService(
+        database=database,
+        manager=app.state.run_manager,
+        builder=build_deep_agent,
+    )
     app.include_router(api_router, prefix=resolved_settings.api_prefix)
 
     @app.get("/health", tags=["system"])

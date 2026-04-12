@@ -41,6 +41,38 @@ button {
   gap: 20px;
 }
 
+.auth-layout {
+  display: flex;
+  justify-content: center;
+  padding-top: 40px;
+}
+
+.auth-panel {
+  width: min(520px, 100%);
+}
+
+.auth-card {
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.auth-copy {
+  margin: 0;
+  color: #abc5eb;
+  line-height: 1.6;
+}
+
+.auth-input {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid rgba(143, 185, 255, 0.18);
+  background: rgba(18, 35, 59, 0.78);
+  color: inherit;
+  padding: 12px 14px;
+}
+
 .panel {
   border: 1px solid rgba(143, 185, 255, 0.18);
   background: rgba(9, 17, 31, 0.82);

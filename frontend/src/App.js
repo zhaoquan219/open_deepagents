@@ -27,7 +27,7 @@ export default defineComponent({
         </div>
       </header>
 
-      <main class="layout-grid">
+      <main v-if="isAuthenticated" class="layout-grid">
         <section class="panel sidebar-panel">
           <session-sidebar
             :sessions="sessions"
@@ -59,6 +59,31 @@ export default defineComponent({
           <progress-timeline :active-run="activeRun" />
         </aside>
       </main>
+
+      <main v-else class="auth-layout">
+        <section class="panel auth-panel">
+          <div class="auth-card">
+            <p class="eyebrow">Administrator access</p>
+            <h2>Sign in to manage agent sessions</h2>
+            <p class="auth-copy">Use the credentials configured in <code>backend/.env</code>.</p>
+
+            <label class="composer-label" for="admin-username">Username</label>
+            <input id="admin-username" v-model="authUsername" class="auth-input" type="text" autocomplete="username" />
+
+            <label class="composer-label" for="admin-password">Password</label>
+            <input id="admin-password" v-model="authPassword" class="auth-input" type="password" autocomplete="current-password" />
+
+            <p v-if="authError" class="inline-error">{{ authError }}</p>
+
+            <div class="composer-actions">
+              <span class="muted-copy">The scaffold stores a bearer token in local storage.</span>
+              <button class="primary-button" type="button" :disabled="authLoading" @click="handleLogin">
+                {{ authLoading ? 'Signing in…' : 'Sign in' }}
+              </button>
+            </div>
+          </div>
+        </section>
+      </main>
     </div>
   `,
   setup() {
@@ -66,6 +91,11 @@ export default defineComponent({
     const sessionStore = createSessionStore(apiClient)
     const runStore = createRunStore()
     const activeStream = ref(null)
+    const authUsername = ref('admin')
+    const authPassword = ref('')
+    const authError = ref('')
+    const authLoading = ref(false)
+    const isAuthenticated = ref(false)
 
     const sessions = computed(() => sessionStore.state.sessions)
     const currentSessionId = computed(() => sessionStore.state.currentSessionId)
@@ -89,6 +119,29 @@ export default defineComponent({
       if (activeStream.value) {
         activeStream.value.close()
         activeStream.value = null
+      }
+    }
+
+    async function handleLogin() {
+      authLoading.value = true
+      authError.value = ''
+      try {
+        await apiClient.login({
+          username: authUsername.value.trim(),
+          password: authPassword.value,
+        })
+        await apiClient.getAdminProfile()
+        isAuthenticated.value = true
+        await sessionStore.loadSessions()
+        if (sessionStore.state.currentSessionId) {
+          await sessionStore.selectSession(sessionStore.state.currentSessionId)
+        }
+      } catch (error) {
+        apiClient.logout()
+        isAuthenticated.value = false
+        authError.value = error instanceof Error ? error.message : 'Unable to sign in.'
+      } finally {
+        authLoading.value = false
       }
     }
 
@@ -117,6 +170,10 @@ export default defineComponent({
           sessionStore.consumeRunEvent(envelope)
         },
         onError(error) {
+          if (runStore.state.activeRun?.status === 'completed') {
+            closeStream()
+            return
+          }
           runStore.markErrored(runId, error.message)
           sessionStore.addSystemNotice(String(sessionId), `Stream disconnected: ${error.message}`)
         },
@@ -182,9 +239,16 @@ export default defineComponent({
     }
 
     onMounted(async () => {
-      await sessionStore.loadSessions()
-      if (sessionStore.state.currentSessionId) {
-        await sessionStore.selectSession(sessionStore.state.currentSessionId)
+      try {
+        await apiClient.getAdminProfile()
+        isAuthenticated.value = true
+        await sessionStore.loadSessions()
+        if (sessionStore.state.currentSessionId) {
+          await sessionStore.selectSession(sessionStore.state.currentSessionId)
+        }
+      } catch {
+        apiClient.logout()
+        isAuthenticated.value = false
       }
     })
 
@@ -194,16 +258,22 @@ export default defineComponent({
 
     return {
       activeRun,
+      authError,
+      authLoading,
+      authPassword,
+      authUsername,
       combinedError,
       contractVersion: STREAM_SCHEMA_VERSION,
       currentMessages,
       currentSession,
       currentSessionId,
       handleCreateSession,
+      handleLogin,
       handleRefreshSessions,
       handleSelectSession,
       handleSubmit,
       handleUpload,
+      isAuthenticated,
       loadingMessages,
       loadingSessions,
       pendingUploads,

@@ -73,6 +73,25 @@ async def upload_file(
     return record
 
 
+@router.post("/uploads", response_model=UploadRead, status_code=status.HTTP_201_CREATED)
+async def upload_file_global(
+    session_id: Annotated[str, Form()],
+    file: UploadFileDep,
+    db: DatabaseSessionDep,
+    storage: StorageDep,
+    settings: SettingsDep,
+    message_id: MessageIdForm = None,
+) -> UploadRecord:
+    return await upload_file(
+        session_id=session_id,
+        file=file,
+        db=db,
+        storage=storage,
+        settings=settings,
+        message_id=message_id,
+    )
+
+
 @router.get("/uploads/{upload_id}", response_model=UploadRead)
 def get_upload(upload_id: str, db: DatabaseSessionDep) -> UploadRecord:
     record = db.query(UploadRecord).filter(UploadRecord.id == upload_id).first()

@@ -3,6 +3,10 @@ function resolveApiBaseUrl() {
   return meta?.getAttribute('content') || '/api'
 }
 
+function resolveAccessToken() {
+  return window.localStorage.getItem('deepagents.admin.token') || ''
+}
+
 function unwrapCollection(payload, preferredKey) {
   if (Array.isArray(payload)) {
     return payload
@@ -41,10 +45,12 @@ function normalizeMessage(message) {
 }
 
 async function fetchJson(url, options = {}) {
+  const accessToken = resolveAccessToken()
   const response = await fetch(url, {
     credentials: 'include',
     headers: {
       Accept: 'application/json',
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
       ...(options.headers || {}),
     },
@@ -65,6 +71,24 @@ async function fetchJson(url, options = {}) {
 
 export function createApiClient(baseUrl = resolveApiBaseUrl()) {
   return {
+    async login({ username, password }) {
+      const payload = await fetchJson(`${baseUrl}/admin/login`, {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+      })
+      const token = String(payload.access_token || '')
+      window.localStorage.setItem('deepagents.admin.token', token)
+      return payload
+    },
+
+    async getAdminProfile() {
+      return fetchJson(`${baseUrl}/admin/me`)
+    },
+
+    logout() {
+      window.localStorage.removeItem('deepagents.admin.token')
+    },
+
     async listSessions() {
       const payload = await fetchJson(`${baseUrl}/sessions`)
       return unwrapCollection(payload, 'sessions').map(normalizeSession)
@@ -87,15 +111,16 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
       const uploaded = []
       for (const file of files) {
         const formData = new FormData()
-        formData.append('session_id', sessionId)
         formData.append('file', file)
 
-        const response = await fetch(`${baseUrl}/uploads`, {
+        const accessToken = resolveAccessToken()
+        const response = await fetch(`${baseUrl}/sessions/${encodeURIComponent(sessionId)}/uploads`, {
           method: 'POST',
           body: formData,
           credentials: 'include',
           headers: {
             Accept: 'application/json',
+            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
           },
         })
 
@@ -135,6 +160,10 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
 
     openRunStream(runId, { lastEventId, onOpen, onEvent, onError }) {
       const streamUrl = new URL(`${baseUrl}/runs/${encodeURIComponent(runId)}/stream`, window.location.origin)
+      const accessToken = resolveAccessToken()
+      if (accessToken) {
+        streamUrl.searchParams.set('access_token', accessToken)
+      }
       if (lastEventId) {
         streamUrl.searchParams.set('last_event_id', lastEventId)
       }
