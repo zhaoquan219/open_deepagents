@@ -1,4 +1,5 @@
-from typing import Annotated
+from collections.abc import Iterator
+from typing import Annotated, cast
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -9,21 +10,20 @@ from app.core.config import Settings
 from app.core.database import DatabaseState
 from app.services.storage import LocalStorage
 
-
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def get_settings(request: Request) -> Settings:
-    return request.app.state.settings
+    return cast(Settings, request.app.state.settings)
 
 
 def get_database(request: Request) -> DatabaseState:
-    return request.app.state.database
+    return cast(DatabaseState, request.app.state.database)
 
 
-def get_db(request: Request) -> Session:
+def get_db(request: Request) -> Iterator[Session]:
     database = get_database(request)
-    return next(database.session())
+    yield from database.session()
 
 
 def get_storage(request: Request) -> LocalStorage:
@@ -43,3 +43,9 @@ def require_admin(
 
     settings = get_settings(request)
     return decode_access_token(settings, credentials.credentials)
+
+
+AdminUserDep = Annotated[str, Depends(require_admin)]
+DatabaseSessionDep = Annotated[Session, Depends(get_db)]
+SettingsDep = Annotated[Settings, Depends(get_settings)]
+StorageDep = Annotated[LocalStorage, Depends(get_storage)]

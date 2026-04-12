@@ -1,5 +1,5 @@
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -11,10 +11,21 @@ from app.core.database import DatabaseState
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings or get_settings()
     database = DatabaseState.from_settings(resolved_settings)
-    database.create_all()
-    resolved_settings.upload_storage_dir.mkdir(parents=True, exist_ok=True)
 
-    app = FastAPI(title=resolved_settings.app_name, version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        if resolved_settings.sqlite_file_path is not None:
+            resolved_settings.sqlite_file_path.parent.mkdir(parents=True, exist_ok=True)
+        resolved_settings.upload_storage_dir.mkdir(parents=True, exist_ok=True)
+        database.create_all()
+        yield
+        database.dispose()
+
+    app = FastAPI(
+        title=resolved_settings.app_name,
+        version="0.1.0",
+        lifespan=lifespan,
+    )
     app.state.settings = resolved_settings
     app.state.database = database
     app.include_router(api_router, prefix=resolved_settings.api_prefix)
@@ -22,10 +33,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health", tags=["system"])
     def healthcheck() -> dict[str, str]:
         return {"status": "ok"}
-
-    @app.on_event("shutdown")
-    def shutdown() -> None:
-        database.dispose()
 
     return app
 

@@ -1,16 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_admin
+from app.api.deps import DatabaseSessionDep, require_admin
 from app.db.models import MessageRecord, SessionRecord
 from app.schemas.message import MessageCreate, MessageRead, MessageUpdate
-
 
 router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 @router.get("/sessions/{session_id}/messages", response_model=list[MessageRead])
-def list_messages(session_id: str, db: Session = Depends(get_db)) -> list[MessageRecord]:
+def list_messages(session_id: str, db: DatabaseSessionDep) -> list[MessageRecord]:
     ensure_session_exists(db, session_id)
     return list(
         db.query(MessageRecord)
@@ -28,7 +26,7 @@ def list_messages(session_id: str, db: Session = Depends(get_db)) -> list[Messag
 def create_message(
     session_id: str,
     payload: MessageCreate,
-    db: Session = Depends(get_db),
+    db: DatabaseSessionDep,
 ) -> MessageRecord:
     session = ensure_session_exists(db, session_id)
     record = MessageRecord(
@@ -49,7 +47,7 @@ def create_message(
 
 
 @router.get("/messages/{message_id}", response_model=MessageRead)
-def get_message(message_id: str, db: Session = Depends(get_db)) -> MessageRecord:
+def get_message(message_id: str, db: DatabaseSessionDep) -> MessageRecord:
     record = db.query(MessageRecord).filter(MessageRecord.id == message_id).first()
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
@@ -60,7 +58,7 @@ def get_message(message_id: str, db: Session = Depends(get_db)) -> MessageRecord
 def update_message(
     message_id: str,
     payload: MessageUpdate,
-    db: Session = Depends(get_db),
+    db: DatabaseSessionDep,
 ) -> MessageRecord:
     record = db.query(MessageRecord).filter(MessageRecord.id == message_id).first()
     if record is None:
@@ -76,7 +74,7 @@ def update_message(
 
 
 @router.delete("/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_message(message_id: str, db: Session = Depends(get_db)) -> None:
+def delete_message(message_id: str, db: DatabaseSessionDep) -> None:
     record = db.query(MessageRecord).filter(MessageRecord.id == message_id).first()
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
@@ -84,7 +82,7 @@ def delete_message(message_id: str, db: Session = Depends(get_db)) -> None:
     db.commit()
 
 
-def ensure_session_exists(db: Session, session_id: str) -> SessionRecord:
+def ensure_session_exists(db: DatabaseSessionDep, session_id: str) -> SessionRecord:
     record = db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")

@@ -1,16 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_db, require_admin
+from app.api.deps import DatabaseSessionDep, require_admin
 from app.db.models import SessionRecord
 from app.schemas.session import SessionCreate, SessionDetail, SessionRead, SessionUpdate
-
 
 router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 @router.get("", response_model=list[SessionRead])
-def list_sessions(db: Session = Depends(get_db)) -> list[SessionRecord]:
+def list_sessions(db: DatabaseSessionDep) -> list[SessionRecord]:
     return list(
         db.query(SessionRecord)
         .order_by(SessionRecord.updated_at.desc(), SessionRecord.created_at.desc())
@@ -19,7 +18,7 @@ def list_sessions(db: Session = Depends(get_db)) -> list[SessionRecord]:
 
 
 @router.post("", response_model=SessionRead, status_code=status.HTTP_201_CREATED)
-def create_session(payload: SessionCreate, db: Session = Depends(get_db)) -> SessionRecord:
+def create_session(payload: SessionCreate, db: DatabaseSessionDep) -> SessionRecord:
     record = SessionRecord(
         title=payload.title,
         runtime_thread_id=payload.runtime_thread_id,
@@ -32,7 +31,7 @@ def create_session(payload: SessionCreate, db: Session = Depends(get_db)) -> Ses
 
 
 @router.get("/{session_id}", response_model=SessionDetail)
-def get_session(session_id: str, db: Session = Depends(get_db)) -> SessionRecord:
+def get_session(session_id: str, db: DatabaseSessionDep) -> SessionRecord:
     record = (
         db.query(SessionRecord)
         .options(
@@ -51,7 +50,7 @@ def get_session(session_id: str, db: Session = Depends(get_db)) -> SessionRecord
 def update_session(
     session_id: str,
     payload: SessionUpdate,
-    db: Session = Depends(get_db),
+    db: DatabaseSessionDep,
 ) -> SessionRecord:
     record = db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
     if record is None:
@@ -67,7 +66,7 @@ def update_session(
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_session(session_id: str, db: Session = Depends(get_db)) -> None:
+def delete_session(session_id: str, db: DatabaseSessionDep) -> None:
     record = db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")

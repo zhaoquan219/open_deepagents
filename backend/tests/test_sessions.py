@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from fastapi.testclient import TestClient
 
 
@@ -40,7 +38,10 @@ def test_session_message_and_upload_crud(client: TestClient, auth_headers: dict[
     assert len(session_payload["messages"]) == 1
     assert len(session_payload["uploads"]) == 1
 
-    upload_content = client.get(f"/api/uploads/{upload_payload['id']}/content", headers=auth_headers)
+    upload_content = client.get(
+        f"/api/uploads/{upload_payload['id']}/content",
+        headers=auth_headers,
+    )
     assert upload_content.status_code == 200
     assert upload_content.content == b"backend attachment"
 

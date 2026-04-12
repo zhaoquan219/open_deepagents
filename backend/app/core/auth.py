@@ -5,7 +5,6 @@ from fastapi import HTTPException, status
 
 from app.core.config import Settings
 
-
 ALGORITHM = "HS256"
 
 

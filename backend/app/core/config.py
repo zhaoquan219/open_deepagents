@@ -26,6 +26,18 @@ class Settings(BaseSettings):
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
 
+    @property
+    def sqlite_file_path(self) -> Path | None:
+        if not self.is_sqlite:
+            return None
+        marker = ":///"
+        if marker not in self.database_url:
+            return None
+        raw_path = self.database_url.split(marker, maxsplit=1)[1]
+        if raw_path == ":memory:":
+            return None
+        return Path(raw_path)
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

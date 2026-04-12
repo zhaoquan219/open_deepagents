@@ -13,7 +13,7 @@ def client(tmp_path) -> Iterator[TestClient]:
         database_url=f"sqlite+pysqlite:///{tmp_path / 'test.db'}",
         admin_username="admin",
         admin_password="secret",
-        admin_token_secret="test-secret",
+        admin_token_secret="test-secret-key-with-32-bytes-minimum",
         upload_storage_dir=tmp_path / "uploads",
     )
     app = create_app(settings)

@@ -1,16 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from typing import cast
 
-from app.api.deps import require_admin
+from fastapi import APIRouter, HTTPException, Request, status
+
+from app.api.deps import AdminUserDep
 from app.core.auth import create_access_token, verify_admin_credentials
 from app.core.config import Settings
 from app.schemas.auth import AdminUserResponse, LoginRequest, TokenResponse
-
 
 router = APIRouter()
 
 
 def get_settings(request: Request) -> Settings:
-    return request.app.state.settings
+    return cast(Settings, request.app.state.settings)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -30,5 +31,5 @@ def login(payload: LoginRequest, request: Request) -> TokenResponse:
 
 
 @router.get("/me", response_model=AdminUserResponse)
-def me(username: str = Depends(require_admin)) -> AdminUserResponse:
+def me(username: AdminUserDep) -> AdminUserResponse:
     return AdminUserResponse(username=username)
