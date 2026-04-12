@@ -25,6 +25,12 @@ class ScaffoldAuditTests(unittest.TestCase):
             self._write(root, ".omx/plans/prd-deepagents-agent-platform.md", "prd")
             self._write(root, ".omx/plans/test-spec-deepagents-agent-platform.md", "spec")
             self._write(root, "packages/contracts/deepagents-sse-event-v1.json", "{}")
+            self._write(root, "packages/extension-manifest.example.json", "{}")
+            self._write(root, "backend/examples/tools/echo_tool.py", "TOOLS = []")
+            self._write(root, "backend/examples/middleware/audit_middleware.py", "MIDDLEWARE = []")
+            self._write(root, "backend/examples/skills/README.md", "skills")
+            self._write(root, "backend/examples/sandboxes/README.md", "sandboxes")
+            self._write(root, "backend/app/storage/minio.py", "class MinioStoragePlaceholder: ...")
             self._write(
                 root,
                 ".env.example",

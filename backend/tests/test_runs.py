@@ -6,6 +6,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
+from app.db.models import AgentRunRecord, RunEventViewRecord, SessionRuntimeLinkRecord
 from app.main import create_app
 
 
@@ -99,3 +100,26 @@ def test_run_lifecycle_and_stream(tmp_path) -> None:
         contents = [item["content"] for item in transcript.json()]
         assert "Say hello" in contents
         assert "Hello world" in contents
+
+        with client.app.state.database.session_factory() as db:
+            run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
+            assert run_record is not None
+            assert run_record.status == "completed"
+            assert run_record.final_output_text == "Hello world"
+
+            event_views = (
+                db.query(RunEventViewRecord)
+                .filter(RunEventViewRecord.run_id == run_id)
+                .order_by(RunEventViewRecord.sequence.asc())
+                .all()
+            )
+            assert len(event_views) >= 4
+            assert any(event.event_type == "message.final" for event in event_views)
+
+            runtime_link = (
+                db.query(SessionRuntimeLinkRecord)
+                .filter(SessionRuntimeLinkRecord.session_id == session_id)
+                .first()
+            )
+            assert runtime_link is not None
+            assert runtime_link.runtime_run_id == "runtime-1"

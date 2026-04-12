@@ -34,6 +34,14 @@ REQUIRED_FRONTEND_DIRS = (
 )
 REQUIRED_CONTRACT_FILES = (
     "packages/contracts/deepagents-sse-event-v1.json",
+    "packages/extension-manifest.example.json",
+)
+REQUIRED_EXTENSION_EXAMPLES = (
+    "backend/examples/tools/echo_tool.py",
+    "backend/examples/middleware/audit_middleware.py",
+    "backend/examples/skills/README.md",
+    "backend/examples/sandboxes/README.md",
+    "backend/app/storage/minio.py",
 )
 REQUIRED_ENV_KEYS = (
     "DEEPAGENTS_MODEL",
@@ -99,6 +107,7 @@ def audit_repo(root: Path) -> AuditReport:
         _check_paths(root, "backend-scaffold", REQUIRED_BACKEND_DIRS),
         _check_paths(root, "frontend-scaffold", REQUIRED_FRONTEND_DIRS),
         _check_paths(root, "contract-files", REQUIRED_CONTRACT_FILES),
+        _check_paths(root, "extension-examples", REQUIRED_EXTENSION_EXAMPLES),
         _check_env_example(root),
     )
     return AuditReport(ok=all(check.ok for check in checks), checks=checks)

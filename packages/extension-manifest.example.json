@@ -1,0 +1,16 @@
+{
+  "version": "1.0",
+  "tools": [
+    "backend/examples/tools/echo_tool.py:TOOLS"
+  ],
+  "middleware": [
+    "backend/examples/middleware/audit_middleware.py:MIDDLEWARE"
+  ],
+  "skills": [
+    "backend/examples/skills"
+  ],
+  "sandbox": {
+    "kind": "state",
+    "backend_spec": null
+  }
+}

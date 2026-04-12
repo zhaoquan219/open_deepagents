@@ -12,7 +12,13 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.database import DatabaseState
-from app.db.models import MessageRecord, SessionRecord
+from app.db.models import (
+    AgentRunRecord,
+    MessageRecord,
+    RunEventViewRecord,
+    SessionRecord,
+    SessionRuntimeLinkRecord,
+)
 from deepagents_integration import DeepAgentsRuntimeConfig, SseEventEnvelope, stream_sse_envelopes
 
 RunBuilder = Callable[[DeepAgentsRuntimeConfig], Any]
@@ -109,6 +115,15 @@ class RunService:
             state = self.manager.create(session_id)
             session.last_run_id = state.run_id
             db.add(
+                AgentRunRecord(
+                    id=state.run_id,
+                    session_id=session_id,
+                    status="queued",
+                    prompt=prompt,
+                    extra={"attachments": attachments},
+                )
+            )
+            db.add(
                 MessageRecord(
                     session_id=session_id,
                     role="user",
@@ -185,6 +200,7 @@ class RunService:
                     session_id=session_id,
                     sequence=sequence,
                 )
+                self._persist_event(run_id=run_id, session_id=session_id, envelope=ui_event)
                 if ui_event["type"] == "status" and ui_event["status"] == "completed":
                     pending_completion_event = ui_event
                 else:
@@ -196,6 +212,10 @@ class RunService:
                     final_message = str(ui_event["message"]["content"])
                 elif candidate := _extract_message_text(ui_event.get("data")):
                     final_message = candidate
+                self._sync_runtime_link(
+                    session_id=session_id,
+                    runtime_run_id=str(ui_event.get("data", {}).get("runtime_run_id") or ""),
+                )
 
             if final_message and not saw_message_delta:
                 sequence += 1
@@ -247,14 +267,25 @@ class RunService:
                     )
                 )
                 session.last_run_id = run_id
+                run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
+                if run_record is not None:
+                    run_record.status = "completed"
+                    run_record.final_output_text = final_message
+                    run_record.event_count = len(state.envelopes)
+                    run_record.completed_at = utc_now()
+                    db.add(run_record)
                 db.add(session)
                 db.commit()
 
             if pending_completion_event is not None:
+                self._persist_event(
+                    run_id=run_id,
+                    session_id=session_id,
+                    envelope=pending_completion_event,
+                )
                 state.publish(pending_completion_event)
             else:
-                state.publish(
-                    _ui_envelope(
+                completion_envelope = _ui_envelope(
                         run_id=run_id,
                         session_id=session_id,
                         sequence=sequence + 1,
@@ -264,11 +295,15 @@ class RunService:
                         detail="DeepAgents run finished successfully.",
                         data={},
                     )
+                self._persist_event(
+                    run_id=run_id,
+                    session_id=session_id,
+                    envelope=completion_envelope,
                 )
+                state.publish(completion_envelope)
             state.finish("completed")
         except Exception as exc:
-            state.publish(
-                _ui_envelope(
+            error_envelope = _ui_envelope(
                     run_id=run_id,
                     session_id=session_id,
                     sequence=len(state.envelopes) + 1,
@@ -278,7 +313,8 @@ class RunService:
                     detail=str(exc),
                     data={"error": str(exc)},
                 )
-            )
+            self._persist_event(run_id=run_id, session_id=session_id, envelope=error_envelope)
+            state.publish(error_envelope)
             with self.database.session_factory() as db:
                 failed_session: SessionRecord | None = (
                     db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
@@ -294,9 +330,62 @@ class RunService:
                             is_final=True,
                         )
                     )
+                    run_record = (
+                        db.query(AgentRunRecord)
+                        .filter(AgentRunRecord.id == run_id)
+                        .first()
+                    )
+                    if run_record is not None:
+                        run_record.status = "failed"
+                        run_record.error_text = str(exc)
+                        run_record.event_count = len(state.envelopes)
+                        run_record.completed_at = utc_now()
+                        db.add(run_record)
                     db.add(failed_session)
                     db.commit()
             state.finish("failed")
+
+    def _persist_event(self, *, run_id: str, session_id: str, envelope: dict[str, Any]) -> None:
+        event_id = str(envelope["event_id"])
+        sequence = int(event_id.rsplit(":", maxsplit=1)[-1])
+        with self.database.session_factory() as db:
+            message_payload = envelope.get("message")
+            record = RunEventViewRecord(
+                id=event_id,
+                run_id=run_id,
+                session_id=session_id,
+                sequence=sequence,
+                event_type=str(envelope.get("type") or ""),
+                status=str(envelope.get("status") or "in_progress"),
+                message_id=message_payload.get("id")
+                if isinstance(message_payload, dict)
+                else None,
+                step_id=str(envelope.get("step_id") or "") or None,
+                payload=dict(envelope),
+            )
+            db.merge(record)
+            run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
+            if run_record is not None:
+                run_record.status = str(envelope.get("status") or run_record.status)
+                run_record.event_count = max(run_record.event_count, sequence)
+                db.add(run_record)
+            db.commit()
+
+    def _sync_runtime_link(self, *, session_id: str, runtime_run_id: str) -> None:
+        if not runtime_run_id:
+            return
+        with self.database.session_factory() as db:
+            record = (
+                db.query(SessionRuntimeLinkRecord)
+                .filter(SessionRuntimeLinkRecord.session_id == session_id)
+                .first()
+            )
+            if record is None:
+                record = SessionRuntimeLinkRecord(session_id=session_id)
+            record.runtime_run_id = runtime_run_id
+            record.last_seen_at = utc_now()
+            db.add(record)
+            db.commit()
 
 
 def _require_session(db: Session, session_id: str) -> SessionRecord:
