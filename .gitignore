@@ -1,0 +1,7 @@
+.venv/
+.env
+__pycache__/
+.omx/state/
+.omx/logs/
+.omx/metrics.json
+.omx/tmux-hook.json
