@@ -1,0 +1,266 @@
+from __future__ import annotations
+
+import asyncio
+import tempfile
+import textwrap
+import unittest
+from dataclasses import asdict
+from pathlib import Path
+from unittest.mock import patch
+
+from deepagents.backends import FilesystemBackend, LocalShellBackend, StateBackend
+from deepagents.backends.protocol import BackendProtocol
+
+from backend.deepagents_integration import (
+    DeepAgentsRuntimeConfig,
+    SandboxConfig,
+    build_deep_agent,
+    load_middleware_extensions,
+    load_tool_extensions,
+    normalize_runtime_event,
+    resolve_backend,
+    stream_sse_envelopes,
+    validate_sse_event,
+)
+
+
+class DummyBackend(BackendProtocol):
+    pass
+
+
+class AsyncEventRuntime:
+    def __init__(self, events):
+        self._events = events
+
+    async def astream_events(self, agent_input, *, version="v2", config=None):
+        for event in self._events:
+            await asyncio.sleep(0)
+            yield event
+
+
+class DeepAgentsConfigTests(unittest.TestCase):
+    def test_runtime_config_validation(self):
+        config = DeepAgentsRuntimeConfig.from_mapping(
+            {
+                "model": "openai:gpt-5.4",
+                "tool_specs": ["pkg.tools:SEARCH_TOOL"],
+                "middleware_specs": ["pkg.middleware:AUDIT_MIDDLEWARE"],
+                "skills": ["/skills/project"],
+                "memory": ["/memory/AGENTS.md"],
+                "permissions": [{"operations": ["read"], "paths": ["/workspace"]}],
+                "sandbox": {"kind": "filesystem", "root_dir": "/tmp/workspace"},
+            }
+        )
+        self.assertEqual(config.model, "openai:gpt-5.4")
+        self.assertEqual(config.sandbox.kind, "filesystem")
+        self.assertEqual(config.skills, ("/skills/project",))
+
+        with self.assertRaises(ValueError):
+            DeepAgentsRuntimeConfig.from_mapping({"tool_specs": [123]})
+
+    def test_tool_and_middleware_specs_load_from_python_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = Path(tmpdir) / "extensions.py"
+            module_path.write_text(
+                textwrap.dedent(
+                    """
+                    def sample_tool(query: str) -> str:
+                        return query.upper()
+
+                    class DemoMiddleware:
+                        pass
+
+                    TOOLS = [sample_tool]
+                    MIDDLEWARE = [DemoMiddleware()]
+                    """
+                )
+            )
+            tools = load_tool_extensions((f"{module_path}:TOOLS",))
+            middleware = load_middleware_extensions((f"{module_path}:MIDDLEWARE",))
+
+            self.assertEqual(len(tools), 1)
+            self.assertEqual(tools[0]("hello"), "HELLO")
+            self.assertEqual(len(middleware), 1)
+            self.assertEqual(type(middleware[0]).__name__, "DemoMiddleware")
+
+    def test_backend_resolution_supports_builtin_and_custom_backends(self):
+        self.assertIsInstance(resolve_backend(SandboxConfig(kind="state")), StateBackend)
+        self.assertIsInstance(
+            resolve_backend(SandboxConfig(kind="filesystem", root_dir="/tmp/workspace")),
+            FilesystemBackend,
+        )
+        self.assertIsInstance(resolve_backend(SandboxConfig(kind="local_shell")), LocalShellBackend)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = Path(tmpdir) / "custom_backend.py"
+            module_path.write_text(
+                textwrap.dedent(
+                    """
+                    from deepagents.backends.protocol import BackendProtocol
+
+                    class DemoBackend(BackendProtocol):
+                        pass
+
+                    def build_backend():
+                        return DemoBackend()
+
+                    def backend_factory(runtime):
+                        return DemoBackend()
+                    """
+                )
+            )
+            backend = resolve_backend(
+                SandboxConfig(kind="custom", backend_spec=f"{module_path}:build_backend")
+            )
+            self.assertEqual(type(backend).__name__, "DemoBackend")
+
+            backend_factory = resolve_backend(
+                SandboxConfig(kind="custom", backend_spec=f"{module_path}:backend_factory")
+            )
+            self.assertTrue(callable(backend_factory))
+
+    def test_build_deep_agent_wires_config_into_create_deep_agent(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = Path(tmpdir) / "extensions.py"
+            module_path.write_text(
+                textwrap.dedent(
+                    """
+                    def sample_tool(query: str) -> str:
+                        return query.upper()
+
+                    class DemoMiddleware:
+                        pass
+
+                    TOOL = sample_tool
+                    MIDDLEWARE = DemoMiddleware()
+                    """
+                )
+            )
+            config = DeepAgentsRuntimeConfig.from_mapping(
+                {
+                    "model": "openai:gpt-5.4",
+                    "system_prompt": "Use the official DeepAgents runtime.",
+                    "agent_name": "deepagents-web",
+                    "tool_specs": [f"{module_path}:TOOL"],
+                    "middleware_specs": [f"{module_path}:MIDDLEWARE"],
+                    "skills": ["/skills/project", "/skills/user"],
+                    "memory": ["/memory/AGENTS.md"],
+                    "permissions": [{"operations": ["read", "write"], "paths": ["/workspace"]}],
+                    "sandbox": {"kind": "filesystem", "root_dir": "/workspace"},
+                }
+            )
+
+            with patch("backend.deepagents_integration.agent_factory.create_deep_agent") as mocked_create:
+                mocked_create.return_value = object()
+                result = build_deep_agent(config)
+
+            self.assertIs(result, mocked_create.return_value)
+            _, kwargs = mocked_create.call_args
+            self.assertEqual(kwargs["model"], "openai:gpt-5.4")
+            self.assertEqual(kwargs["system_prompt"], "Use the official DeepAgents runtime.")
+            self.assertEqual(kwargs["name"], "deepagents-web")
+            self.assertEqual(len(kwargs["tools"]), 1)
+            self.assertEqual(kwargs["tools"][0]("ok"), "OK")
+            self.assertEqual(len(kwargs["middleware"]), 1)
+            self.assertEqual(kwargs["skills"], ["/skills/project", "/skills/user"])
+            self.assertEqual(kwargs["memory"], ["/memory/AGENTS.md"])
+            self.assertEqual(kwargs["permissions"][0].operations, ["read", "write"])
+            self.assertIsInstance(kwargs["backend"], FilesystemBackend)
+
+
+class DeepAgentsSseBridgeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_bridge_emits_versioned_monotonic_events(self):
+        runtime = AsyncEventRuntime(
+            [
+                {
+                    "event": "on_chain_start",
+                    "name": "deep-agent",
+                    "run_id": "runtime-1",
+                    "metadata": {"langgraph_node": "agent"},
+                    "data": {"input": {"messages": [{"role": "user", "content": "hello"}]}},
+                },
+                {
+                    "event": "on_chat_model_stream",
+                    "name": "model",
+                    "run_id": "runtime-1",
+                    "metadata": {"langgraph_node": "model"},
+                    "data": {"chunk": {"content": [{"text": "Hel"}, {"text": "lo"}]}} ,
+                },
+                {
+                    "event": "on_tool_start",
+                    "name": "execute",
+                    "run_id": "runtime-1",
+                    "data": {"input": {"command": "ls"}},
+                },
+                {
+                    "event": "on_tool_end",
+                    "name": "task",
+                    "run_id": "runtime-1",
+                    "data": {"output": {"result": "done"}},
+                },
+                {
+                    "event": "on_chat_model_end",
+                    "name": "model",
+                    "run_id": "runtime-1",
+                    "metadata": {"langgraph_node": "model"},
+                    "data": {"output": {"messages": [{"content": "Hello world"}]}},
+                },
+                {
+                    "event": "on_chain_end",
+                    "name": "deep-agent",
+                    "run_id": "runtime-1",
+                    "metadata": {"langgraph_node": "agent"},
+                    "data": {"output": {"messages": [{"content": "Hello world"}]}},
+                },
+            ]
+        )
+
+        envelopes = [
+            envelope
+            async for envelope in stream_sse_envelopes(runtime, {"messages": []}, bridge_run_id="app-run-7")
+        ]
+
+        self.assertEqual(envelopes[0].event, "bridge.hello")
+        self.assertEqual(envelopes[0].event_id, "app-run-7:000001")
+        self.assertEqual(envelopes[1].event, "run.started")
+        self.assertEqual(envelopes[2].event, "message.delta")
+        self.assertEqual(envelopes[2].data["text"], "Hello")
+        self.assertFalse(envelopes[2].data["canonical_transcript"])
+        self.assertEqual(envelopes[3].event, "sandbox.started")
+        self.assertEqual(envelopes[4].event, "skill.completed")
+        self.assertEqual(envelopes[5].event, "message.completed")
+        self.assertTrue(envelopes[5].data["canonical_transcript"])
+        self.assertEqual(envelopes[6].event, "run.completed")
+
+        for sequence, envelope in enumerate(envelopes, start=1):
+            self.assertEqual(envelope.sequence, sequence)
+            validate_sse_event(asdict(envelope))
+            self.assertIn(f"app-run-7:{sequence:06d}", envelope.to_sse())
+
+    def test_runtime_event_normalization_falls_back_to_progress(self):
+        envelope = normalize_runtime_event(
+            {"event": "on_custom_event", "name": "progress-writer", "data": {"pct": 50}},
+            bridge_run_id="run-1",
+            sequence=2,
+        )
+        self.assertIsNotNone(envelope)
+        assert envelope is not None
+        self.assertEqual(envelope.event, "run.progress")
+        self.assertEqual(envelope.data["payload"], {"pct": 50})
+
+    def test_validator_rejects_invalid_payload(self):
+        with self.assertRaises(ValueError):
+            validate_sse_event(
+                {
+                    "schema_version": "wrong-version",
+                    "event_id": "run:1",
+                    "event": "message.delta",
+                    "run_id": "run",
+                    "sequence": 0,
+                    "data": {},
+                }
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

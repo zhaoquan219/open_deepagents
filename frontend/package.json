@@ -1,0 +1,26 @@
+{
+  "name": "deepagents-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint \"src/**/*.js\" \"vite.config.js\"",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check": "npm run lint && npm run test && npm run typecheck && npm run build"
+  },
+  "dependencies": {
+    "marked": "^15",
+    "mermaid": "^11",
+    "vue": "^3"
+  },
+  "devDependencies": {
+    "eslint": "^9",
+    "typescript": "^5",
+    "vite": "^6",
+    "vitest": "^3"
+  }
+}

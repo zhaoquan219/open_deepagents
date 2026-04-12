@@ -1,0 +1,32 @@
+"""Thin DeepAgents integration layer for the scaffold backend."""
+
+from .agent_factory import build_deep_agent
+from .config import DeepAgentsRuntimeConfig, SandboxConfig
+from .extensions import (
+    load_middleware_extensions,
+    load_object_from_spec,
+    load_tool_extensions,
+    resolve_backend,
+)
+from .sse_bridge import (
+    SSE_SCHEMA_VERSION,
+    SseEventEnvelope,
+    normalize_runtime_event,
+    stream_sse_envelopes,
+    validate_sse_event,
+)
+
+__all__ = [
+    "DeepAgentsRuntimeConfig",
+    "SSE_SCHEMA_VERSION",
+    "SandboxConfig",
+    "SseEventEnvelope",
+    "build_deep_agent",
+    "load_middleware_extensions",
+    "load_object_from_spec",
+    "load_tool_extensions",
+    "normalize_runtime_event",
+    "resolve_backend",
+    "stream_sse_envelopes",
+    "validate_sse_event",
+]
