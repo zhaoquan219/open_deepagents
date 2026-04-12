@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping
-
+from typing import Any, Literal
 
 SandboxKind = Literal["state", "filesystem", "local_shell", "custom"]
 
@@ -25,7 +25,7 @@ class SandboxConfig:
     backend_spec: str | None = None
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any] | None) -> "SandboxConfig":
+    def from_mapping(cls, raw: Mapping[str, Any] | None) -> SandboxConfig:
         if raw is None:
             return cls()
         kind = raw.get("kind", "state")
@@ -69,7 +69,7 @@ class DeepAgentsRuntimeConfig:
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any]) -> "DeepAgentsRuntimeConfig":
+    def from_mapping(cls, raw: Mapping[str, Any]) -> DeepAgentsRuntimeConfig:
         return cls(
             model=raw.get("model"),
             system_prompt=_optional_str(raw.get("system_prompt")),
@@ -97,7 +97,7 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
         return ()
     if isinstance(value, str):
         return (value,)
-    if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
+    if not isinstance(value, list | tuple) or not all(isinstance(item, str) for item in value):
         raise ValueError("Expected a list of strings")
     return tuple(value)
 
@@ -105,6 +105,6 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
 def _mapping_tuple(value: Any) -> tuple[Mapping[str, Any], ...]:
     if value is None:
         return ()
-    if not isinstance(value, (list, tuple)) or not all(isinstance(item, Mapping) for item in value):
+    if not isinstance(value, list | tuple) or not all(isinstance(item, Mapping) for item in value):
         raise ValueError("Expected a list of mappings")
     return tuple(value)

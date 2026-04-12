@@ -55,6 +55,7 @@ def build_fake_runtime(_config: Any) -> FakeRuntime:
 def test_run_lifecycle_and_stream(tmp_path) -> None:
     settings = Settings(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'runs.db'}",
+        admin_email="admin@example.com",
         admin_username="admin",
         admin_password="secret",
         admin_token_secret="test-secret",

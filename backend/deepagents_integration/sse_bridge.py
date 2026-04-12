@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import asdict, dataclass
-from typing import Any, AsyncIterator, Mapping, Protocol
-
+from typing import Any, Protocol
 
 SSE_SCHEMA_VERSION = "2026-04-12"
 
 
 class SupportsAstreamEvents(Protocol):
-    def astream_events(self, agent_input: Any, *, version: str = "v2", config: Any = None) -> AsyncIterator[Mapping[str, Any]]:
+    def astream_events(
+        self,
+        agent_input: Any,
+        *,
+        version: str = "v2",
+        config: Any = None,
+    ) -> AsyncIterator[Mapping[str, Any]]:
         ...
 
 
@@ -48,7 +54,11 @@ async def stream_sse_envelopes(
 
     async for raw_event in runtime.astream_events(agent_input, version="v2", config=config):
         sequence += 1
-        normalized = normalize_runtime_event(raw_event, bridge_run_id=bridge_run_id, sequence=sequence)
+        normalized = normalize_runtime_event(
+            raw_event,
+            bridge_run_id=bridge_run_id,
+            sequence=sequence,
+        )
         if normalized is not None:
             yield normalized
 
@@ -195,7 +205,13 @@ def validate_sse_event(payload: Mapping[str, Any]) -> None:
             raise ValueError(f"SSE event data must include boolean {required_data_key!r}")
 
 
-def _make_envelope(*, bridge_run_id: str, sequence: int, event: str, data: dict[str, Any]) -> SseEventEnvelope:
+def _make_envelope(
+    *,
+    bridge_run_id: str,
+    sequence: int,
+    event: str,
+    data: dict[str, Any],
+) -> SseEventEnvelope:
     envelope = SseEventEnvelope(
         schema_version=SSE_SCHEMA_VERSION,
         event_id=f"{bridge_run_id}:{sequence:06d}",
@@ -255,4 +271,6 @@ def _extract_text(value: Any) -> str:
         return "".join(parts)
     if isinstance(value, list):
         return "".join(_extract_text(item) for item in value)
-    return str(value) if value is not None and not isinstance(value, (bytes, bytearray)) else ""
+    if value is None or isinstance(value, bytes | bytearray):
+        return ""
+    return str(value)

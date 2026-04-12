@@ -1,13 +1,13 @@
 {
   "version": "1.0",
   "tools": [
-    "backend/examples/tools/echo_tool.py:TOOLS"
+    "backend/extensions/tools/echo_tool.py:TOOLS"
   ],
   "middleware": [
-    "backend/examples/middleware/audit_middleware.py:MIDDLEWARE"
+    "backend/extensions/middleware/audit_middleware.py:MIDDLEWARE"
   ],
   "skills": [
-    "backend/examples/skills"
+    "backend/extensions/skills"
   ],
   "sandbox": {
     "kind": "state",

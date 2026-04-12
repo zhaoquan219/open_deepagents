@@ -5,7 +5,12 @@ from typing import Any
 from deepagents import create_deep_agent
 
 from .config import DeepAgentsRuntimeConfig
-from .extensions import build_permissions, load_middleware_extensions, load_tool_extensions, resolve_backend
+from .extensions import (
+    build_permissions,
+    load_middleware_extensions,
+    load_tool_extensions,
+    resolve_backend,
+)
 
 
 def build_deep_agent(config: DeepAgentsRuntimeConfig) -> Any:

@@ -1,6 +1,10 @@
 .venv/
 .env
 __pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.uv-cache/
 .omx/state/
 .omx/logs/
 .omx/metrics.json

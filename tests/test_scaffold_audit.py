@@ -25,50 +25,24 @@ class ScaffoldAuditTests(unittest.TestCase):
             self._write(root, ".omx/plans/prd-deepagents-agent-platform.md", "prd")
             self._write(root, ".omx/plans/test-spec-deepagents-agent-platform.md", "spec")
             self._write(root, "packages/contracts/deepagents-sse-event-v1.json", "{}")
-            self._write(root, "packages/extension-manifest.example.json", "{}")
-            self._write(root, "backend/examples/tools/echo_tool.py", "TOOLS = []")
-            self._write(root, "backend/examples/middleware/audit_middleware.py", "MIDDLEWARE = []")
-            self._write(root, "backend/examples/skills/README.md", "skills")
-            self._write(root, "backend/examples/sandboxes/README.md", "sandboxes")
+            self._write(root, "packages/extension-manifest.template.json", "{}")
+            self._write(root, "backend/extensions/tools/echo_tool.py", "TOOLS = []")
+            self._write(root, "backend/extensions/middleware/audit_middleware.py", "MIDDLEWARE = []")
+            self._write(root, "backend/extensions/skills/README.md", "skills")
+            self._write(root, "backend/extensions/sandboxes/README.md", "sandboxes")
             self._write(root, "backend/app/storage/minio.py", "class MinioStoragePlaceholder: ...")
-            self._write(
-                root,
-                ".env.example",
-                "\n".join(
-                    [
-                        "DEEPAGENTS_MODEL=openai:gpt-5.4",
-                        "OPENAI_API_KEY=test",
-                        "MYSQL_HOST=localhost",
-                        "MYSQL_PORT=3306",
-                        "MYSQL_DATABASE=deepagents",
-                        "MYSQL_USER=test",
-                        "MYSQL_PASSWORD=test",
-                        "ADMIN_EMAIL=admin@example.com",
-                        "ADMIN_PASSWORD=secret",
-                        "UPLOAD_ROOT=./data/uploads",
-                    ]
-                ),
-            )
             for relative_dir in (
                 "backend/app/api",
                 "backend/app/core",
-                "backend/app/auth",
-                "backend/app/sessions",
-                "backend/app/chat",
-                "backend/app/uploads",
-                "backend/app/agents",
-                "backend/app/extensions",
-                "backend/app/storage",
                 "backend/app/db",
-                "frontend/src/layouts",
-                "frontend/src/pages",
-                "frontend/src/components/chat",
-                "frontend/src/components/session",
-                "frontend/src/components/progress",
-                "frontend/src/components/renderers",
-                "frontend/src/stores",
-                "frontend/src/services",
-                "frontend/src/composables",
+                "backend/app/schemas",
+                "backend/app/services",
+                "backend/app/storage",
+                "backend/deepagents_integration",
+                "frontend/src/api",
+                "frontend/src/components",
+                "frontend/src/lib",
+                "frontend/src/store",
             ):
                 (root / relative_dir).mkdir(parents=True, exist_ok=True)
 

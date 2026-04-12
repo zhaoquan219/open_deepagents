@@ -11,6 +11,7 @@ from app.main import create_app
 def client(tmp_path) -> Iterator[TestClient]:
     settings = Settings(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'test.db'}",
+        admin_email="admin@example.com",
         admin_username="admin",
         admin_password="secret",
         admin_token_secret="test-secret-key-with-32-bytes-minimum",

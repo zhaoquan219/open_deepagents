@@ -164,6 +164,7 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
     openRunStream(runId, { lastEventId, onOpen, onEvent, onError }) {
       const streamUrl = new URL(`${baseUrl}/runs/${encodeURIComponent(runId)}/stream`, window.location.origin)
       const accessToken = resolveAccessToken()
+      let closed = false
       if (accessToken) {
         streamUrl.searchParams.set('access_token', accessToken)
       }
@@ -174,6 +175,9 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
       const eventSource = new EventSource(streamUrl.toString(), { withCredentials: true })
       eventSource.onopen = () => onOpen?.()
       eventSource.onmessage = (event) => {
+        if (closed) {
+          return
+        }
         try {
           onEvent?.(JSON.parse(event.data))
         } catch (error) {
@@ -181,11 +185,15 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
         }
       }
       eventSource.onerror = () => {
+        if (closed || eventSource.readyState === EventSource.CLOSED) {
+          return
+        }
         onError?.(new Error('SSE connection closed unexpectedly.'))
       }
 
       return {
         close() {
+          closed = true
           eventSource.close()
         },
       }

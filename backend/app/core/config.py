@@ -7,16 +7,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from deepagents_integration import DeepAgentsRuntimeConfig, SandboxConfig
 
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_ENV_PATH = BACKEND_ROOT / ".env"
+DEEPAGENTS_SYSTEM_PROMPT_PATH = BACKEND_ROOT / "prompts" / "deepagents-system-prompt.md"
+DEFAULT_SANDBOX_READ_PATHS = (
+    (BACKEND_ROOT / "data").resolve(),
+    (BACKEND_ROOT / "extensions" / "skills").resolve(),
+)
+
 
 class Settings(BaseSettings):
     app_name: str = "DeepAgents Agent Platform Backend"
     api_prefix: str = "/api"
     database_url: str | None = None
-    mysql_host: str | None = None
-    mysql_port: int = 3306
-    mysql_database: str | None = None
-    mysql_user: str | None = None
-    mysql_password: str | None = None
     admin_email: str | None = None
     admin_username: str = "admin"
     admin_password: str = "change-me"
@@ -24,10 +27,8 @@ class Settings(BaseSettings):
     admin_token_expire_minutes: int = 720
     cors_allowed_origins: str | None = "http://127.0.0.1:5173,http://localhost:5173"
     upload_storage_dir: Path = Field(default=Path("./data/uploads"))
-    upload_root: Path | None = None
     max_upload_size_bytes: int = 10 * 1024 * 1024
     deepagents_model: str | None = None
-    deepagents_system_prompt: str = "You are the primary DeepAgents runtime for this web scaffold."
     deepagents_agent_name: str = "deepagents-web"
     deepagents_debug: bool = False
     deepagents_tool_specs: str | None = None
@@ -46,17 +47,13 @@ class Settings(BaseSettings):
     custom_api_model: str | None = None
 
     model_config = SettingsConfigDict(
-        env_file=(".env", "../.env"),
+        env_file=BACKEND_ENV_PATH,
         env_file_encoding="utf-8",
         extra="ignore",
     )
 
     @field_validator(
         "database_url",
-        "mysql_host",
-        "mysql_database",
-        "mysql_user",
-        "mysql_password",
         "admin_email",
         "deepagents_model",
         "deepagents_sandbox_root_dir",
@@ -82,15 +79,7 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def apply_runtime_defaults(self) -> "Settings":
         if self.database_url is None:
-            if all([self.mysql_host, self.mysql_database, self.mysql_user, self.mysql_password]):
-                self.database_url = (
-                    f"mysql+pymysql://{self.mysql_user}:{self.mysql_password}"
-                    f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_database}"
-                )
-            else:
-                self.database_url = "sqlite+pysqlite:///./data/backend.db"
-        if self.upload_root is not None:
-            self.upload_storage_dir = self.upload_root
+            self.database_url = "sqlite+pysqlite:///./data/backend.db"
         if self.deepagents_model is None and self.custom_api_model is not None:
             self.deepagents_model = self.custom_api_model
         return self
@@ -121,14 +110,14 @@ class Settings(BaseSettings):
     def to_runtime_config(self) -> DeepAgentsRuntimeConfig:
         return DeepAgentsRuntimeConfig(
             model=self.resolve_model(),
-            system_prompt=self.deepagents_system_prompt,
+            system_prompt=self.load_deepagents_system_prompt(),
             agent_name=self.deepagents_agent_name,
             debug=self.deepagents_debug,
             tool_specs=self._split_csv(self.deepagents_tool_specs),
             middleware_specs=self._split_csv(self.deepagents_middleware_specs),
             skills=self._split_csv(self.deepagents_skills),
             memory=self._split_csv(self.deepagents_memory),
-            permissions=tuple(),
+            permissions=self.default_permissions(),
             sandbox=SandboxConfig(
                 kind=self.deepagents_sandbox_kind,  # type: ignore[arg-type]
                 root_dir=self.deepagents_sandbox_root_dir,
@@ -138,6 +127,17 @@ class Settings(BaseSettings):
                 inherit_env=self.deepagents_sandbox_inherit_env,
                 backend_spec=self.deepagents_sandbox_backend_spec,
             ),
+        )
+
+    def load_deepagents_system_prompt(self) -> str:
+        return DEEPAGENTS_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+
+    def default_permissions(self) -> tuple[dict[str, object], ...]:
+        return (
+            {
+                "operations": ["read"],
+                "paths": [str(path) for path in DEFAULT_SANDBOX_READ_PATHS],
+            },
         )
 
     def resolve_model(self) -> str | ChatOpenAI | None:

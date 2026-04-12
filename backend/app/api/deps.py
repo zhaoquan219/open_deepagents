@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import decode_access_token
 from app.core.config import Settings
 from app.core.database import DatabaseState
-from app.services.storage import LocalStorage
+from app.storage import LocalStorage
 
 bearer_scheme = HTTPBearer(auto_error=False)
 

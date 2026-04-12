@@ -168,6 +168,13 @@ export default defineComponent({
           }
 
           sessionStore.consumeRunEvent(envelope)
+
+          if (
+            envelope.type === 'error' ||
+            (envelope.type === 'status' && ['completed', 'failed'].includes(envelope.status))
+          ) {
+            closeStream()
+          }
         },
         onError(error) {
           if (runStore.state.activeRun?.status === 'completed') {

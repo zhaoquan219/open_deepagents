@@ -12,51 +12,29 @@ REQUIRED_PLAN_FILES = (
 REQUIRED_BACKEND_DIRS = (
     "backend/app/api",
     "backend/app/core",
-    "backend/app/auth",
-    "backend/app/sessions",
-    "backend/app/chat",
-    "backend/app/uploads",
-    "backend/app/agents",
-    "backend/app/extensions",
-    "backend/app/storage",
     "backend/app/db",
+    "backend/app/schemas",
+    "backend/app/services",
+    "backend/app/storage",
+    "backend/deepagents_integration",
 )
 REQUIRED_FRONTEND_DIRS = (
-    "frontend/src/layouts",
-    "frontend/src/pages",
-    "frontend/src/components/chat",
-    "frontend/src/components/session",
-    "frontend/src/components/progress",
-    "frontend/src/components/renderers",
-    "frontend/src/stores",
-    "frontend/src/services",
-    "frontend/src/composables",
+    "frontend/src/api",
+    "frontend/src/components",
+    "frontend/src/lib",
+    "frontend/src/store",
 )
 REQUIRED_CONTRACT_FILES = (
     "packages/contracts/deepagents-sse-event-v1.json",
-    "packages/extension-manifest.example.json",
+    "packages/extension-manifest.template.json",
 )
-REQUIRED_EXTENSION_EXAMPLES = (
-    "backend/examples/tools/echo_tool.py",
-    "backend/examples/middleware/audit_middleware.py",
-    "backend/examples/skills/README.md",
-    "backend/examples/sandboxes/README.md",
+REQUIRED_EXTENSION_TEMPLATES = (
+    "backend/extensions/tools/echo_tool.py",
+    "backend/extensions/middleware/audit_middleware.py",
+    "backend/extensions/skills/README.md",
+    "backend/extensions/sandboxes/README.md",
     "backend/app/storage/minio.py",
 )
-REQUIRED_ENV_KEYS = (
-    "DEEPAGENTS_MODEL",
-    "OPENAI_API_KEY",
-    "MYSQL_HOST",
-    "MYSQL_PORT",
-    "MYSQL_DATABASE",
-    "MYSQL_USER",
-    "MYSQL_PASSWORD",
-    "ADMIN_EMAIL",
-    "ADMIN_PASSWORD",
-    "UPLOAD_ROOT",
-)
-
-
 @dataclass(frozen=True)
 class AuditCheck:
     name: str
@@ -84,31 +62,13 @@ def _check_paths(root: Path, name: str, relative_paths: Iterable[str]) -> AuditC
     return AuditCheck(name=name, ok=True, details="all required paths exist")
 
 
-def _check_env_example(root: Path) -> AuditCheck:
-    env_example = root / ".env.example"
-    if not env_example.exists():
-        return AuditCheck(name="env-example", ok=False, details="missing .env.example")
-
-    contents = env_example.read_text()
-    missing_keys = [key for key in REQUIRED_ENV_KEYS if f"{key}=" not in contents]
-    if missing_keys:
-        return AuditCheck(
-            name="env-example",
-            ok=False,
-            details=f"missing keys: {', '.join(missing_keys)}",
-        )
-
-    return AuditCheck(name="env-example", ok=True, details="contains required scaffold configuration keys")
-
-
 def audit_repo(root: Path) -> AuditReport:
     checks = (
         _check_paths(root, "plan-artifacts", REQUIRED_PLAN_FILES),
         _check_paths(root, "backend-scaffold", REQUIRED_BACKEND_DIRS),
         _check_paths(root, "frontend-scaffold", REQUIRED_FRONTEND_DIRS),
         _check_paths(root, "contract-files", REQUIRED_CONTRACT_FILES),
-        _check_paths(root, "extension-examples", REQUIRED_EXTENSION_EXAMPLES),
-        _check_env_example(root),
+        _check_paths(root, "extension-templates", REQUIRED_EXTENSION_TEMPLATES),
     )
     return AuditReport(ok=all(check.ok for check in checks), checks=checks)
 

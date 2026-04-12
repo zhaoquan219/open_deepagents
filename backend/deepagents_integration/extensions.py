@@ -4,9 +4,10 @@ import hashlib
 import importlib
 import importlib.util
 import inspect
+from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Mapping
+from typing import Any
 
 from deepagents import FilesystemPermission
 from deepagents.backends import FilesystemBackend, LocalShellBackend, StateBackend
@@ -68,9 +69,14 @@ def resolve_backend(config: SandboxConfig) -> BackendProtocol | Any:
             env=dict(config.env) or None,
             inherit_env=config.inherit_env,
         )
-    backend_extension = _materialize_backend_extension(load_object_from_spec(config.backend_spec or ""))
+    backend_extension = _materialize_backend_extension(
+        load_object_from_spec(config.backend_spec or "")
+    )
     if not callable(backend_extension) and not isinstance(backend_extension, BackendProtocol):
-        raise TypeError("Custom backend specs must resolve to a BackendProtocol instance, class, or backend factory")
+        raise TypeError(
+            "Custom backend specs must resolve to a BackendProtocol instance, "
+            "class, or backend factory"
+        )
     return backend_extension
 
 
@@ -78,7 +84,7 @@ def _flatten_loaded_specs(specs: list[str] | tuple[str, ...]) -> list[Any]:
     loaded: list[Any] = []
     for spec in specs:
         value = load_object_from_spec(spec)
-        if isinstance(value, (list, tuple)):
+        if isinstance(value, list | tuple):
             loaded.extend(value)
         else:
             loaded.append(value)
