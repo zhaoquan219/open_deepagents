@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-deepagents.local/contracts/deepagents-sse-event-v1.json",
+  "title": "DeepAgents SSE Event Envelope",
+  "description": "UI-facing normalized SSE envelope for the planned DeepAgents FastAPI/Vue scaffold.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_version",
+    "session_id",
+    "run_id",
+    "sequence",
+    "event_type",
+    "status",
+    "ts",
+    "payload"
+  ],
+  "properties": {
+    "event_version": {
+      "const": "1.0"
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "message_id": {
+      "type": ["string", "null"]
+    },
+    "step_id": {
+      "type": ["string", "null"]
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "run.started",
+        "run.completed",
+        "run.failed",
+        "message.delta",
+        "message.completed",
+        "step.started",
+        "step.completed",
+        "step.failed",
+        "tool.started",
+        "tool.completed",
+        "tool.failed",
+        "skill.started",
+        "skill.completed",
+        "skill.failed",
+        "subagent.started",
+        "subagent.completed",
+        "subagent.failed",
+        "sandbox.started",
+        "sandbox.completed",
+        "sandbox.failed",
+        "attachment.started",
+        "attachment.completed",
+        "attachment.failed"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "started",
+        "in_progress",
+        "completed",
+        "failed"
+      ]
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object"
+    }
+  }
+}
