@@ -170,6 +170,9 @@ class RunService:
                 prompt_with_attachments = f"{prompt}\n\nAttached files: {names}"
 
             final_message = ""
+            saw_message_delta = False
+            saw_message_final = False
+            pending_completion_event: dict[str, Any] | None = None
             sequence = 1
             async for envelope in stream_sse_envelopes(
                 agent,
@@ -182,9 +185,55 @@ class RunService:
                     session_id=session_id,
                     sequence=sequence,
                 )
-                state.publish(ui_event)
+                if ui_event["type"] == "status" and ui_event["status"] == "completed":
+                    pending_completion_event = ui_event
+                else:
+                    state.publish(ui_event)
+                if ui_event["type"] == "message.delta" and ui_event.get("delta"):
+                    saw_message_delta = True
                 if ui_event["type"] == "message.final":
+                    saw_message_final = True
                     final_message = str(ui_event["message"]["content"])
+                elif candidate := _extract_message_text(ui_event.get("data")):
+                    final_message = candidate
+
+            if final_message and not saw_message_delta:
+                sequence += 1
+                state.publish(
+                    _ui_envelope(
+                        run_id=run_id,
+                        session_id=session_id,
+                        sequence=sequence,
+                        event_type="message.delta",
+                        status="running",
+                        label="message.delta",
+                        detail="Assistant response received.",
+                        data={},
+                        delta=final_message,
+                    )
+                )
+
+            if final_message and not saw_message_final:
+                sequence += 1
+                state.publish(
+                    _ui_envelope(
+                        run_id=run_id,
+                        session_id=session_id,
+                        sequence=sequence,
+                        event_type="message.final",
+                        status="completed",
+                        label="message.final",
+                        detail="Assistant response completed.",
+                        data={},
+                        message={
+                            "id": f"final:{run_id}",
+                            "role": "assistant",
+                            "content": final_message,
+                            "createdAt": utc_now().isoformat(),
+                            "attachments": [],
+                        },
+                    )
+                )
 
             with self.database.session_factory() as db:
                 session = _require_session(db, session_id)
@@ -201,18 +250,21 @@ class RunService:
                 db.add(session)
                 db.commit()
 
-            state.publish(
-                _ui_envelope(
-                    run_id=run_id,
-                    session_id=session_id,
-                    sequence=sequence + 1,
-                    event_type="status",
-                    status="completed",
-                    label="Run completed",
-                    detail="DeepAgents run finished successfully.",
-                    data={},
+            if pending_completion_event is not None:
+                state.publish(pending_completion_event)
+            else:
+                state.publish(
+                    _ui_envelope(
+                        run_id=run_id,
+                        session_id=session_id,
+                        sequence=sequence + 1,
+                        event_type="status",
+                        status="completed",
+                        label="Run completed",
+                        detail="DeepAgents run finished successfully.",
+                        data={},
+                    )
                 )
-            )
             state.finish("completed")
         except Exception as exc:
             state.publish(
@@ -329,14 +381,18 @@ def _bridge_to_ui(*, envelope: SseEventEnvelope, session_id: str, sequence: int)
         event_type = "message.final"
         status = "completed"
         content = str(data.get("text") or "")
-        message = {
-            "id": f"final:{envelope.run_id}",
-            "role": "assistant",
-            "content": content,
-            "createdAt": utc_now().isoformat(),
-            "attachments": [],
-        }
-        detail = "Assistant response completed."
+        if not content:
+            event_type = "step"
+            detail = "Model completed without a direct text payload."
+        else:
+            message = {
+                "id": f"final:{envelope.run_id}",
+                "role": "assistant",
+                "content": content,
+                "createdAt": utc_now().isoformat(),
+                "attachments": [],
+            }
+            detail = "Assistant response completed."
     elif event.startswith("tool."):
         event_type = "tool"
         status = "completed" if event.endswith("completed") else "running"
@@ -367,3 +423,22 @@ def _bridge_to_ui(*, envelope: SseEventEnvelope, session_id: str, sequence: int)
         delta=delta,
         message=message,
     )
+
+
+def _extract_message_text(payload: Any) -> str:
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, list):
+        return "".join(_extract_message_text(item) for item in payload)
+    if isinstance(payload, dict):
+        if "messages" in payload and isinstance(payload["messages"], list):
+            return _extract_message_text(payload["messages"])
+        if "output" in payload:
+            return _extract_message_text(payload["output"])
+        if "content" in payload:
+            return _extract_message_text(payload["content"])
+        if "text" in payload and isinstance(payload["text"], str):
+            return payload["text"]
+    return ""

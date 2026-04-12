@@ -1,4 +1,7 @@
 function resolveApiBaseUrl() {
+  if (import.meta.env.VITE_API_BASE_URL) {
+    return String(import.meta.env.VITE_API_BASE_URL)
+  }
   const meta = document.querySelector('meta[name="api-base-url"]')
   return meta?.getAttribute('content') || '/api'
 }

@@ -57,7 +57,7 @@ class SandboxConfig:
 class DeepAgentsRuntimeConfig:
     """Application-facing configuration for the DeepAgents runtime adapter."""
 
-    model: str | None = None
+    model: Any = None
     system_prompt: str | None = None
     agent_name: str | None = None
     debug: bool = False
@@ -71,7 +71,7 @@ class DeepAgentsRuntimeConfig:
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "DeepAgentsRuntimeConfig":
         return cls(
-            model=_optional_str(raw.get("model")),
+            model=raw.get("model"),
             system_prompt=_optional_str(raw.get("system_prompt")),
             agent_name=_optional_str(raw.get("agent_name")),
             debug=bool(raw.get("debug", False)),
