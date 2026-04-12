@@ -7,3 +7,4 @@ __pycache__/
 .omx/tmux-hook.json
 .omx/reports/
 .omx/team-launch.sh
+.omx/
