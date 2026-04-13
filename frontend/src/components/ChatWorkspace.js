@@ -31,6 +31,10 @@ export default defineComponent({
       type: String,
       default: 'idle',
     },
+    runStatusLabel: {
+      type: String,
+      default: '待命',
+    },
     submitting: {
       type: Boolean,
       default: false,
@@ -49,6 +53,27 @@ export default defineComponent({
     const draft = ref('')
     const fileInput = ref(null)
     const hasMessages = computed(() => props.messages.length > 0)
+    const runtimeCopy = computed(() => {
+      if (props.runStatus === 'running') {
+        return '正在持续生成回复，新的内容会自动追加到消息区。'
+      }
+      if (props.runStatus === 'completed') {
+        return '本轮处理已完成，可以继续追问。'
+      }
+      if (props.runStatus === 'failed') {
+        return '本轮处理失败，请检查提示信息后重试。'
+      }
+      return '准备就绪，输入问题即可开始。'
+    })
+    const uploadStatusLabel = (status) => {
+      if (status === 'submitted') {
+        return '已提交'
+      }
+      if (status === 'uploaded') {
+        return '已上传'
+      }
+      return '待发送'
+    }
 
     function submitDraft() {
       const prompt = draft.value.trim()
@@ -84,8 +109,10 @@ export default defineComponent({
       handleComposerKeydown,
       handleFileSelection,
       hasMessages,
+      runtimeCopy,
       submitDraft,
       triggerFilePicker,
+      uploadStatusLabel,
     }
   },
   template: `
@@ -93,41 +120,41 @@ export default defineComponent({
       <div class="workspace-header">
         <div>
           <p class="eyebrow">当前会话</p>
-          <h2>{{ currentSession?.title || '新的对话' }}</h2>
+          <h2>{{ currentSession?.title || '新会话' }}</h2>
         </div>
-        <span class="status-pill" :data-status="runStatus">{{ runStatus === 'idle' ? '待命' : runStatus }}</span>
+        <span class="status-pill" :data-status="runStatus">{{ runStatusLabel }}</span>
       </div>
 
-      <p v-if="error" class="inline-error">{{ error }}</p>
+      <div class="workspace-main">
+        <p v-if="error" class="inline-error workspace-error">{{ error }}</p>
 
-      <section v-if="loading" class="empty-state">
-        <p>正在加载对话记录…</p>
-      </section>
+        <section v-if="loading" class="empty-state">
+          <p>正在加载会话内容…</p>
+        </section>
 
-      <section v-else-if="!hasMessages" class="empty-state">
-        <h3>开始一段新的智能对话</h3>
-        <p>在这里输入你的问题，系统会以聊天气泡的形式持续返回结果。</p>
-      </section>
+        <section v-else-if="!hasMessages" class="empty-state">
+          <h3>开始新的对话</h3>
+          <p>在下方输入问题，系统会按消息流的方式持续返回结果。</p>
+        </section>
 
-      <message-thread v-else :messages="messages" />
+        <message-thread v-else :messages="messages" />
 
-      <div class="workspace-runtime" v-if="activeRun || runStatus !== 'idle'">
-        <p class="workspace-runtime-copy">
-          {{ runStatus === 'running' ? '正在处理你的问题，请稍候…' : '本轮对话已完成。' }}
-        </p>
+        <div class="workspace-runtime" v-if="activeRun || runStatus !== 'idle'">
+          <p class="workspace-runtime-copy">{{ runtimeCopy }}</p>
+        </div>
       </div>
 
       <div class="composer-panel">
         <div class="upload-row">
           <button class="secondary-button" type="button" @click="triggerFilePicker">上传附件</button>
           <input ref="fileInput" class="hidden-input" type="file" multiple @change="handleFileSelection" />
-          <span class="muted-copy">{{ uploading ? '附件上传中…' : '附件会自动附加到下一次提问。' }}</span>
+          <span class="muted-copy">{{ uploading ? '附件上传中…' : '附件会自动附加到下一次发送。' }}</span>
         </div>
 
         <ul v-if="pendingUploads.length" class="upload-list">
           <li v-for="file in pendingUploads" :key="file.id">
             <span>{{ file.name }}</span>
-            <span class="upload-status">{{ file.status === 'submitted' ? '已提交' : '已上传' }}</span>
+            <span class="upload-status">{{ uploadStatusLabel(file.status) }}</span>
           </li>
         </ul>
 
@@ -136,13 +163,13 @@ export default defineComponent({
           id="prompt"
           v-model="draft"
           class="composer-textarea"
-          rows="5"
-          placeholder="请输入你的问题，或让智能助手结合附件帮你完成任务…"
+          rows="4"
+          placeholder="请输入你的问题，或结合附件说明要处理的任务。"
           @keydown="handleComposerKeydown"
         ></textarea>
 
         <div class="composer-actions">
-          <span class="muted-copy">按 Ctrl/Command + Enter 快速发送</span>
+          <span class="muted-copy">按 Ctrl 或 Command + Enter 可快速发送</span>
           <button class="primary-button" type="button" :disabled="submitting || !draft.trim()" @click="submitDraft">
             {{ submitting ? '发送中…' : '发送' }}
           </button>

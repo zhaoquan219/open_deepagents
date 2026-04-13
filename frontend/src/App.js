@@ -28,7 +28,7 @@ export default defineComponent({
       </header>
 
       <main v-if="isAuthenticated" class="layout-grid">
-        <section class="sidebar-shell">
+        <aside class="sidebar-shell">
           <session-sidebar
             :sessions="sessions"
             :current-session-id="currentSessionId"
@@ -40,7 +40,7 @@ export default defineComponent({
             @select-session="handleSelectSession"
             @delete-session="handleDeleteSession"
           />
-        </section>
+        </aside>
 
         <section class="workspace-shell">
           <chat-workspace
@@ -52,11 +52,15 @@ export default defineComponent({
             :submitting="submitting"
             :active-run="activeRun"
             :run-status="runStatus"
+            :run-status-label="runStatusLabel"
             :error="combinedError"
             @submit="handleSubmit"
             @upload="handleUpload"
           />
-          <progress-timeline v-if="activeRun" :active-run="activeRun" />
+
+          <aside class="timeline-shell">
+            <progress-timeline :active-run="activeRun" />
+          </aside>
         </section>
       </main>
 
@@ -116,6 +120,9 @@ export default defineComponent({
       if (status === 'idle') {
         return '待命'
       }
+      if (status === 'queued') {
+        return '排队中'
+      }
       if (status === 'running') {
         return '处理中'
       }
@@ -125,7 +132,7 @@ export default defineComponent({
       if (status === 'failed') {
         return '失败'
       }
-      return status.replace(/-/g, ' ')
+      return '处理中'
     })
 
     function closeStream() {
