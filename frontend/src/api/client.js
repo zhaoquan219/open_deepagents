@@ -30,7 +30,7 @@ function unwrapCollection(payload, preferredKey) {
 function normalizeSession(session) {
   return {
     id: String(session.id ?? session.session_id ?? session.sessionId),
-    title: String(session.title ?? session.name ?? 'Untitled session'),
+    title: String(session.title ?? session.name ?? '新会话'),
     updatedAt: String(session.updated_at ?? session.updatedAt ?? session.created_at ?? session.createdAt ?? ''),
     status: String(session.status ?? 'idle'),
   }
@@ -105,6 +105,12 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
       return normalizeSession(payload.session ?? payload.data ?? payload)
     },
 
+    async deleteSession(sessionId) {
+      await fetchJson(`${baseUrl}/sessions/${encodeURIComponent(sessionId)}`, {
+        method: 'DELETE',
+      })
+    },
+
     async getSessionMessages(sessionId) {
       const payload = await fetchJson(`${baseUrl}/sessions/${encodeURIComponent(sessionId)}/messages`)
       return unwrapCollection(payload, 'messages').map(normalizeMessage)
@@ -161,10 +167,16 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
       }
     },
 
-    openRunStream(runId, { lastEventId, onOpen, onEvent, onError }) {
+    openRunStream(runId, options = {}) {
       const streamUrl = new URL(`${baseUrl}/runs/${encodeURIComponent(runId)}/stream`, window.location.origin)
       const accessToken = resolveAccessToken()
       let closed = false
+      const {
+        lastEventId = '',
+        onOpen,
+        onEvent,
+        onError,
+      } = options
       if (accessToken) {
         streamUrl.searchParams.set('access_token', accessToken)
       }

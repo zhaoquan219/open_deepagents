@@ -3,7 +3,7 @@ import ChatWorkspace from './components/ChatWorkspace.js'
 import ProgressTimeline from './components/ProgressTimeline.js'
 import SessionSidebar from './components/SessionSidebar.js'
 import { createApiClient } from './api/client.js'
-import { STREAM_SCHEMA_VERSION, normalizeStreamEnvelope } from './lib/sseContract.js'
+import { normalizeStreamEnvelope } from './lib/sseContract.js'
 import { createRunStore } from './store/runStore.js'
 import { createSessionStore } from './store/sessionStore.js'
 
@@ -16,31 +16,33 @@ export default defineComponent({
   },
   template: `
     <div class="app-shell">
-      <header class="topbar panel">
-        <div>
-          <p class="eyebrow">DeepAgents agent platform</p>
-          <h1>Operator frontend shell</h1>
+      <header class="topbar">
+        <div class="brand-block">
+          <p class="eyebrow">智能工作台</p>
+          <h1>企业级智能助理</h1>
+          <p class="topbar-copy">面向用户的对话式工作界面，专注提问、回答与历史沉淀。</p>
         </div>
         <div class="topbar-meta">
           <span class="status-pill" :data-status="runStatus">{{ runStatusLabel }}</span>
-          <span class="contract-pill">{{ contractVersion }}</span>
         </div>
       </header>
 
       <main v-if="isAuthenticated" class="layout-grid">
-        <section class="panel sidebar-panel">
+        <section class="sidebar-shell">
           <session-sidebar
             :sessions="sessions"
             :current-session-id="currentSessionId"
             :loading="loadingSessions"
             :error="sessionError"
+            :deleting-session-id="deletingSessionId"
             @new-session="handleCreateSession"
             @refresh="handleRefreshSessions"
             @select-session="handleSelectSession"
+            @delete-session="handleDeleteSession"
           />
         </section>
 
-        <section class="panel workspace-panel">
+        <section class="workspace-shell">
           <chat-workspace
             :current-session="currentSession"
             :messages="currentMessages"
@@ -48,37 +50,35 @@ export default defineComponent({
             :loading="loadingMessages"
             :uploading="uploading"
             :submitting="submitting"
+            :active-run="activeRun"
             :run-status="runStatus"
             :error="combinedError"
             @submit="handleSubmit"
             @upload="handleUpload"
           />
+          <progress-timeline v-if="activeRun" :active-run="activeRun" />
         </section>
-
-        <aside class="panel timeline-panel">
-          <progress-timeline :active-run="activeRun" />
-        </aside>
       </main>
 
       <main v-else class="auth-layout">
-        <section class="panel auth-panel">
+        <section class="auth-panel">
           <div class="auth-card">
-            <p class="eyebrow">Administrator access</p>
-            <h2>Sign in to manage agent sessions</h2>
-            <p class="auth-copy">Use the credentials configured in <code>backend/.env</code>.</p>
+            <p class="eyebrow">安全登录</p>
+            <h2>欢迎进入智能助理工作台</h2>
+            <p class="auth-copy">请输入管理员账号信息，进入会话与问答界面。</p>
 
-            <label class="composer-label" for="admin-username">Username</label>
+            <label class="composer-label" for="admin-username">用户名</label>
             <input id="admin-username" v-model="authUsername" class="auth-input" type="text" autocomplete="username" />
 
-            <label class="composer-label" for="admin-password">Password</label>
+            <label class="composer-label" for="admin-password">密码</label>
             <input id="admin-password" v-model="authPassword" class="auth-input" type="password" autocomplete="current-password" />
 
             <p v-if="authError" class="inline-error">{{ authError }}</p>
 
             <div class="composer-actions">
-              <span class="muted-copy">The scaffold stores a bearer token in local storage.</span>
+              <span class="muted-copy">登录后会自动建立安全会话。</span>
               <button class="primary-button" type="button" :disabled="authLoading" @click="handleLogin">
-                {{ authLoading ? 'Signing in…' : 'Sign in' }}
+                {{ authLoading ? '登录中…' : '进入工作台' }}
               </button>
             </div>
           </div>
@@ -106,13 +106,26 @@ export default defineComponent({
     const loadingMessages = computed(() => sessionStore.state.loadingMessages)
     const uploading = computed(() => sessionStore.state.uploading)
     const submitting = computed(() => sessionStore.state.submitting)
+    const deletingSessionId = computed(() => sessionStore.state.deletingSessionId)
     const sessionError = computed(() => sessionStore.state.error)
     const combinedError = computed(() => runStore.state.error || sessionStore.state.error || sessionStore.state.uploadError)
     const activeRun = computed(() => runStore.state.activeRun)
     const runStatus = computed(() => runStore.state.activeRun?.status || 'idle')
     const runStatusLabel = computed(() => {
       const status = runStatus.value
-      return status === 'idle' ? 'Idle' : status.replace(/-/g, ' ')
+      if (status === 'idle') {
+        return '待命'
+      }
+      if (status === 'running') {
+        return '处理中'
+      }
+      if (status === 'completed') {
+        return '已完成'
+      }
+      if (status === 'failed') {
+        return '失败'
+      }
+      return status.replace(/-/g, ' ')
     })
 
     function closeStream() {
@@ -139,7 +152,7 @@ export default defineComponent({
       } catch (error) {
         apiClient.logout()
         isAuthenticated.value = false
-        authError.value = error instanceof Error ? error.message : 'Unable to sign in.'
+        authError.value = error instanceof Error ? error.message : '登录失败，请检查账号信息。'
       } finally {
         authLoading.value = false
       }
@@ -182,7 +195,7 @@ export default defineComponent({
             return
           }
           runStore.markErrored(runId, error.message)
-          sessionStore.addSystemNotice(String(sessionId), `Stream disconnected: ${error.message}`)
+          sessionStore.addSystemNotice(String(sessionId), `实时连接已中断：${error.message}`)
         },
       })
     }
@@ -213,6 +226,21 @@ export default defineComponent({
       await sessionStore.selectSession(sessionId)
     }
 
+    async function handleDeleteSession(sessionId) {
+      const session = sessions.value.find((item) => item.id === sessionId)
+      const title = session?.title || '当前会话'
+      const confirmed = window.confirm(`确定要删除“${title}”吗？此操作无法撤销。`)
+      if (!confirmed) {
+        return
+      }
+
+      if (currentSessionId.value === sessionId) {
+        closeStream()
+        runStore.clear()
+      }
+      await sessionStore.deleteSession(sessionId)
+    }
+
     async function handleUpload(files) {
       const session = await ensureSession()
       await sessionStore.uploadFiles(String(session.id), files)
@@ -239,7 +267,7 @@ export default defineComponent({
         runStore.beginRun({ runId: run.runId, sessionId })
         connectRunStream(run.runId, sessionId)
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unable to start run.'
+        const message = error instanceof Error ? error.message : '发送失败，请稍后再试。'
         runStore.markErrored('pending', message)
         sessionStore.addSystemNotice(sessionId, message)
       }
@@ -270,11 +298,12 @@ export default defineComponent({
       authPassword,
       authUsername,
       combinedError,
-      contractVersion: STREAM_SCHEMA_VERSION,
       currentMessages,
       currentSession,
       currentSessionId,
+      deletingSessionId,
       handleCreateSession,
+      handleDeleteSession,
       handleLogin,
       handleRefreshSessions,
       handleSelectSession,

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { finalizeAssistantMessage, mergeAssistantDelta } from './sessionStore.js'
+import { describe, expect, it, vi } from 'vitest'
+import { createSessionStore, finalizeAssistantMessage, mergeAssistantDelta } from './sessionStore.js'
 
 describe('sessionStore transcript helpers', () => {
   it('merges assistant deltas into a transient streaming message', () => {
@@ -32,5 +32,30 @@ describe('sessionStore transcript helpers', () => {
         streaming: false,
       }),
     ])
+  })
+
+  it('deletes a session and clears its local transcript state', async () => {
+    const apiClient = {
+      createSession: vi.fn(),
+      deleteSession: vi.fn(async () => null),
+      getSessionMessages: vi.fn(async () => []),
+      listSessions: vi.fn(),
+      uploadFiles: vi.fn(),
+    }
+    const store = createSessionStore(apiClient)
+
+    store.state.sessions = [
+      { id: 'session-1', title: '会话一', updatedAt: '2026-04-13T00:00:00Z', status: 'idle' },
+      { id: 'session-2', title: '会话二', updatedAt: '2026-04-12T00:00:00Z', status: 'idle' },
+    ]
+    store.state.currentSessionId = 'session-1'
+    store.state.messagesBySession['session-1'] = [{ id: 'msg-1', content: 'hello' }]
+
+    await store.deleteSession('session-1')
+
+    expect(apiClient.deleteSession).toHaveBeenCalledWith('session-1')
+    expect(store.state.sessions.map((session) => session.id)).toEqual(['session-2'])
+    expect(store.state.messagesBySession['session-1']).toBeUndefined()
+    expect(store.state.currentSessionId).toBe('session-2')
   })
 })

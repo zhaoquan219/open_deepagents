@@ -13,38 +13,35 @@ export default defineComponent({
     formatDateTime,
   },
   template: `
-    <div class="timeline">
-      <div class="timeline-header">
+    <div class="runtime-card">
+      <div class="runtime-header">
         <div>
-          <p class="eyebrow">Execution visibility</p>
-          <h2>Progress timeline</h2>
+          <p class="eyebrow">状态</p>
+          <h3>本轮处理</h3>
         </div>
         <span v-if="activeRun" class="status-pill" :data-status="activeRun.status">{{ activeRun.status }}</span>
       </div>
 
-      <div v-if="!activeRun" class="empty-state compact">
-        <p>No active run yet. Stream events will appear here once a run starts.</p>
+      <div v-if="!activeRun" class="runtime-empty">
+        <p>提交问题后，这里会显示简要进度。</p>
       </div>
 
       <template v-else>
-        <dl class="run-summary">
-          <div>
-            <dt>Run ID</dt>
-            <dd>{{ activeRun.runId }}</dd>
-          </div>
-          <div>
-            <dt>Connection</dt>
-            <dd>{{ activeRun.connected ? 'Connected' : 'Waiting for stream' }}</dd>
-          </div>
-        </dl>
+        <p class="runtime-copy">
+          {{ activeRun.connected ? '已连接到实时输出通道。' : '正在建立实时连接…' }}
+        </p>
 
-        <ol class="timeline-list">
-          <li v-for="entry in activeRun.timeline" :key="entry.id" class="timeline-entry" :data-status="entry.status">
-            <div class="timeline-dot"></div>
+        <ol class="runtime-list">
+          <li
+            v-for="entry in activeRun.timeline.slice(-3)"
+            :key="entry.id"
+            class="runtime-entry"
+            :data-status="entry.status"
+          >
             <div>
-              <p class="timeline-label">{{ entry.label }}</p>
-              <p v-if="entry.detail" class="timeline-detail">{{ entry.detail }}</p>
-              <p class="timeline-meta">{{ entry.kind }} · {{ formatDateTime(entry.timestamp) }}</p>
+              <p class="runtime-label">{{ entry.label }}</p>
+              <p v-if="entry.detail" class="runtime-detail">{{ entry.detail }}</p>
+              <p class="timeline-meta">{{ formatDateTime(entry.timestamp) }}</p>
             </div>
           </li>
         </ol>
