@@ -7,6 +7,8 @@ function createClientId() {
 function createEmptyRunState() {
   return {
     activeRun: null,
+    diagnostics: [],
+    connectionState: 'idle',
     error: '',
   }
 }
@@ -17,7 +19,10 @@ export function createInitialRun(runId, sessionId) {
     sessionId,
     status: 'running',
     connected: false,
+    connectionState: 'connecting',
     startedAt: new Date().toISOString(),
+    finishedAt: '',
+    lastError: '',
     timeline: [],
     lastEventId: '',
   }
@@ -25,12 +30,12 @@ export function createInitialRun(runId, sessionId) {
 
 function appendTimeline(activeRun, envelope, fallbackLabel) {
   activeRun.timeline.push({
-    id: envelope.eventId,
+    id: envelope.eventId || createClientId(),
     kind: envelope.type,
     label: envelope.label || fallbackLabel,
     detail: envelope.detail,
     status: envelope.status || 'in_progress',
-    timestamp: envelope.timestamp,
+    timestamp: envelope.timestamp || new Date().toISOString(),
   })
 }
 
@@ -44,20 +49,35 @@ export function reduceRunState(activeRun, envelope) {
 
   next.lastEventId = envelope.eventId
 
+  if (envelope.type === 'connection') {
+    next.connectionState = envelope.connectionState || next.connectionState
+    next.connected = next.connectionState === 'open'
+    appendTimeline(next, envelope, envelope.label || '连接状态更新')
+    return next
+  }
+
   if (envelope.type === 'status') {
     next.status = envelope.status || next.status
+    if (next.status === 'completed' || next.status === 'failed') {
+      next.finishedAt = envelope.timestamp || next.finishedAt
+    }
     appendTimeline(next, envelope, `Run ${next.status}`)
     return next
   }
 
   if (envelope.type === 'error') {
     next.status = 'failed'
+    next.connectionState = 'error'
+    next.connected = false
+    next.finishedAt = envelope.timestamp || next.finishedAt
+    next.lastError = envelope.detail || next.lastError
     appendTimeline(next, envelope, 'Run failed')
     return next
   }
 
   if (envelope.type === 'message.final') {
     next.status = next.status === 'failed' ? 'failed' : 'completed'
+    next.finishedAt = envelope.timestamp || next.finishedAt
     appendTimeline(next, envelope, 'Assistant message finalized')
     return next
   }
@@ -71,6 +91,22 @@ export function createRunStore() {
   const seenEventIdsByRun = new Map()
   const lastEventIds = new Map()
 
+  function appendDiagnostic({ label, detail, status = 'info', sessionId = '', runId = '' }) {
+    state.diagnostics = [
+      ...state.diagnostics,
+      {
+        id: createClientId(),
+        kind: 'client',
+        label,
+        detail,
+        status,
+        sessionId,
+        runId,
+        timestamp: new Date().toISOString(),
+      },
+    ].slice(-12)
+  }
+
   function ensureSeenSet(runId) {
     if (!seenEventIdsByRun.has(runId)) {
       seenEventIdsByRun.set(runId, new Set())
@@ -81,6 +117,14 @@ export function createRunStore() {
   function beginRun({ runId, sessionId }) {
     state.error = ''
     state.activeRun = createInitialRun(runId, sessionId)
+    state.connectionState = 'connecting'
+    appendTimeline(state.activeRun, {
+      type: 'status',
+      label: '运行已启动',
+      detail: '已提交请求，正在建立实时连接。',
+      status: 'running',
+      timestamp: state.activeRun.startedAt,
+    })
   }
 
   function consume(envelope) {
@@ -97,28 +141,87 @@ export function createRunStore() {
     seen.add(envelope.eventId)
     lastEventIds.set(runId, envelope.eventId)
     state.activeRun = reduceRunState(state.activeRun, envelope)
+    state.connectionState = state.activeRun?.connectionState || state.connectionState
     return true
   }
 
   function markConnected(runId) {
     if (state.activeRun && state.activeRun.runId === runId) {
+      if (state.activeRun.connectionState === 'open') {
+        return
+      }
       state.activeRun.connected = true
+      state.activeRun.connectionState = 'open'
+      state.connectionState = 'open'
+      appendTimeline(state.activeRun, {
+        type: 'connection',
+        label: '实时连接已建立',
+        detail: '已连接到实时事件流，正在接收运行状态。',
+        status: 'completed',
+        timestamp: new Date().toISOString(),
+        connectionState: 'open',
+      })
     }
+  }
+
+  function markDisconnected(runId, detail = '实时连接已关闭。') {
+    if (!state.activeRun || state.activeRun.runId !== runId) {
+      return
+    }
+    if (state.activeRun.connectionState === 'closed') {
+      return
+    }
+    state.activeRun.connected = false
+    state.activeRun.connectionState = 'closed'
+    state.connectionState = 'closed'
+    appendTimeline(state.activeRun, {
+      type: 'connection',
+      label: '实时连接已关闭',
+      detail,
+      status: state.activeRun.status === 'failed' ? 'failed' : 'completed',
+      timestamp: new Date().toISOString(),
+      connectionState: 'closed',
+    })
   }
 
   function markErrored(runId, message) {
     state.error = message
+    state.connectionState = 'error'
     if (!state.activeRun || state.activeRun.runId !== runId) {
       state.activeRun = createInitialRun(runId, '')
     }
     state.activeRun.status = 'failed'
+    state.activeRun.connected = false
+    state.activeRun.connectionState = 'error'
+    state.activeRun.lastError = message
+    state.activeRun.finishedAt = new Date().toISOString()
     state.activeRun.timeline.push({
       id: createClientId(),
       kind: 'error',
-      label: 'Run failed',
+      label: '运行失败',
       detail: message,
       status: 'failed',
       timestamp: new Date().toISOString(),
+    })
+  }
+
+  function recordClientIssue({ sessionId = '', label, detail }) {
+    state.error = detail
+    appendDiagnostic({
+      label,
+      detail,
+      status: 'failed',
+      sessionId,
+    })
+  }
+
+  function recordClientNotice({ sessionId = '', runId = '', label, detail, status = 'info' }) {
+    appendDiagnostic({
+      label,
+      detail,
+      status,
+      sessionId,
+      runId,
     })
   }
 
@@ -128,6 +231,8 @@ export function createRunStore() {
 
   function clear() {
     state.activeRun = null
+    state.diagnostics = []
+    state.connectionState = 'idle'
     state.error = ''
   }
 
@@ -138,6 +243,9 @@ export function createRunStore() {
     consume,
     getLastEventId,
     markConnected,
+    markDisconnected,
     markErrored,
+    recordClientIssue,
+    recordClientNotice,
   }
 }

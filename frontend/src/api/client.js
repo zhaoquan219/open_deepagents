@@ -27,6 +27,43 @@ function unwrapCollection(payload, preferredKey) {
   return []
 }
 
+function normalizeContent(value) {
+  if (value === undefined || value === null) {
+    return ''
+  }
+  if (typeof value === 'string') {
+    return value
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeContent(item)).join('')
+  }
+  if (typeof value === 'object') {
+    if ('content' in value) {
+      return normalizeContent(value.content)
+    }
+    if (typeof value.text === 'string') {
+      return value.text
+    }
+    if (Array.isArray(value.parts)) {
+      return value.parts.map((part) => normalizeContent(part)).join('')
+    }
+  }
+  return String(value)
+}
+
+function normalizeAttachments(attachments) {
+  if (!Array.isArray(attachments)) {
+    return []
+  }
+
+  return attachments.map((attachment, index) => ({
+    id: String(attachment?.id ?? attachment?.attachment_id ?? attachment?.attachmentId ?? `attachment-${index}`),
+    name: String(attachment?.name ?? attachment?.filename ?? attachment?.title ?? '未命名附件'),
+    size: Number(attachment?.size ?? attachment?.size_bytes ?? attachment?.sizeBytes ?? 0),
+    status: String(attachment?.status ?? 'uploaded'),
+  }))
+}
+
 function normalizeSession(session) {
   return {
     id: String(session.id ?? session.session_id ?? session.sessionId),
@@ -37,12 +74,13 @@ function normalizeSession(session) {
 }
 
 function normalizeMessage(message) {
+  const extra = message?.extra && typeof message.extra === 'object' ? message.extra : {}
   return {
     id: String(message.id ?? message.message_id ?? message.messageId),
     role: String(message.role ?? 'assistant'),
-    content: String(message.content ?? message.text ?? ''),
+    content: normalizeContent(message.content ?? message.text ?? extra.content ?? ''),
     createdAt: String(message.created_at ?? message.createdAt ?? ''),
-    attachments: Array.isArray(message.attachments) ? message.attachments : [],
+    attachments: normalizeAttachments(message.attachments ?? extra.attachments),
     streaming: Boolean(message.streaming),
   }
 }

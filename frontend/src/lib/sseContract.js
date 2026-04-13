@@ -48,7 +48,8 @@ export function normalizeStreamEnvelope(payload) {
   const stepId = asString(payload.step_id ?? payload.stepId ?? data.step_id ?? data.stepId)
   const label = asString(payload.label ?? data.label ?? data.name ?? type)
   const detail = asString(payload.detail ?? data.detail ?? data.summary ?? data.message ?? '')
-  const message = data.message && typeof data.message === 'object' ? data.message : null
+  const messagePayload = payload.message && typeof payload.message === 'object' ? payload.message : data.message
+  const message = messagePayload && typeof messagePayload === 'object' ? messagePayload : null
   const delta = asString(data.delta ?? payload.delta)
 
   if (!eventId || !type || !allowedTypes.has(type)) {

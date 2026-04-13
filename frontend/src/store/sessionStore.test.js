@@ -34,6 +34,39 @@ describe('sessionStore transcript helpers', () => {
     ])
   })
 
+  it('consumes finalized events even when the payload only contains a top-level message', () => {
+    const apiClient = {
+      createSession: vi.fn(),
+      deleteSession: vi.fn(),
+      getSessionMessages: vi.fn(async () => []),
+      listSessions: vi.fn(),
+      uploadFiles: vi.fn(),
+    }
+    const store = createSessionStore(apiClient)
+
+    store.state.messagesBySession['session-1'] = mergeAssistantDelta([], { runId: 'run-8', delta: '片段' })
+    store.consumeRunEvent({
+      type: 'message.final',
+      runId: 'run-8',
+      sessionId: 'session-1',
+      timestamp: '2026-04-13T10:00:00.000Z',
+      message: {
+        id: 'msg-8',
+        role: 'assistant',
+        content: '完整回复',
+      },
+      data: {},
+    })
+
+    expect(store.state.messagesBySession['session-1']).toEqual([
+      expect.objectContaining({
+        id: 'msg-8',
+        content: '完整回复',
+        streaming: false,
+      }),
+    ])
+  })
+
   it('deletes a session and clears its local transcript state', async () => {
     const apiClient = {
       createSession: vi.fn(),

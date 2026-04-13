@@ -33,6 +33,43 @@ function ensureTranscriptMap(messagesBySession, sessionId) {
   return messagesBySession[sessionId]
 }
 
+function normalizeContent(value) {
+  if (value === undefined || value === null) {
+    return ''
+  }
+  if (typeof value === 'string') {
+    return value
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeContent(item)).join('')
+  }
+  if (typeof value === 'object') {
+    if ('content' in value) {
+      return normalizeContent(value.content)
+    }
+    if (typeof value.text === 'string') {
+      return value.text
+    }
+    if (Array.isArray(value.parts)) {
+      return value.parts.map((part) => normalizeContent(part)).join('')
+    }
+  }
+  return String(value)
+}
+
+function normalizeAttachments(attachments) {
+  if (!Array.isArray(attachments)) {
+    return []
+  }
+
+  return attachments.map((attachment, index) => ({
+    id: String(attachment?.id ?? attachment?.attachment_id ?? attachment?.attachmentId ?? `attachment-${index}`),
+    name: String(attachment?.name ?? attachment?.filename ?? attachment?.title ?? '未命名附件'),
+    size: Number(attachment?.size ?? attachment?.size_bytes ?? attachment?.sizeBytes ?? 0),
+    status: String(attachment?.status ?? 'uploaded'),
+  }))
+}
+
 export function mergeAssistantDelta(messages, { runId, delta }) {
   const streamId = `stream:${runId}`
   const transcript = [...messages]
@@ -60,12 +97,13 @@ export function mergeAssistantDelta(messages, { runId, delta }) {
 export function finalizeAssistantMessage(messages, { runId, message }) {
   const streamId = `stream:${runId}`
   const transcript = messages.filter((entry) => entry.id !== streamId)
+  const extra = message?.extra && typeof message.extra === 'object' ? message.extra : {}
   transcript.push({
     id: String(message.id ?? `final:${runId}`),
     role: String(message.role ?? 'assistant'),
-    content: String(message.content ?? ''),
+    content: normalizeContent(message.content ?? message.text ?? extra.content ?? ''),
     createdAt: String(message.createdAt ?? message.created_at ?? new Date().toISOString()),
-    attachments: Array.isArray(message.attachments) ? message.attachments : [],
+    attachments: normalizeAttachments(message.attachments ?? extra.attachments),
     streaming: false,
   })
   return transcript
@@ -199,8 +237,17 @@ export function createSessionStore(apiClient) {
         ...records,
       ]
       touchSession(normalizedId)
+      return {
+        ok: true,
+        records,
+      }
     } catch (error) {
-      state.uploadError = error instanceof Error ? error.message : '上传附件失败。'
+      const message = error instanceof Error ? error.message : '上传附件失败。'
+      state.uploadError = message
+      return {
+        ok: false,
+        error: new Error(message),
+      }
     } finally {
       state.uploading = false
     }
@@ -236,6 +283,10 @@ export function createSessionStore(apiClient) {
     touchSession(normalizedId)
   }
 
+  function setSubmitting(submitting) {
+    state.submitting = Boolean(submitting)
+  }
+
   function consumeRunEvent(envelope) {
     if (!envelope.sessionId) {
       return
@@ -253,10 +304,21 @@ export function createSessionStore(apiClient) {
       return
     }
 
-    if (envelope.type === 'message.final' && envelope.message) {
+    if (envelope.type === 'message.final') {
+      const finalMessage =
+        envelope.message ||
+        (envelope.data?.message && typeof envelope.data.message === 'object' ? envelope.data.message : null) ||
+        {
+          id: `final:${envelope.runId}`,
+          role: 'assistant',
+          content: envelope.data?.text ?? envelope.detail ?? '',
+          createdAt: envelope.timestamp,
+          attachments: [],
+        }
+
       state.messagesBySession[sessionId] = finalizeAssistantMessage(transcript, {
         runId: envelope.runId,
-        message: envelope.message,
+        message: finalMessage,
       })
       touchSession(sessionId)
       return
@@ -281,6 +343,7 @@ export function createSessionStore(apiClient) {
     loadSessions,
     markUploadsSubmitted,
     selectSession,
+    setSubmitting,
     uploadFiles,
   }
 }

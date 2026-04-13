@@ -25,4 +25,29 @@ describe('normalizeStreamEnvelope', () => {
   it('rejects unsupported event payloads', () => {
     expect(normalizeStreamEnvelope({ event_id: 'evt-2', type: 'unknown' })).toBeNull()
   })
+
+  it('reads finalized assistant messages from the top-level payload', () => {
+    const envelope = normalizeStreamEnvelope({
+      event_id: 'evt-3',
+      type: 'message.final',
+      run_id: 'run-9',
+      session_id: 'session-4',
+      message: {
+        id: 'msg-9',
+        role: 'assistant',
+        content: '最终回复',
+      },
+    })
+
+    expect(envelope).toMatchObject({
+      eventId: 'evt-3',
+      type: 'message.final',
+      runId: 'run-9',
+      sessionId: 'session-4',
+      message: {
+        id: 'msg-9',
+        content: '最终回复',
+      },
+    })
+  })
 })

@@ -7,6 +7,15 @@ import { normalizeStreamEnvelope } from './lib/sseContract.js'
 import { createRunStore } from './store/runStore.js'
 import { createSessionStore } from './store/sessionStore.js'
 
+function logRuntime(scope, detail, payload, level = 'debug') {
+  if (level === 'debug' && !import.meta.env.DEV) {
+    return
+  }
+
+  const logger = console[level] || console.log
+  logger(`[deepagents-ui] ${scope}: ${detail}`, payload ?? '')
+}
+
 export default defineComponent({
   name: 'AppShell',
   components: {
@@ -59,7 +68,12 @@ export default defineComponent({
           />
 
           <aside class="timeline-shell">
-            <progress-timeline :active-run="activeRun" />
+            <progress-timeline
+              :active-run="activeRun"
+              :connection-state="connectionState"
+              :diagnostics="runtimeDiagnostics"
+              :runtime-error="runError"
+            />
           </aside>
         </section>
       </main>
@@ -114,6 +128,9 @@ export default defineComponent({
     const sessionError = computed(() => sessionStore.state.error)
     const combinedError = computed(() => runStore.state.error || sessionStore.state.error || sessionStore.state.uploadError)
     const activeRun = computed(() => runStore.state.activeRun)
+    const connectionState = computed(() => runStore.state.activeRun?.connectionState || runStore.state.connectionState)
+    const runtimeDiagnostics = computed(() => runStore.state.diagnostics)
+    const runError = computed(() => runStore.state.error)
     const runStatus = computed(() => runStore.state.activeRun?.status || 'idle')
     const runStatusLabel = computed(() => {
       const status = runStatus.value
@@ -135,10 +152,14 @@ export default defineComponent({
       return '处理中'
     })
 
-    function closeStream() {
+    function closeStream({ markDisconnected = false, detail = '' } = {}) {
+      const runId = runStore.state.activeRun?.runId || ''
       if (activeStream.value) {
         activeStream.value.close()
         activeStream.value = null
+      }
+      if (markDisconnected && runId) {
+        runStore.markDisconnected(runId, detail || '实时连接已关闭。')
       }
     }
 
@@ -167,16 +188,21 @@ export default defineComponent({
 
     function connectRunStream(runId, sessionId) {
       closeStream()
+      logRuntime('sse.connect', '正在连接实时事件流', { runId, sessionId })
       activeStream.value = apiClient.openRunStream(runId, {
         lastEventId: runStore.getLastEventId(runId),
         onOpen() {
+          logRuntime('sse.open', '实时事件流已连接', { runId, sessionId })
           runStore.markConnected(runId)
         },
         onEvent(payload) {
           const envelope = normalizeStreamEnvelope(payload)
           if (!envelope) {
+            logRuntime('sse.drop', '收到无法识别的 SSE 事件', payload, 'warn')
             return
           }
+
+          logRuntime('sse.event', `${envelope.type}`, envelope)
 
           const accepted = runStore.consume(envelope)
           if (!accepted) {
@@ -190,17 +216,29 @@ export default defineComponent({
           sessionStore.consumeRunEvent(envelope)
 
           if (
+            envelope.type === 'message.final' ||
             envelope.type === 'error' ||
             (envelope.type === 'status' && ['completed', 'failed'].includes(envelope.status))
           ) {
-            closeStream()
+            closeStream({
+              markDisconnected: true,
+              detail:
+                envelope.type === 'error'
+                  ? '运行异常，实时连接已终止。'
+                  : '本轮输出已结束，实时连接已关闭。',
+            })
           }
         },
         onError(error) {
           if (runStore.state.activeRun?.status === 'completed') {
-            closeStream()
+            logRuntime('sse.closed', '实时事件流在完成后关闭', { runId, sessionId })
+            closeStream({
+              markDisconnected: true,
+              detail: '最终回复已写入，会话流已正常结束。',
+            })
             return
           }
+          logRuntime('sse.error', error.message, { runId, sessionId }, 'error')
           runStore.markErrored(runId, error.message)
           sessionStore.addSystemNotice(String(sessionId), `实时连接已中断：${error.message}`)
         },
@@ -250,7 +288,28 @@ export default defineComponent({
 
     async function handleUpload(files) {
       const session = await ensureSession()
-      await sessionStore.uploadFiles(String(session.id), files)
+      const result = await sessionStore.uploadFiles(String(session.id), files)
+      if (!result?.ok) {
+        const message = result?.error?.message || '上传附件失败。'
+        logRuntime('upload.error', message, { sessionId: session.id, files }, 'error')
+        runStore.recordClientIssue({
+          sessionId: String(session.id),
+          label: '附件上传失败',
+          detail: message,
+        })
+        return
+      }
+
+      logRuntime('upload.success', '附件上传完成', {
+        sessionId: session.id,
+        count: result.records.length,
+      })
+      runStore.recordClientNotice({
+        sessionId: String(session.id),
+        label: '附件上传完成',
+        detail: `已上传 ${result.records.length} 个附件，将附加到下一次发送。`,
+        status: 'completed',
+      })
     }
 
     async function handleSubmit({ prompt }) {
@@ -262,6 +321,11 @@ export default defineComponent({
       const session = await ensureSession()
       const sessionId = String(session.id)
       sessionStore.addOptimisticUserMessage(sessionId, text)
+      sessionStore.setSubmitting(true)
+      logRuntime('run.start', '正在创建运行', {
+        sessionId,
+        attachmentCount: sessionStore.getPendingUploads(sessionId).length,
+      })
 
       try {
         const run = await apiClient.startRun({
@@ -272,11 +336,26 @@ export default defineComponent({
 
         sessionStore.markUploadsSubmitted(sessionId)
         runStore.beginRun({ runId: run.runId, sessionId })
+        runStore.recordClientNotice({
+          sessionId,
+          runId: run.runId,
+          label: '运行创建成功',
+          detail: '后端已接受请求，正在建立实时连接。',
+          status: 'completed',
+        })
         connectRunStream(run.runId, sessionId)
       } catch (error) {
         const message = error instanceof Error ? error.message : '发送失败，请稍后再试。'
+        logRuntime('run.start.error', message, { sessionId }, 'error')
         runStore.markErrored('pending', message)
+        runStore.recordClientIssue({
+          sessionId,
+          label: '运行启动失败',
+          detail: message,
+        })
         sessionStore.addSystemNotice(sessionId, message)
+      } finally {
+        sessionStore.setSubmitting(false)
       }
     }
 
@@ -305,6 +384,7 @@ export default defineComponent({
       authPassword,
       authUsername,
       combinedError,
+      connectionState,
       currentMessages,
       currentSession,
       currentSessionId,
@@ -320,6 +400,8 @@ export default defineComponent({
       loadingMessages,
       loadingSessions,
       pendingUploads,
+      runError,
+      runtimeDiagnostics,
       runStatus,
       runStatusLabel,
       sessionError,

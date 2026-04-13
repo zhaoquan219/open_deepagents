@@ -30,12 +30,13 @@
 html,
 body,
 #app {
-  min-height: 100%;
+  height: 100%;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
+  overflow: hidden;
   background:
     linear-gradient(180deg, rgba(37, 99, 201, 0.08), rgba(37, 99, 201, 0) 24%),
     linear-gradient(180deg, var(--panel-soft) 0%, var(--bg) 100%);
@@ -52,11 +53,12 @@ button {
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100vh;
   padding: 24px;
   display: flex;
   flex-direction: column;
   gap: 20px;
+  overflow: hidden;
 }
 
 .topbar {
@@ -99,12 +101,14 @@ button {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
   gap: 20px;
+  overflow: hidden;
 }
 
 .sidebar-shell,
 .workspace-shell,
 .auth-panel {
   min-height: 0;
+  height: 100%;
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(188, 201, 216, 0.92);
   border-radius: 8px;
@@ -124,6 +128,8 @@ button {
 
 .timeline-shell {
   min-height: 0;
+  overflow: hidden;
+  display: flex;
   border-left: 1px solid var(--line);
   background: var(--panel-soft);
 }
@@ -131,6 +137,7 @@ button {
 .sidebar,
 .workspace {
   min-height: 0;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -385,11 +392,13 @@ button {
 .message-bubble {
   width: min(100%, 780px);
   max-width: min(100%, 780px);
+  min-width: 0;
   padding: 14px 16px;
   border-radius: 8px;
   border: 1px solid var(--line);
   background: var(--panel);
   box-shadow: 0 8px 18px rgba(21, 40, 59, 0.06);
+  overflow: hidden;
 }
 
 .message-row[data-role='user'] .message-bubble {
@@ -424,9 +433,14 @@ button {
 
 .markdown-content {
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .markdown-content :where(p, ul, ol, pre, blockquote) {
+  margin-top: 0;
+}
+
+.markdown-content > :first-child {
   margin-top: 0;
 }
 
@@ -539,6 +553,8 @@ button {
 
 .runtime-card {
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -582,6 +598,15 @@ button {
 .empty-state p,
 .runtime-empty p {
   margin: 0;
+}
+
+.runtime-error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(198, 66, 86, 0.18);
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .runtime-meta-list {
@@ -631,6 +656,11 @@ button {
   border: 1px solid var(--line);
 }
 
+.runtime-entry[data-status='info'] .runtime-entry-status {
+  background: rgba(21, 40, 59, 0.08);
+  color: var(--text);
+}
+
 .runtime-entry-main {
   min-width: 0;
 }
@@ -677,6 +707,7 @@ button {
 @media (max-width: 1260px) {
   .workspace-shell {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(240px, 34vh);
   }
 
   .timeline-shell {
@@ -701,6 +732,7 @@ button {
   }
 
   .layout-grid {
+    grid-template-rows: minmax(220px, 28vh) minmax(0, 1fr);
     gap: 16px;
   }
 
@@ -724,6 +756,19 @@ button {
 }
 
 @media (max-width: 640px) {
+  .app-shell {
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .layout-grid {
+    grid-template-rows: minmax(180px, 26vh) minmax(0, 1fr);
+  }
+
+  .workspace-shell {
+    grid-template-rows: minmax(0, 1fr) minmax(220px, 36vh);
+  }
+
   .sidebar-header,
   .workspace-header,
   .composer-actions,

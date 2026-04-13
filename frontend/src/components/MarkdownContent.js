@@ -1,4 +1,4 @@
-import { defineComponent, nextTick, ref, watch } from 'vue'
+import { defineComponent, nextTick, onMounted, ref, watch } from 'vue'
 import { hydrateMermaidBlocks, renderMarkdownToHtml } from '../lib/markdown.js'
 
 export default defineComponent({
@@ -27,8 +27,12 @@ export default defineComponent({
       async () => {
         await renderContent()
       },
-      { immediate: true },
+      { flush: 'post' },
     )
+
+    onMounted(async () => {
+      await renderContent()
+    })
 
     return {
       container,
