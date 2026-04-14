@@ -66,6 +66,7 @@ const assistantMessageCount = computed(
   () => props.messages.filter((message) => message?.role === 'assistant').length,
 )
 const isRunLocked = computed(() => ['queued', 'running'].includes(props.runStatus))
+const usesStopAction = computed(() => props.canStop && Boolean(props.activeRun))
 const runtimeCopy = computed(() => {
   if (props.runStatus === 'running') {
     return '当前任务仍在处理中，新的内容会自动追加到下方消息流，完成前不能继续发送下一轮。'
@@ -125,6 +126,32 @@ function handleComposerKeydown(event) {
     submitDraft()
   }
 }
+
+const primaryActionLabel = computed(() => {
+  if (usesStopAction.value) {
+    return props.stopping ? '停止中…' : '停止'
+  }
+  return props.submitting ? '发送中…' : '发送'
+})
+
+const primaryActionType = computed(() => (usesStopAction.value ? 'danger' : 'primary'))
+const primaryActionDisabled = computed(() => {
+  if (usesStopAction.value) {
+    return props.stopping
+  }
+  return props.submitting || isRunLocked.value || !draft.value.trim()
+})
+const composerHint = computed(() =>
+  usesStopAction.value ? '当前任务处理中，可直接使用同一按钮停止。' : '按 Ctrl 或 Command + Enter 可快速发送',
+)
+
+function handlePrimaryAction() {
+  if (usesStopAction.value) {
+    emit('stop-run')
+    return
+  }
+  submitDraft()
+}
 </script>
 
 <template>
@@ -157,16 +184,6 @@ function handleComposerKeydown(event) {
         </div>
       </div>
       <div class="workspace-header-actions">
-        <el-button
-          v-if="props.activeRun && props.canStop"
-          size="small"
-          plain
-          type="danger"
-          :loading="props.stopping"
-          @click="$emit('stop-run')"
-        >
-          {{ props.stopping ? '停止中…' : '停止运行' }}
-        </el-button>
         <el-tag size="small" :type="statusTagType(props.runStatus)" effect="light">
           {{ props.runStatusLabel }}
         </el-tag>
@@ -240,9 +257,15 @@ function handleComposerKeydown(event) {
       />
 
       <div class="composer-actions">
-        <span class="muted-copy">按 Ctrl 或 Command + Enter 可快速发送</span>
-        <el-button size="small" type="primary" :disabled="props.submitting || isRunLocked || !draft.trim()" @click="submitDraft">
-          {{ props.submitting || isRunLocked ? '处理中…' : '发送' }}
+        <span class="muted-copy">{{ composerHint }}</span>
+        <el-button
+          size="small"
+          :type="primaryActionType"
+          :loading="usesStopAction ? props.stopping : props.submitting"
+          :disabled="primaryActionDisabled"
+          @click="handlePrimaryAction"
+        >
+          {{ primaryActionLabel }}
         </el-button>
       </div>
     </div>

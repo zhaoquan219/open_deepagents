@@ -19,11 +19,11 @@
   --danger-soft: rgba(181, 72, 97, 0.12);
   --warning: #93691a;
   --warning-soft: rgba(147, 105, 26, 0.12);
-  --shadow-sm: 0 14px 34px rgba(35, 52, 73, 0.08);
-  --shadow-lg: 0 28px 60px rgba(35, 52, 73, 0.16);
-  --shadow-panel: 0 18px 38px rgba(26, 44, 65, 0.1);
-  --shadow-bubble: 0 16px 34px rgba(27, 42, 61, 0.09);
-  --shadow-bubble-user: 0 18px 38px rgba(10, 76, 146, 0.22);
+  --shadow-sm: 0 4px 16px rgba(35, 52, 73, 0.05);
+  --shadow-lg: 0 14px 28px rgba(35, 52, 73, 0.1);
+  --shadow-panel: 0 8px 20px rgba(26, 44, 65, 0.06);
+  --shadow-bubble: 0 3px 10px rgba(27, 42, 61, 0.05);
+  --shadow-bubble-user: 0 6px 14px rgba(10, 76, 146, 0.1);
   --radius-xl: 24px;
   --radius-lg: 18px;
   --radius-md: 14px;
@@ -102,10 +102,8 @@ button {
   border: 1px solid var(--line);
   border-radius: var(--radius-xl);
   background: var(--surface);
-  box-shadow:
-    var(--shadow-sm),
-    inset 0 1px 0 rgba(255, 255, 255, 0.36);
-  backdrop-filter: blur(22px);
+  box-shadow: 0 1px 2px rgba(26, 44, 65, 0.04);
+  backdrop-filter: blur(18px);
 }
 
 .app-toolbar {
@@ -134,8 +132,6 @@ button {
 }
 
 .toolbar-brand h1,
-.sidebar-heading h2,
-.workspace-heading h2,
 .runtime-heading h3,
 .auth-card h2,
 .empty-state h3 {
@@ -145,6 +141,17 @@ button {
   line-height: 1.08;
   font-weight: 700;
   letter-spacing: -0.03em;
+  color: var(--text);
+}
+
+.sidebar-heading h2,
+.workspace-heading h2 {
+  margin: 0;
+  font-family: var(--heading-font);
+  font-size: clamp(1.02rem, 1.45vw, 1.28rem);
+  line-height: 1.14;
+  font-weight: 700;
+  letter-spacing: -0.02em;
   color: var(--text);
 }
 
@@ -273,10 +280,10 @@ button {
 .sidebar-header,
 .workspace-header {
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
-  padding: 16px 18px 14px;
+  gap: 10px 12px;
+  padding: 12px 16px 10px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -289,14 +296,14 @@ button {
 .workspace-header-main {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   flex: 1;
 }
 
 .workspace-header-top {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
-  gap: 12px 16px;
+  gap: 10px 14px;
   align-items: start;
 }
 
@@ -304,18 +311,30 @@ button {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
 }
 
 .workspace-heading {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .sidebar-toolbar {
   justify-content: space-between;
-  padding: 10px 18px 0;
+  padding: 8px 16px 0;
+  gap: 8px 12px;
+}
+
+.sidebar-toolbar-copy {
+  min-width: 0;
+}
+
+.sidebar-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 
 .inline-error {
@@ -354,10 +373,10 @@ button {
 
 .session-list {
   min-height: 0;
-  padding: 10px;
+  padding: 10px 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .session-item {
@@ -369,26 +388,19 @@ button {
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 9px 11px;
   border: 1px solid var(--line);
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.78) 0%, rgba(248, 244, 237, 0.7) 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.36);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
   transition:
     border-color 0.2s ease,
-    transform 0.2s ease,
-    box-shadow 0.2s ease,
     background-color 0.2s ease;
 }
 
 .session-card:hover,
 .session-card.active {
   border-color: rgba(13, 102, 194, 0.24);
-  background: linear-gradient(180deg, rgba(244, 249, 255, 0.95) 0%, rgba(255, 255, 255, 0.88) 100%);
-  box-shadow:
-    0 14px 30px rgba(13, 102, 194, 0.1),
-    inset 0 1px 0 rgba(255, 255, 255, 0.5);
-  transform: translateY(-1px);
+  background: rgba(244, 249, 255, 0.92);
 }
 
 .session-button {
@@ -415,7 +427,7 @@ button {
 
 .session-state-dot.active {
   background: var(--accent);
-  box-shadow: 0 0 0 5px rgba(13, 102, 194, 0.12);
+  box-shadow: 0 0 0 3px rgba(13, 102, 194, 0.08);
 }
 
 .session-copy {
@@ -444,8 +456,14 @@ button {
 }
 
 .workspace-summary-list {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(72px, 96px));
   align-self: start;
+  justify-content: end;
+}
+
+.workspace-summary-list div {
+  padding: 8px 10px;
+  border-radius: 12px;
 }
 
 .workspace-main {
@@ -453,7 +471,7 @@ button {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  background: linear-gradient(180deg, rgba(241, 246, 252, 0.48) 0%, rgba(255, 252, 246, 0.7) 100%);
+  background: rgba(248, 250, 252, 0.55);
 }
 
 .workspace-thread-shell {
@@ -471,10 +489,10 @@ button {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 16px;
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .message-row {
@@ -495,14 +513,11 @@ button {
   width: auto;
   max-width: min(82%, 800px);
   min-width: 0;
-  padding: 13px 15px;
-  border-radius: 20px;
+  padding: 12px 14px;
+  border-radius: 16px;
   border: 1px solid var(--line);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(250, 252, 255, 0.92) 100%);
-  box-shadow:
-    var(--shadow-bubble),
-    inset 0 1px 0 rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: none;
   overflow: hidden;
 }
 
@@ -512,17 +527,15 @@ button {
 }
 
 .message-row[data-role="user"] .message-bubble {
-  border-color: transparent;
+  border-color: rgba(10, 76, 146, 0.14);
   border-top-right-radius: 10px;
   background: var(--user-bubble);
-  box-shadow:
-    var(--shadow-bubble-user),
-    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  box-shadow: none;
   color: #ffffff;
 }
 
 .message-row[data-role="system"] .message-bubble {
-  background: linear-gradient(180deg, rgba(255, 246, 231, 0.96) 0%, rgba(255, 241, 222, 0.9) 100%);
+  background: rgba(255, 247, 234, 0.94);
   border-color: rgba(147, 105, 26, 0.18);
 }
 
@@ -609,10 +622,10 @@ button {
 .runtime-empty,
 .sidebar-empty {
   margin: 12px;
-  padding: 18px 16px;
+  padding: 16px 14px;
   border: 1px dashed var(--line-strong);
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(242, 247, 254, 0.84) 0%, rgba(255, 252, 246, 0.86) 100%);
+  border-radius: 14px;
+  background: rgba(248, 251, 255, 0.72);
 }
 
 .runtime-empty .el-empty__image,
@@ -625,7 +638,7 @@ button {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .empty-state-kicker {
@@ -638,12 +651,12 @@ button {
 }
 
 .composer-panel {
-  padding: 14px 16px 16px;
+  padding: 12px 14px 14px;
   border-top: 1px solid var(--line);
-  background: rgba(255, 249, 241, 0.92);
+  background: rgba(252, 249, 244, 0.9);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .upload-row {
@@ -668,10 +681,10 @@ button {
 }
 
 .composer-textarea .el-textarea__inner {
-  min-height: 88px !important;
-  max-height: 190px;
-  padding: 10px 12px;
-  border-radius: 14px;
+  min-height: 82px !important;
+  max-height: 180px;
+  padding: 9px 11px;
+  border-radius: 12px;
   line-height: 1.55;
   font-size: 0.92rem;
   background: rgba(255, 255, 255, 0.86);
@@ -717,7 +730,7 @@ button {
   width: min(340px, calc(100% - 20px));
   border: 1px solid var(--line);
   border-radius: 18px;
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-panel);
   z-index: 3;
   overflow: hidden;
 }
@@ -741,15 +754,38 @@ button {
 
 .workspace-header-actions {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 10px;
+  align-items: center;
+  gap: 8px;
   flex: 0 0 auto;
 }
 
-.sidebar-header > .el-button {
-  align-self: flex-start;
-  margin-top: 2px;
+.sidebar-new-button.el-button {
+  gap: 8px;
+  border-color: rgba(13, 102, 194, 0.18);
+  background: rgba(244, 249, 255, 0.92);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.sidebar-new-button.el-button:hover,
+.sidebar-new-button.el-button:focus-visible {
+  border-color: rgba(13, 102, 194, 0.28);
+  background: rgba(239, 246, 255, 0.98);
+  color: var(--accent-strong);
+}
+
+.button-plus-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: rgba(13, 102, 194, 0.12);
+  color: currentColor;
+  font-size: 0.92rem;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .runtime-summary-grid {
@@ -777,9 +813,7 @@ button {
   border-radius: 14px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.86);
-  box-shadow:
-    0 10px 22px rgba(33, 49, 71, 0.05),
-    inset 0 1px 0 rgba(255, 255, 255, 0.38);
+  box-shadow: none;
 }
 
 .runtime-label {
@@ -911,6 +945,11 @@ button {
     grid-template-columns: 1fr;
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .sidebar-toolbar-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 }
 

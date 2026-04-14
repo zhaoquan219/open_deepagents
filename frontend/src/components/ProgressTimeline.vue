@@ -31,7 +31,7 @@ const props = defineProps({
     default: false,
   },
 })
-defineEmits(['close', 'stop-run'])
+defineEmits(['close'])
 
 function statusLabel(status) {
   if (status === 'info') return '信息'
@@ -182,16 +182,6 @@ function statusTagType(status) {
         </p>
       </div>
       <div class="runtime-header-actions">
-        <el-button
-          v-if="props.activeRun && props.canStop"
-          size="small"
-          plain
-          type="danger"
-          :loading="props.stopping"
-          @click="$emit('stop-run')"
-        >
-          {{ props.stopping ? '停止中…' : '停止运行' }}
-        </el-button>
         <el-tag size="small" :type="statusTagType(summaryStatus)" effect="light">
           {{ statusLabel(summaryStatus) }}
         </el-tag>

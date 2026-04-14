@@ -1,5 +1,5 @@
 <script setup>
-import { Plus, RefreshRight } from '@element-plus/icons-vue'
+import { RefreshRight } from '@element-plus/icons-vue'
 
 defineEmits(['new-session', 'refresh', 'select-session', 'delete-session'])
 
@@ -33,16 +33,20 @@ const props = defineProps({
       <div class="sidebar-heading">
         <p class="eyebrow">会话</p>
         <h2>历史会话</h2>
-        <p class="sidebar-summary">
-          {{ props.currentSessionId ? '切换任意会话都可以继续它的上下文。' : '新建一条会话后即可开始对话。' }}
-        </p>
       </div>
-      <el-button size="small" type="primary" :icon="Plus" @click="$emit('new-session')">新建</el-button>
     </div>
 
     <div class="sidebar-toolbar">
-      <span class="muted-copy">按最近更新时间排序</span>
-      <el-button size="small" :icon="RefreshRight" plain @click="$emit('refresh')">刷新</el-button>
+      <span class="muted-copy sidebar-toolbar-copy">
+        {{ props.currentSessionId ? '切换会话后可继续当前上下文。' : '新建会话后即可开始对话。' }}
+      </span>
+      <div class="sidebar-toolbar-actions">
+        <el-button class="sidebar-new-button" size="small" plain @click="$emit('new-session')">
+          <span class="button-plus-glyph" aria-hidden="true">+</span>
+          <span>新建</span>
+        </el-button>
+        <el-button size="small" :icon="RefreshRight" plain @click="$emit('refresh')">刷新</el-button>
+      </div>
     </div>
 
     <p v-if="props.error" class="inline-error sidebar-hint">{{ props.error }}</p>

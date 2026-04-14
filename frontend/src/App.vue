@@ -561,7 +561,6 @@ onBeforeUnmount(() => {
               :dismissible="!isWideLayout"
               :stopping="stoppingRun"
               @close="closeTimelinePanel"
-              @stop-run="handleStopRun"
             />
           </aside>
         </section>
