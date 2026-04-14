@@ -46,7 +46,7 @@ const props = defineProps({
           type="primary"
           @click="$emit('new-session')"
         >
-          <span class="button-plus-sign" aria-hidden="true">+ </span>
+          <span class="button-plus-sign" aria-hidden="true">+</span>
           <span>新建</span>
         </el-button>
         <el-button class="sidebar-toolbar-button" :icon="RefreshRight" plain @click="$emit('refresh')">
