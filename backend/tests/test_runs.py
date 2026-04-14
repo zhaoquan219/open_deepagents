@@ -579,7 +579,10 @@ def test_run_start_persists_distilled_session_title_without_overwriting_it(tmp_p
                 json={"session_id": session_id, "prompt": prompt, "attachments": []},
             )
             run_id = run.json()["run_id"]
-            with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            with client.stream(
+                "GET",
+                f"/api/runs/{run_id}/stream?access_token={token}",
+            ) as response:
                 for line in response.iter_lines():
                     if isinstance(line, bytes):
                         line = line.decode("utf-8")
@@ -973,3 +976,63 @@ def test_run_builds_attachment_context_with_sandbox_path_for_virtual_filesystem(
     assert f"sandbox_path={expected_sandbox_path}" in content
     assert f"upload_path={expected_upload_path}" in content
     assert "Prefer sandbox_path for filesystem tools when it is provided" in content
+
+
+def test_single_uploaded_file_direct_read_tasks_include_stop_after_one_read_hint(tmp_path) -> None:
+    runtime = CapturingConversationRuntime()
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'single-file.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post("/api/sessions", headers=headers, json={"title": "Single file"})
+        session_id = session.json()["id"]
+
+        upload = client.post(
+            f"/api/sessions/{session_id}/uploads",
+            headers=headers,
+            files={"file": ("notes.txt", b"hello upload", "text/plain")},
+        )
+        upload_payload = upload.json()
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "What is in this file?",
+                "attachments": [
+                    {
+                        "id": upload_payload["id"],
+                        "name": upload_payload["filename"],
+                        "status": "uploaded",
+                    }
+                ],
+            },
+        )
+        run_id = run.json()["run_id"]
+
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and '"status": "completed"' in line:
+                    break
+
+    assert runtime.inputs
+    content = runtime.inputs[0]["messages"][0]["content"]
+
+    assert "Single-file execution hint:" in content
+    assert "Read" in content
+    assert "answer from that file content and stop" in content

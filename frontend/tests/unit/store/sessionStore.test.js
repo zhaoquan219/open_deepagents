@@ -187,4 +187,30 @@ describe('sessionStore transcript helpers', () => {
     store.addOptimisticUserMessage('session-1', '第二条消息不能覆盖已有标题')
     expect(store.state.sessions[0].title).toBe('第一行标题候选')
   })
+
+  it('clears pending uploads after a successful submission without stripping the user message attachments', () => {
+    const apiClient = {
+      createSession: vi.fn(),
+      deleteSession: vi.fn(),
+      getSessionMessages: vi.fn(async () => []),
+      listSessions: vi.fn(),
+      uploadFiles: vi.fn(),
+    }
+    const store = createSessionStore(apiClient)
+
+    store.state.pendingUploadsBySession['session-1'] = [
+      { id: 'upload-1', name: 'notes.txt', size: 12, status: 'uploaded' },
+    ]
+
+    store.addOptimisticUserMessage('session-1', '请看下这个文件里有什么')
+    store.clearPendingUploads('session-1')
+
+    expect(store.getPendingUploads('session-1')).toEqual([])
+    expect(store.state.messagesBySession['session-1']).toEqual([
+      expect.objectContaining({
+        role: 'user',
+        attachments: [{ id: 'upload-1', name: 'notes.txt', size: 12, status: 'uploaded' }],
+      }),
+    ])
+  })
 })

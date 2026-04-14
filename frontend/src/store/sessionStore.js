@@ -306,12 +306,9 @@ export function createSessionStore(apiClient) {
     }
   }
 
-  function markUploadsSubmitted(sessionId) {
+  function clearPendingUploads(sessionId) {
     const normalizedId = String(sessionId)
-    state.pendingUploadsBySession[normalizedId] = (state.pendingUploadsBySession[normalizedId] || []).map((upload) => ({
-      ...upload,
-      status: 'submitted',
-    }))
+    delete state.pendingUploadsBySession[normalizedId]
   }
 
   function addOptimisticUserMessage(sessionId, prompt) {
@@ -322,7 +319,7 @@ export function createSessionStore(apiClient) {
       role: 'user',
       content: prompt,
       createdAt: new Date().toISOString(),
-      attachments: getPendingUploads(normalizedId),
+      attachments: [...getPendingUploads(normalizedId)],
       streaming: false,
     })
     touchSession(normalizedId, prompt)
@@ -388,12 +385,12 @@ export function createSessionStore(apiClient) {
     addSystemNotice: addSystemNoticeToSession,
     consumeRunEvent,
     createSession,
+    clearPendingUploads,
     deleteSession,
     getCurrentMessages,
     getCurrentSession,
     getPendingUploads,
     loadSessions,
-    markUploadsSubmitted,
     selectSession,
     setSubmitting,
     uploadFiles,

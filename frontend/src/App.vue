@@ -382,7 +382,7 @@ async function handleSubmit({ prompt }) {
       attachments: sessionStore.getPendingUploads(sessionId),
     })
 
-    sessionStore.markUploadsSubmitted(sessionId)
+    sessionStore.clearPendingUploads(sessionId)
     runStore.beginRun({ runId: run.runId, sessionId })
     runStore.recordClientNotice({
       sessionId,

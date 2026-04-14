@@ -1389,7 +1389,111 @@ def _append_attachment_context(prompt: str, attachments: list[dict[str, Any]]) -
         "Prefer sandbox_path for filesystem tools when it is provided; otherwise use upload_path. "
         "Do not ask the user for the path again unless the provided file is missing or unreadable."
     )
+    direct_read_hint = _single_attachment_direct_read_hint(prompt=prompt, attachments=attachments)
+    if direct_read_hint:
+        lines.append(direct_read_hint)
     return f"{prompt}\n\n" + "\n".join(lines)
+
+
+def _single_attachment_direct_read_hint(
+    *,
+    prompt: str,
+    attachments: list[dict[str, Any]],
+) -> str:
+    if len(attachments) != 1:
+        return ""
+
+    normalized_prompt = prompt.casefold()
+    if any(token in normalized_prompt for token in _DIRECT_FILE_MULTI_STEP_KEYWORDS_EN):
+        return ""
+    if any(token in prompt for token in _DIRECT_FILE_MULTI_STEP_KEYWORDS_ZH):
+        return ""
+
+    direct_read_requested = any(
+        token in normalized_prompt for token in _DIRECT_FILE_READ_KEYWORDS_EN
+    )
+    direct_read_requested = direct_read_requested or any(
+        token in prompt for token in _DIRECT_FILE_READ_KEYWORDS_ZH
+    )
+    if not direct_read_requested:
+        return ""
+
+    attachment = attachments[0]
+    preferred_path = (
+        str(attachment.get("sandbox_path") or "").strip()
+        or str(attachment.get("upload_path") or "").strip()
+        or str(attachment.get("storage_key") or "").strip()
+        or str(attachment.get("name") or attachment.get("id") or "the attached file")
+    )
+    return (
+        "Single-file execution hint: "
+        f"Read {preferred_path} directly once. "
+        "After one successful read, answer from that file content and stop. "
+        "Do not make additional tool calls unless the read fails "
+        "or the user explicitly asks for extra processing."
+    )
+
+
+_DIRECT_FILE_READ_KEYWORDS_EN = (
+    "what is in",
+    "what's in",
+    "read",
+    "summarize",
+    "summarise",
+    "describe",
+    "explain",
+    "review",
+    "analyze",
+    "analyse",
+    "content",
+    "contents",
+    "tell me about",
+    "look at",
+    "check",
+)
+
+_DIRECT_FILE_READ_KEYWORDS_ZH = (
+    "看下",
+    "看看",
+    "看一看",
+    "读取",
+    "读一下",
+    "文件里",
+    "内容",
+    "里面",
+    "是什么",
+    "总结",
+    "概述",
+    "解释",
+    "分析",
+    "介绍",
+)
+
+_DIRECT_FILE_MULTI_STEP_KEYWORDS_EN = (
+    "compare",
+    "diff",
+    "merge",
+    "rewrite",
+    "edit",
+    "modify",
+    "convert",
+    "transform",
+    "generate",
+    "create",
+    "across files",
+)
+
+_DIRECT_FILE_MULTI_STEP_KEYWORDS_ZH = (
+    "比较",
+    "对比",
+    "合并",
+    "改写",
+    "修改",
+    "编辑",
+    "转换",
+    "生成",
+    "创建",
+)
 
 
 def _build_recursion_fallback(prompt: str, messages: list[dict[str, str]]) -> str:
