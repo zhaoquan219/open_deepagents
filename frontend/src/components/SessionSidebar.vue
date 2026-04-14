@@ -33,12 +33,11 @@ const props = defineProps({
       <div class="sidebar-heading">
         <p class="eyebrow">会话</p>
         <h2>历史会话</h2>
+        <p class="muted-copy sidebar-header-copy">
+          {{ props.currentSessionId ? '切换会话后可继续当前上下文。' : '新建会话后即可开始对话。' }}
+        </p>
       </div>
     </div>
-
-    <p class="muted-copy sidebar-header-copy">
-      {{ props.currentSessionId ? '切换会话后可继续当前上下文。' : '新建会话后即可开始对话。' }}
-    </p>
 
     <div class="sidebar-toolbar">
       <div class="sidebar-toolbar-actions">
@@ -47,7 +46,7 @@ const props = defineProps({
           type="primary"
           @click="$emit('new-session')"
         >
-          <span class="button-plus-glyph" aria-hidden="true">+</span>
+          <span class="button-plus-sign" aria-hidden="true">+</span>
           <span>新建</span>
         </el-button>
         <el-button class="sidebar-toolbar-button" :icon="RefreshRight" plain @click="$emit('refresh')">

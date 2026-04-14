@@ -9,6 +9,7 @@ from collections import Counter
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -24,6 +25,7 @@ from app.db.models import (
     RunEventViewRecord,
     SessionRecord,
     SessionRuntimeLinkRecord,
+    UploadRecord,
 )
 from app.services.session_titles import sync_session_title_from_source
 from deepagents_integration import DeepAgentsRuntimeConfig, SseEventEnvelope, stream_sse_envelopes
@@ -198,6 +200,12 @@ class RunService:
     ) -> RunState:
         with self.database.session_factory() as db:
             session = _require_session(db, session_id)
+            resolved_attachments = _resolve_run_attachments(
+                db=db,
+                session_id=session_id,
+                attachments=attachments,
+                upload_root=settings.upload_storage_dir,
+            )
             state = self.manager.create(session_id)
             session.last_run_id = state.run_id
             sync_session_title_from_source(session, prompt)
@@ -207,7 +215,7 @@ class RunService:
                     session_id=session_id,
                     status="queued",
                     prompt=prompt,
-                    extra={"attachments": attachments},
+                    extra={"attachments": resolved_attachments},
                 )
             )
             db.add(
@@ -216,7 +224,7 @@ class RunService:
                     role="user",
                     content=prompt,
                     run_id=state.run_id,
-                    extra={"attachments": attachments},
+                    extra={"attachments": resolved_attachments},
                 )
             )
             db.add(session)
@@ -241,7 +249,7 @@ class RunService:
                 status="running",
                 label="Run started",
                 detail="Queued DeepAgents run.",
-                data={"attachments": attachments, "prompt": prompt},
+                data={"attachments": resolved_attachments, "prompt": prompt},
             )
         )
         self._launch_run(
@@ -249,7 +257,7 @@ class RunService:
             run_id=state.run_id,
             session_id=session_id,
             prompt=prompt,
-            attachments=attachments,
+            attachments=resolved_attachments,
         )
         return state
 
@@ -895,8 +903,11 @@ class RunService:
             if record.role not in {"user", "assistant"}:
                 continue
             content = record.content or ""
-            if record.role == "user" and record.run_id == run_id:
-                content = _append_attachment_names(content, attachments)
+            if record.role == "user":
+                record_attachments = attachments if record.run_id == run_id else _message_attachments(
+                    record=record,
+                )
+                content = _append_attachment_context(content, record_attachments)
             if not content.strip():
                 continue
             messages.append({"role": record.role, "content": content})
@@ -908,7 +919,7 @@ class RunService:
             "messages": [
                 {
                     "role": "user",
-                    "content": _append_attachment_names(prompt, attachments),
+                    "content": _append_attachment_context(prompt, attachments),
                 }
             ]
         }
@@ -1238,13 +1249,103 @@ def _extract_message_text(payload: Any) -> str:
     return ""
 
 
-def _append_attachment_names(prompt: str, attachments: list[dict[str, Any]]) -> str:
+def _resolve_run_attachments(
+    *,
+    db: Session,
+    session_id: str,
+    attachments: list[dict[str, Any]],
+    upload_root: Path,
+) -> list[dict[str, Any]]:
+    if not attachments:
+        return []
+
+    requested_ids = [str(item.get("id") or "").strip() for item in attachments if item.get("id")]
+    records_by_id = {}
+    if requested_ids:
+        records = (
+            db.query(UploadRecord)
+            .filter(
+                UploadRecord.session_id == session_id,
+                UploadRecord.id.in_(requested_ids),
+            )
+            .all()
+        )
+        records_by_id = {record.id: record for record in records}
+
+    resolved: list[dict[str, Any]] = []
+    for item in attachments:
+        attachment_id = str(item.get("id") or "").strip()
+        record = records_by_id.get(attachment_id)
+        if record is not None:
+            resolved.append(
+                {
+                    "id": record.id,
+                    "name": record.filename,
+                    "status": str(item.get("status") or "uploaded"),
+                    "size": record.size_bytes,
+                    "size_bytes": record.size_bytes,
+                    "content_type": record.content_type,
+                    "storage_key": record.storage_key,
+                    "upload_path": str((upload_root / record.storage_key).resolve()),
+                }
+            )
+            continue
+
+        storage_key = str(item.get("storage_key") or "").strip()
+        resolved.append(
+            {
+                "id": attachment_id or str(item.get("attachment_id") or ""),
+                "name": str(item.get("name") or item.get("filename") or "attachment"),
+                "status": str(item.get("status") or "uploaded"),
+                "size": int(item.get("size") or item.get("size_bytes") or 0),
+                "size_bytes": int(item.get("size_bytes") or item.get("size") or 0),
+                "content_type": str(item.get("content_type") or "application/octet-stream"),
+                "storage_key": storage_key,
+                "upload_path": str((upload_root / storage_key).resolve()) if storage_key else "",
+            }
+        )
+
+    return resolved
+
+
+def _message_attachments(*, record: MessageRecord) -> list[dict[str, Any]]:
+    extra = record.extra if isinstance(record.extra, dict) else {}
+    attachments = extra.get("attachments")
+    if isinstance(attachments, list):
+        return [item for item in attachments if isinstance(item, dict)]
+    return []
+
+
+def _append_attachment_context(prompt: str, attachments: list[dict[str, Any]]) -> str:
     if not attachments:
         return prompt
-    names = ", ".join(
-        str(item.get("name") or item.get("id") or "attachment") for item in attachments
+
+    lines = ["Attached files:"]
+    for item in attachments:
+        name = str(item.get("name") or item.get("id") or "attachment")
+        details = [name]
+
+        upload_path = str(item.get("upload_path") or "").strip()
+        storage_key = str(item.get("storage_key") or "").strip()
+        content_type = str(item.get("content_type") or "").strip()
+        size_bytes = int(item.get("size_bytes") or item.get("size") or 0)
+
+        if upload_path:
+            details.append(f"path={upload_path}")
+        if storage_key:
+            details.append(f"storage_key={storage_key}")
+        if content_type:
+            details.append(f"type={content_type}")
+        if size_bytes > 0:
+            details.append(f"size={size_bytes} bytes")
+
+        lines.append(f"- {' | '.join(details)}")
+
+    lines.append(
+        "These files are already uploaded and available to the runtime. "
+        "Do not ask the user for the path again unless the provided file is missing or unreadable."
     )
-    return f"{prompt}\n\nAttached files: {names}"
+    return f"{prompt}\n\n" + "\n".join(lines)
 
 
 def _build_recursion_fallback(prompt: str, messages: list[dict[str, str]]) -> str:

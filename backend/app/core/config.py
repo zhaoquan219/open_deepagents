@@ -123,6 +123,14 @@ class Settings(BaseSettings):
             headers[key.strip()] = header_value.strip()
         return headers
 
+    @field_validator("upload_storage_dir", mode="after")
+    @classmethod
+    def resolve_upload_storage_dir(cls, value: Path) -> Path:
+        path = Path(value)
+        if not path.is_absolute():
+            path = BACKEND_ROOT / path
+        return path.resolve()
+
     @model_validator(mode="after")
     def apply_runtime_defaults(self) -> "Settings":
         if self.database_url is None:
@@ -180,12 +188,13 @@ class Settings(BaseSettings):
         return DEEPAGENTS_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
 
     def default_permissions(self) -> tuple[dict[str, object], ...]:
+        paths: list[Path] = list(DEFAULT_SANDBOX_READ_PATHS)
+        if not any(_path_contains(base_path, self.upload_storage_dir) for base_path in paths):
+            paths.append(self.upload_storage_dir)
         return (
             {
                 "operations": ["read"],
-                "paths": [
-                    normalize_sandbox_permission_path(path) for path in DEFAULT_SANDBOX_READ_PATHS
-                ],
+                "paths": [normalize_sandbox_permission_path(path) for path in paths],
             },
         )
 
@@ -312,6 +321,14 @@ def normalize_sandbox_permission_path(path: str | Path | PurePath) -> str:
     if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/":
         return f"/{normalized}"
     return normalized
+
+
+def _path_contains(base_path: Path, candidate: Path) -> bool:
+    try:
+        candidate.resolve().relative_to(base_path.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def describe_model_reference(model: str | None) -> tuple[str, str]:

@@ -1,8 +1,9 @@
 import json
-from pathlib import PureWindowsPath
+from pathlib import Path, PureWindowsPath
 
 import app.core.config as config_module
 from app.core.config import (
+    BACKEND_ROOT,
     DEEPAGENTS_SYSTEM_PROMPT_PATH,
     DEFAULT_SANDBOX_READ_PATHS,
     Settings,
@@ -162,3 +163,21 @@ def test_runtime_model_logging_summary_is_safe_and_descriptive() -> None:
     assert "secret-key" not in summary_text
     assert "user:pass" not in summary_text
     assert "token=abc" not in summary_text
+
+
+def test_relative_upload_storage_dir_resolves_from_backend_root() -> None:
+    settings = Settings(upload_storage_dir="data/custom-uploads")
+
+    assert settings.upload_storage_dir == (BACKEND_ROOT / "data/custom-uploads").resolve()
+
+
+def test_runtime_permissions_include_custom_upload_dir_outside_default_data_root() -> None:
+    custom_upload_dir = Path("/tmp/open-deepagents-uploads").resolve()
+    settings = Settings(
+        deepagents_model="openai:gpt-5.4",
+        upload_storage_dir=custom_upload_dir,
+    )
+
+    assert list(settings.to_runtime_config().permissions[0]["paths"]) == [
+        normalize_sandbox_permission_path(path) for path in DEFAULT_SANDBOX_READ_PATHS
+    ] + [normalize_sandbox_permission_path(custom_upload_dir)]

@@ -1,5 +1,7 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+
+import { isNearBottom } from '../lib/scroll.js'
 
 const props = defineProps({
   activeRun: {
@@ -32,6 +34,9 @@ const props = defineProps({
   },
 })
 defineEmits(['close'])
+
+const timelineRef = ref(null)
+const autoFollowLatest = ref(true)
 
 function statusLabel(status) {
   if (status === 'info') return '信息'
@@ -161,6 +166,61 @@ function statusTagType(status) {
   if (status === 'cancelled' || status === 'cancelling') return 'warning'
   return 'primary'
 }
+
+function timelineWrap() {
+  return timelineRef.value?.wrapRef || null
+}
+
+async function scrollToLatest() {
+  await nextTick()
+  const wrap = timelineWrap()
+  if (!wrap) {
+    return
+  }
+  wrap.scrollTop = wrap.scrollHeight
+}
+
+function syncAutoFollowState(scrollTopOverride) {
+  const wrap = timelineWrap()
+  if (!wrap) {
+    return
+  }
+  autoFollowLatest.value = isNearBottom({
+    scrollTop: scrollTopOverride ?? wrap.scrollTop,
+    clientHeight: wrap.clientHeight,
+    scrollHeight: wrap.scrollHeight,
+  })
+}
+
+function handleTimelineScroll({ scrollTop }) {
+  syncAutoFollowState(scrollTop)
+}
+
+watch(
+  () => String(props.activeRun?.runId || ''),
+  async (runId, previousRunId) => {
+    if (runId && runId !== previousRunId) {
+      autoFollowLatest.value = true
+      await scrollToLatest()
+    }
+  },
+)
+
+watch(
+  mergedEntries,
+  async () => {
+    if (!autoFollowLatest.value) {
+      return
+    }
+    await scrollToLatest()
+  },
+  { deep: true, flush: 'post' },
+)
+
+onMounted(async () => {
+  await scrollToLatest()
+  syncAutoFollowState()
+})
 </script>
 
 <template>
@@ -220,7 +280,11 @@ function statusTagType(status) {
         </div>
       </dl>
 
-      <el-scrollbar class="runtime-list-scrollbar">
+      <el-scrollbar
+        ref="timelineRef"
+        class="runtime-list-scrollbar"
+        @scroll="handleTimelineScroll"
+      >
         <ol class="runtime-list">
           <li
             v-for="entry in mergedEntries"

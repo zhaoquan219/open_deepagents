@@ -224,6 +224,21 @@ Default sandbox permissions are enforced in code rather than left to documentati
 
 These permission paths are normalized to DeepAgents-safe absolute strings, including Windows-safe slash normalization for drive-letter paths.
 
+### Uploaded file paths and sandbox visibility
+
+When a user uploads a file, the backend persists it before the run starts:
+
+- `UPLOAD_STORAGE_DIR` is the upload root. With the default settings it resolves to `backend/data/uploads`, even if the backend process is started from another working directory.
+- Each file is written to `UPLOAD_STORAGE_DIR/<session_id>/<uuid>-<original-filename>`.
+- `storage_key` is the relative suffix under `UPLOAD_STORAGE_DIR`, for example `session-123/2b6d...-notes.pdf`.
+- The concrete on-disk path is `UPLOAD_STORAGE_DIR / storage_key`.
+
+Runtime behavior:
+
+- Before a run starts, the backend enriches each selected attachment with `upload_id`, `storage_key`, and `upload_path`.
+- The runtime prompt tells the agent to use the provided upload path directly instead of asking the user to provide one again.
+- The default sandbox read permissions already cover `backend/data`; if you move `UPLOAD_STORAGE_DIR` outside that tree, the backend automatically adds the custom upload directory to the runtime read-allowed paths.
+
 ## Backend API overview
 
 ### Admin auth
