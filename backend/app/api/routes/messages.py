@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.api.deps import DatabaseSessionDep, require_admin
 from app.db.models import MessageRecord, SessionRecord
 from app.schemas.message import MessageCreate, MessageRead, MessageUpdate
+from app.services.session_titles import sync_session_title_from_source
 
 router = APIRouter(dependencies=[Depends(require_admin)])
 
@@ -39,6 +40,8 @@ def create_message(
         extra=payload.extra,
     )
     session.last_run_id = payload.run_id or session.last_run_id
+    if payload.role == "user":
+        sync_session_title_from_source(session, payload.content)
     db.add(record)
     db.add(session)
     db.commit()

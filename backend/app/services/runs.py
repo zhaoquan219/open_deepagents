@@ -25,6 +25,7 @@ from app.db.models import (
     SessionRecord,
     SessionRuntimeLinkRecord,
 )
+from app.services.session_titles import sync_session_title_from_source
 from deepagents_integration import DeepAgentsRuntimeConfig, SseEventEnvelope, stream_sse_envelopes
 
 RunBuilder = Callable[[DeepAgentsRuntimeConfig], Any]
@@ -199,6 +200,7 @@ class RunService:
             session = _require_session(db, session_id)
             state = self.manager.create(session_id)
             session.last_run_id = state.run_id
+            sync_session_title_from_source(session, prompt)
             db.add(
                 AgentRunRecord(
                     id=state.run_id,

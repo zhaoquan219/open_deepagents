@@ -4,17 +4,24 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import DatabaseSessionDep, require_admin
 from app.db.models import SessionRecord
 from app.schemas.session import SessionCreate, SessionDetail, SessionRead, SessionUpdate
+from app.services.session_titles import sync_session_title_from_history
 
 router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 @router.get("", response_model=list[SessionRead])
 def list_sessions(db: DatabaseSessionDep) -> list[SessionRecord]:
-    return list(
+    records = list(
         db.query(SessionRecord)
         .order_by(SessionRecord.updated_at.desc(), SessionRecord.created_at.desc())
         .all()
     )
+    changed = False
+    for record in records:
+        changed = sync_session_title_from_history(db, record) or changed
+    if changed:
+        db.commit()
+    return records
 
 
 @router.post("", response_model=SessionRead, status_code=status.HTTP_201_CREATED)
@@ -43,6 +50,9 @@ def get_session(session_id: str, db: DatabaseSessionDep) -> SessionRecord:
     )
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    if sync_session_title_from_history(db, record):
+        db.commit()
+        db.refresh(record)
     return record
 
 

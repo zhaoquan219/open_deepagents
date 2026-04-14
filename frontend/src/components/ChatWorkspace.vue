@@ -232,7 +232,13 @@ function handlePrimaryAction() {
             }}
           </span>
         </div>
-        <el-button size="small" plain :icon="UploadFilled" :disabled="props.uploading || isRunLocked" @click="triggerFilePicker">
+        <el-button
+          size="small"
+          plain
+          :icon="UploadFilled"
+          :disabled="props.uploading || isRunLocked"
+          @click="triggerFilePicker"
+        >
           上传附件
         </el-button>
         <input ref="fileInput" class="hidden-input" type="file" multiple @change="handleFileSelection" />
@@ -259,6 +265,7 @@ function handlePrimaryAction() {
       <div class="composer-actions">
         <span class="muted-copy">{{ composerHint }}</span>
         <el-button
+          class="composer-submit-button"
           size="small"
           :type="primaryActionType"
           :loading="usesStopAction ? props.stopping : props.submitting"

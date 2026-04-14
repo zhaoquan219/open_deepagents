@@ -36,16 +36,23 @@ const props = defineProps({
       </div>
     </div>
 
+    <p class="muted-copy sidebar-header-copy">
+      {{ props.currentSessionId ? '切换会话后可继续当前上下文。' : '新建会话后即可开始对话。' }}
+    </p>
+
     <div class="sidebar-toolbar">
-      <span class="muted-copy sidebar-toolbar-copy">
-        {{ props.currentSessionId ? '切换会话后可继续当前上下文。' : '新建会话后即可开始对话。' }}
-      </span>
       <div class="sidebar-toolbar-actions">
-        <el-button class="sidebar-new-button" size="small" plain @click="$emit('new-session')">
+        <el-button
+          class="sidebar-toolbar-button sidebar-new-button"
+          type="primary"
+          @click="$emit('new-session')"
+        >
           <span class="button-plus-glyph" aria-hidden="true">+</span>
           <span>新建</span>
         </el-button>
-        <el-button size="small" :icon="RefreshRight" plain @click="$emit('refresh')">刷新</el-button>
+        <el-button class="sidebar-toolbar-button" :icon="RefreshRight" plain @click="$emit('refresh')">
+          刷新
+        </el-button>
       </div>
     </div>
 

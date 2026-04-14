@@ -70,3 +70,30 @@ def test_session_message_and_upload_crud(client: TestClient, auth_headers: dict[
     final_sessions = client.get("/api/sessions", headers=auth_headers)
     assert final_sessions.status_code == 200
     assert final_sessions.json() == []
+
+
+def test_list_sessions_backfills_placeholder_title_from_first_user_message(
+    client: TestClient,
+    auth_headers: dict[str, str],
+) -> None:
+    create_session = client.post("/api/sessions", headers=auth_headers, json={})
+    assert create_session.status_code == 201
+    session_id = create_session.json()["id"]
+
+    create_message = client.post(
+        f"/api/sessions/{session_id}/messages",
+        headers=auth_headers,
+        json={
+            "role": "user",
+            "content": "整理本周发布前需要确认的接口回归项\n第二行不应进入标题",
+        },
+    )
+    assert create_message.status_code == 201
+
+    list_sessions = client.get("/api/sessions", headers=auth_headers)
+    assert list_sessions.status_code == 200
+    assert list_sessions.json()[0]["title"] == "整理本周发布前需要确认的接口回归项"
+
+    session_detail = client.get(f"/api/sessions/{session_id}", headers=auth_headers)
+    assert session_detail.status_code == 200
+    assert session_detail.json()["title"] == "整理本周发布前需要确认的接口回归项"

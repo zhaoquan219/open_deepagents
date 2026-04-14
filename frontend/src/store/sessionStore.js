@@ -1,5 +1,11 @@
 import { reactive } from 'vue'
 
+import {
+  distillSessionTitle,
+  isPlaceholderSessionTitle,
+  normalizeSessionTitle,
+} from '../lib/sessionTitle.js'
+
 function createClientId() {
   return globalThis.crypto?.randomUUID?.() || `session-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
@@ -190,14 +196,17 @@ export function createSessionStore(apiClient) {
   function touchSession(sessionId, titleFallback) {
     const existing = state.sessions.find((session) => session.id === sessionId)
     const updatedAt = new Date().toISOString()
-    const title = titleFallback || existing?.title || '新会话'
+    const nextTitle = titleFallback ? distillSessionTitle(titleFallback) : ''
     if (existing) {
       existing.updatedAt = updatedAt
-      existing.title = title
+      existing.title =
+        nextTitle && isPlaceholderSessionTitle(existing.title)
+          ? nextTitle
+          : normalizeSessionTitle(existing.title)
     } else {
       state.sessions = sortSessions([
         ...state.sessions,
-        { id: sessionId, title, updatedAt, status: 'idle' },
+        { id: sessionId, title: nextTitle || '新会话', updatedAt, status: 'idle' },
       ])
     }
     state.sessions = sortSessions(state.sessions)
@@ -316,8 +325,7 @@ export function createSessionStore(apiClient) {
       attachments: getPendingUploads(normalizedId),
       streaming: false,
     })
-    const titleFallback = prompt.length > 48 ? `${prompt.slice(0, 45)}...` : prompt
-    touchSession(normalizedId, titleFallback)
+    touchSession(normalizedId, prompt)
   }
 
   function addSystemNoticeToSession(sessionId, content) {

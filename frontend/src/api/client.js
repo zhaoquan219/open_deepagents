@@ -1,3 +1,5 @@
+import { normalizeSessionTitle } from '../lib/sessionTitle.js'
+
 function resolveApiBaseUrl() {
   if (import.meta.env.VITE_API_BASE_URL) {
     return String(import.meta.env.VITE_API_BASE_URL)
@@ -8,17 +10,6 @@ function resolveApiBaseUrl() {
 
 function resolveAccessToken() {
   return window.localStorage.getItem('deepagents.admin.token') || ''
-}
-
-function normalizeSessionTitle(value) {
-  const title = String(value ?? '').trim()
-  const englishDefaults = new Set(['new session', 'new chat', 'untitled', 'untitled session'])
-
-  if (!title || englishDefaults.has(title.toLowerCase())) {
-    return '新会话'
-  }
-
-  return title
 }
 
 function unwrapCollection(payload, preferredKey) {

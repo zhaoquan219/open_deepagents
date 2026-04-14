@@ -132,7 +132,6 @@ button {
 }
 
 .toolbar-brand h1,
-.runtime-heading h3,
 .auth-card h2,
 .empty-state h3 {
   margin: 0;
@@ -150,6 +149,16 @@ button {
   font-family: var(--heading-font);
   font-size: clamp(1.02rem, 1.45vw, 1.28rem);
   line-height: 1.14;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.runtime-heading h3 {
+  margin: 0;
+  font-family: var(--heading-font);
+  font-size: clamp(0.98rem, 1.25vw, 1.14rem);
+  line-height: 1.12;
   font-weight: 700;
   letter-spacing: -0.02em;
   color: var(--text);
@@ -290,6 +299,7 @@ button {
 .workspace {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 10px;
   height: 100%;
 }
 
@@ -321,13 +331,13 @@ button {
 }
 
 .sidebar-toolbar {
-  justify-content: space-between;
-  padding: 8px 16px 0;
-  gap: 8px 12px;
+  justify-content: flex-start;
+  padding: 0 16px 10px;
+  gap: 10px 12px;
 }
 
-.sidebar-toolbar-copy {
-  min-width: 0;
+.sidebar-header-copy {
+  padding: 0 16px 10px;
 }
 
 .sidebar-toolbar-actions {
@@ -472,6 +482,7 @@ button {
   display: flex;
   flex-direction: column;
   background: rgba(248, 250, 252, 0.55);
+  border-radius: 18px;
 }
 
 .workspace-thread-shell {
@@ -651,12 +662,13 @@ button {
 }
 
 .composer-panel {
-  padding: 12px 14px 14px;
+  padding: 14px 14px 16px;
   border-top: 1px solid var(--line);
+  border-radius: 18px;
   background: rgba(252, 249, 244, 0.9);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
 }
 
 .upload-row {
@@ -704,6 +716,7 @@ button {
 
 .composer-actions {
   justify-content: space-between;
+  padding-top: 2px;
 }
 
 .timeline-backdrop {
@@ -738,10 +751,10 @@ button {
 .runtime-card {
   height: 100%;
   min-height: 0;
-  padding: 14px;
+  padding: 13px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 9px;
   overflow: hidden;
 }
 
@@ -750,6 +763,12 @@ button {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+.sidebar-toolbar-button.el-button {
+  min-height: 36px;
+  padding: 0 15px;
+  font-weight: 600;
 }
 
 .workspace-header-actions {
@@ -761,27 +780,28 @@ button {
 
 .sidebar-new-button.el-button {
   gap: 8px;
-  border-color: rgba(13, 102, 194, 0.18);
-  background: rgba(244, 249, 255, 0.92);
-  color: var(--accent-strong);
-  font-weight: 600;
+  border-color: transparent;
+  background: linear-gradient(160deg, #0e6bc6 0%, #0a4f97 100%);
+  color: #ffffff;
+  box-shadow: 0 10px 18px rgba(11, 92, 173, 0.18);
 }
 
 .sidebar-new-button.el-button:hover,
 .sidebar-new-button.el-button:focus-visible {
-  border-color: rgba(13, 102, 194, 0.28);
-  background: rgba(239, 246, 255, 0.98);
-  color: var(--accent-strong);
+  border-color: transparent;
+  background: linear-gradient(160deg, #0f74d7 0%, #0b5cad 100%);
+  color: #ffffff;
+  box-shadow: 0 12px 22px rgba(11, 92, 173, 0.22);
 }
 
 .button-plus-glyph {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   border-radius: 999px;
-  background: rgba(13, 102, 194, 0.12);
+  background: rgba(255, 255, 255, 0.16);
   color: currentColor;
   font-size: 0.92rem;
   font-weight: 700;
@@ -790,6 +810,7 @@ button {
 
 .runtime-summary-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
 }
 
 .runtime-summary-grid > :last-child {
@@ -809,7 +830,7 @@ button {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: start;
-  padding: 10px 12px;
+  padding: 9px 11px;
   border-radius: 14px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.86);
@@ -820,6 +841,31 @@ button {
   margin: 0 0 4px;
   color: var(--text);
   font-weight: 700;
+  font-size: 0.88rem;
+  line-height: 1.42;
+}
+
+.runtime-copy,
+.runtime-detail {
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.runtime-summary-grid div {
+  padding: 8px 10px;
+}
+
+.runtime-summary-grid dt {
+  font-size: 0.64rem;
+}
+
+.runtime-summary-grid dd {
+  font-size: 0.92rem;
+}
+
+.composer-submit-button.el-button {
+  min-width: 108px;
+  padding-inline: 18px;
 }
 
 .runtime-entry[data-status="cancelled"] {

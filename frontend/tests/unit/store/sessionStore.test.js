@@ -166,4 +166,25 @@ describe('sessionStore transcript helpers', () => {
     expect(store.state.messagesBySession['session-1']).toBeUndefined()
     expect(store.state.currentSessionId).toBe('session-2')
   })
+
+  it('distills a placeholder session title once and preserves it on later prompts', () => {
+    const apiClient = {
+      createSession: vi.fn(),
+      deleteSession: vi.fn(),
+      getSessionMessages: vi.fn(async () => []),
+      listSessions: vi.fn(),
+      uploadFiles: vi.fn(),
+    }
+    const store = createSessionStore(apiClient)
+
+    store.state.sessions = [
+      { id: 'session-1', title: '新会话', updatedAt: '2026-04-13T00:00:00Z', status: 'idle' },
+    ]
+
+    store.addOptimisticUserMessage('session-1', '第一行标题候选\n第二行不应进入标题')
+    expect(store.state.sessions[0].title).toBe('第一行标题候选')
+
+    store.addOptimisticUserMessage('session-1', '第二条消息不能覆盖已有标题')
+    expect(store.state.sessions[0].title).toBe('第一行标题候选')
+  })
 })

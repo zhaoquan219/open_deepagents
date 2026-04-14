@@ -551,6 +551,47 @@ def test_second_run_receives_prior_session_messages(tmp_path) -> None:
     ]
 
 
+def test_run_start_persists_distilled_session_title_without_overwriting_it(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'titles.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+    )
+    app = create_app(settings)
+    runtime = CapturingConversationRuntime()
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post("/api/sessions", headers=headers, json={})
+        session_id = session.json()["id"]
+
+        for prompt in ("第一条消息应该成为会话标题", "第二条消息不能覆盖标题"):
+            run = client.post(
+                "/api/runs",
+                headers=headers,
+                json={"session_id": session_id, "prompt": prompt, "attachments": []},
+            )
+            run_id = run.json()["run_id"]
+            with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+                for line in response.iter_lines():
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8")
+                    if line and '"status": "completed"' in line:
+                        break
+
+    with app.state.database.session_factory() as db:
+        record = db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
+        assert record is not None
+        assert record.title == "第一条消息应该成为会话标题"
+
+
 def test_intermediate_assistant_messages_do_not_complete_the_run_or_disappear(tmp_path) -> None:
     settings = Settings(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'multi-message.db'}",
