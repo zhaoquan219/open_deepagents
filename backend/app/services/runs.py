@@ -204,7 +204,7 @@ class RunService:
                 db=db,
                 session_id=session_id,
                 attachments=attachments,
-                upload_root=settings.upload_storage_dir,
+                settings=settings,
             )
             state = self.manager.create(session_id)
             session.last_run_id = state.run_id
@@ -1256,7 +1256,7 @@ def _resolve_run_attachments(
     db: Session,
     session_id: str,
     attachments: list[dict[str, Any]],
-    upload_root: Path,
+    settings: Settings,
 ) -> list[dict[str, Any]]:
     if not attachments:
         return []
@@ -1279,6 +1279,10 @@ def _resolve_run_attachments(
         attachment_id = str(item.get("id") or "").strip()
         record = records_by_id.get(attachment_id)
         if record is not None:
+            upload_path = _resolve_attachment_disk_path(
+                upload_root=settings.upload_storage_dir,
+                storage_key=record.storage_key,
+            )
             resolved.append(
                 {
                     "id": record.id,
@@ -1288,12 +1292,20 @@ def _resolve_run_attachments(
                     "size_bytes": record.size_bytes,
                     "content_type": record.content_type,
                     "storage_key": record.storage_key,
-                    "upload_path": str((upload_root / record.storage_key).resolve()),
+                    "upload_path": str(upload_path) if upload_path is not None else "",
+                    "sandbox_path": _resolve_sandbox_attachment_path(
+                        upload_path=upload_path,
+                        settings=settings,
+                    ),
                 }
             )
             continue
 
         storage_key = str(item.get("storage_key") or "").strip()
+        upload_path = _resolve_attachment_disk_path(
+            upload_root=settings.upload_storage_dir,
+            storage_key=storage_key,
+        )
         resolved.append(
             {
                 "id": attachment_id or str(item.get("attachment_id") or ""),
@@ -1303,11 +1315,37 @@ def _resolve_run_attachments(
                 "size_bytes": int(item.get("size_bytes") or item.get("size") or 0),
                 "content_type": str(item.get("content_type") or "application/octet-stream"),
                 "storage_key": storage_key,
-                "upload_path": str((upload_root / storage_key).resolve()) if storage_key else "",
+                "upload_path": str(upload_path) if upload_path is not None else "",
+                "sandbox_path": _resolve_sandbox_attachment_path(
+                    upload_path=upload_path,
+                    settings=settings,
+                ),
             }
         )
 
     return resolved
+
+
+def _resolve_attachment_disk_path(*, upload_root: Path, storage_key: str) -> Path | None:
+    if not storage_key:
+        return None
+    return (upload_root / storage_key).resolve()
+
+
+def _resolve_sandbox_attachment_path(*, upload_path: Path | None, settings: Settings) -> str:
+    if upload_path is None or settings.deepagents_sandbox_root_dir is None:
+        return ""
+
+    sandbox_root = Path(settings.deepagents_sandbox_root_dir).expanduser().resolve()
+    try:
+        relative_path = upload_path.resolve().relative_to(sandbox_root)
+    except ValueError:
+        return ""
+
+    normalized = relative_path.as_posix()
+    if settings.deepagents_sandbox_virtual_mode:
+        return f"/{normalized.lstrip('/')}"
+    return normalized
 
 
 def _message_attachments(*, record: MessageRecord) -> list[dict[str, Any]]:
@@ -1327,13 +1365,16 @@ def _append_attachment_context(prompt: str, attachments: list[dict[str, Any]]) -
         name = str(item.get("name") or item.get("id") or "attachment")
         details = [name]
 
+        sandbox_path = str(item.get("sandbox_path") or "").strip()
         upload_path = str(item.get("upload_path") or "").strip()
         storage_key = str(item.get("storage_key") or "").strip()
         content_type = str(item.get("content_type") or "").strip()
         size_bytes = int(item.get("size_bytes") or item.get("size") or 0)
 
+        if sandbox_path:
+            details.append(f"sandbox_path={sandbox_path}")
         if upload_path:
-            details.append(f"path={upload_path}")
+            details.append(f"upload_path={upload_path}")
         if storage_key:
             details.append(f"storage_key={storage_key}")
         if content_type:
@@ -1345,6 +1386,7 @@ def _append_attachment_context(prompt: str, attachments: list[dict[str, Any]]) -
 
     lines.append(
         "These files are already uploaded and available to the runtime. "
+        "Prefer sandbox_path for filesystem tools when it is provided; otherwise use upload_path. "
         "Do not ask the user for the path again unless the provided file is missing or unreadable."
     )
     return f"{prompt}\n\n" + "\n".join(lines)

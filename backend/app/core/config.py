@@ -131,6 +131,13 @@ class Settings(BaseSettings):
             path = BACKEND_ROOT / path
         return path.resolve()
 
+    @field_validator("deepagents_sandbox_root_dir", mode="after")
+    @classmethod
+    def resolve_sandbox_root_dir(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return str(resolve_runtime_disk_path(value, base_dir=BACKEND_ROOT))
+
     @model_validator(mode="after")
     def apply_runtime_defaults(self) -> "Settings":
         if self.database_url is None:

@@ -199,6 +199,17 @@ def test_relative_upload_storage_dir_resolves_from_backend_root() -> None:
     assert settings.upload_storage_dir == (BACKEND_ROOT / "data/custom-uploads").resolve()
 
 
+def test_relative_sandbox_root_dir_resolves_from_backend_root() -> None:
+    settings = Settings(
+        deepagents_model="openai:gpt-5.4",
+        deepagents_sandbox_kind="filesystem",
+        deepagents_sandbox_root_dir="./data",
+    )
+
+    assert settings.deepagents_sandbox_root_dir == str((BACKEND_ROOT / "data").resolve())
+    assert settings.to_runtime_config().sandbox.root_dir == str((BACKEND_ROOT / "data").resolve())
+
+
 def test_runtime_permissions_include_custom_upload_dir_outside_default_data_root() -> None:
     custom_upload_dir = Path("/tmp/open-deepagents-uploads").resolve()
     settings = Settings(
