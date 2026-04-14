@@ -904,8 +904,10 @@ class RunService:
                 continue
             content = record.content or ""
             if record.role == "user":
-                record_attachments = attachments if record.run_id == run_id else _message_attachments(
-                    record=record,
+                record_attachments = (
+                    attachments
+                    if record.run_id == run_id
+                    else _message_attachments(record=record)
                 )
                 content = _append_attachment_context(content, record_attachments)
             if not content.strip():

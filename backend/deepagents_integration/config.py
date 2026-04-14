@@ -54,6 +54,22 @@ class SandboxConfig:
 
 
 @dataclass(frozen=True)
+class SkillSourceConfig:
+    """Mapping between a DeepAgents-visible source path and a disk directory."""
+
+    source_path: str
+    disk_path: str
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any]) -> SkillSourceConfig:
+        source_path = raw.get("source_path")
+        disk_path = raw.get("disk_path")
+        if not isinstance(source_path, str) or not isinstance(disk_path, str):
+            raise ValueError("skill_sources entries must define string source_path and disk_path")
+        return cls(source_path=source_path, disk_path=disk_path)
+
+
+@dataclass(frozen=True)
 class DeepAgentsRuntimeConfig:
     """Application-facing configuration for the DeepAgents runtime adapter."""
 
@@ -64,6 +80,7 @@ class DeepAgentsRuntimeConfig:
     tool_specs: tuple[str, ...] = ()
     middleware_specs: tuple[str, ...] = ()
     skills: tuple[str, ...] = ()
+    skill_sources: tuple[SkillSourceConfig, ...] = ()
     memory: tuple[str, ...] = ()
     permissions: tuple[Mapping[str, Any], ...] = ()
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
@@ -84,6 +101,7 @@ class DeepAgentsRuntimeConfig:
             "sandbox_timeout": self.sandbox.timeout,
             "sandbox_virtual_mode": self.sandbox.virtual_mode,
             "skill_count": len(self.skills),
+            "skill_source_count": len(self.skill_sources),
             "tool_count": len(self.tool_specs),
         }
 
@@ -97,6 +115,7 @@ class DeepAgentsRuntimeConfig:
             tool_specs=_string_tuple(raw.get("tool_specs")),
             middleware_specs=_string_tuple(raw.get("middleware_specs")),
             skills=_string_tuple(raw.get("skills")),
+            skill_sources=_skill_source_tuple(raw.get("skill_sources")),
             memory=_string_tuple(raw.get("memory")),
             permissions=_mapping_tuple(raw.get("permissions")),
             sandbox=SandboxConfig.from_mapping(raw.get("sandbox")),
@@ -127,6 +146,14 @@ def _mapping_tuple(value: Any) -> tuple[Mapping[str, Any], ...]:
     if not isinstance(value, list | tuple) or not all(isinstance(item, Mapping) for item in value):
         raise ValueError("Expected a list of mappings")
     return tuple(value)
+
+
+def _skill_source_tuple(value: Any) -> tuple[SkillSourceConfig, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list | tuple):
+        raise ValueError("Expected a list of skill source mappings")
+    return tuple(SkillSourceConfig.from_mapping(item) for item in value)
 
 
 def _describe_model(model: Any) -> tuple[str, str]:

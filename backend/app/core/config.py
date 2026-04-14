@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from deepagents_integration import DeepAgentsRuntimeConfig, SandboxConfig
+from deepagents_integration import DeepAgentsRuntimeConfig, SandboxConfig, SkillSourceConfig
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ENV_PATH = BACKEND_ROOT / ".env"
@@ -163,6 +163,7 @@ class Settings(BaseSettings):
         return Path(raw_path)
 
     def to_runtime_config(self) -> DeepAgentsRuntimeConfig:
+        resolved_skill_sources = self.deepagents_skill_sources()
         return DeepAgentsRuntimeConfig(
             model=self.resolve_model(),
             system_prompt=self.load_deepagents_system_prompt(),
@@ -170,7 +171,8 @@ class Settings(BaseSettings):
             debug=self.deepagents_debug,
             tool_specs=self._split_csv(self.deepagents_tool_specs),
             middleware_specs=self._split_csv(self.deepagents_middleware_specs),
-            skills=self._split_csv(self.deepagents_skills),
+            skills=tuple(source.source_path for source in resolved_skill_sources),
+            skill_sources=resolved_skill_sources,
             memory=self._split_csv(self.deepagents_memory),
             permissions=self.default_permissions(),
             sandbox=SandboxConfig(
@@ -234,6 +236,27 @@ class Settings(BaseSettings):
                 base_url=base_url,
             )
         return self.deepagents_model
+
+    def deepagents_skill_sources(
+        self,
+        *,
+        base_dir: Path = BACKEND_ROOT,
+    ) -> tuple[SkillSourceConfig, ...]:
+        sources: list[SkillSourceConfig] = []
+        for raw_source in self._split_csv(self.deepagents_skills):
+            disk_path = resolve_runtime_disk_path(raw_source, base_dir=base_dir)
+            source_path = normalize_runtime_backend_path(
+                raw_source,
+                base_dir=base_dir,
+                trailing_slash=True,
+            )
+            sources.append(
+                SkillSourceConfig(
+                    source_path=source_path,
+                    disk_path=str(disk_path),
+                )
+            )
+        return tuple(sources)
 
     def get_cors_origins(self) -> list[str]:
         return list(self._split_csv(self.cors_allowed_origins))
@@ -321,6 +344,29 @@ def normalize_sandbox_permission_path(path: str | Path | PurePath) -> str:
     if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/":
         return f"/{normalized}"
     return normalized
+
+
+def normalize_runtime_backend_path(
+    path_value: str,
+    *,
+    base_dir: Path,
+    trailing_slash: bool = False,
+) -> str:
+    disk_path = resolve_runtime_disk_path(path_value, base_dir=base_dir)
+    if _path_contains(base_dir, disk_path):
+        normalized = "/" + disk_path.relative_to(base_dir).as_posix().lstrip("/")
+    else:
+        normalized = normalize_sandbox_permission_path(disk_path)
+    if trailing_slash and not normalized.endswith("/"):
+        return f"{normalized}/"
+    return normalized
+
+
+def resolve_runtime_disk_path(path_value: str, *, base_dir: Path) -> Path:
+    candidate = Path(path_value).expanduser()
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (base_dir / candidate).resolve()
 
 
 def _path_contains(base_path: Path, candidate: Path) -> bool:

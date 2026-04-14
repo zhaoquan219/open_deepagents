@@ -207,11 +207,16 @@ CUSTOM_API_DEFAULT_HEADERS=HTTP-Referer=https://app.example.com,X-Title=open_dee
 
 `backend/.env.example` enables these sample extensions by default:
 
-- `DEEPAGENTS_TOOL_SPECS=extensions/tools/echo_tool.py:TOOLS`
-- `DEEPAGENTS_MIDDLEWARE_SPECS=extensions/middleware/audit_middleware.py:MIDDLEWARE`
+- `DEEPAGENTS_TOOL_SPECS=extensions/tools/__init__.py:TOOLS`
+- `DEEPAGENTS_MIDDLEWARE_SPECS=extensions/middleware/__init__.py:MIDDLEWARE`
 - `DEEPAGENTS_SKILLS=extensions/skills`
 - `DEEPAGENTS_SANDBOX_KIND=state`
 - `DEEPAGENTS_SANDBOX_ROOT_DIR=./data/sandbox`
+
+The backend normalizes `DEEPAGENTS_SKILLS=extensions/skills` to the DeepAgents
+source path `/extensions/skills/` and routes that source to the on-disk project
+directory, so skills remain discoverable even when the main runtime backend is
+`state` or a sandbox rooted under `backend/data/sandbox`.
 
 ### Default sandbox permissions
 
@@ -282,7 +287,9 @@ The backend resolves extensions from configuration rather than hardcoding them.
 
 ### Tools and middleware
 
+- Unified tool entrypoint: [backend/extensions/tools/__init__.py](backend/extensions/tools/__init__.py)
 - Tool template: [backend/extensions/tools/echo_tool.py](backend/extensions/tools/echo_tool.py)
+- Unified middleware entrypoint: [backend/extensions/middleware/__init__.py](backend/extensions/middleware/__init__.py)
 - Middleware template: [backend/extensions/middleware/audit_middleware.py](backend/extensions/middleware/audit_middleware.py)
 
 Entrypoint format:
@@ -291,10 +298,27 @@ Entrypoint format:
 path/to/file.py:OBJECT_NAME
 ```
 
+Recommended pattern:
+
+- add tool modules under `backend/extensions/tools/`
+- export the aggregated `TOOLS` list from `backend/extensions/tools/__init__.py`
+- add middleware modules under `backend/extensions/middleware/`
+- export the aggregated `MIDDLEWARE` list from `backend/extensions/middleware/__init__.py`
+
 ### Skills
 
 - Skill template directory: [backend/extensions/skills](backend/extensions/skills)
 - configured through `DEEPAGENTS_SKILLS`
+- each skill must live in its own subdirectory with `SKILL.md`
+
+Example structure:
+
+```text
+backend/extensions/skills/
+  web-research/
+    SKILL.md
+    helper.py
+```
 
 ### Memory
 

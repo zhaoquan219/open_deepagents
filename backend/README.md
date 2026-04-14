@@ -24,7 +24,13 @@ uv run uvicorn app.main:app --reload
 Copy `backend/.env.example` to `.env` and adjust as needed.
 The runtime system prompt is managed in `backend/prompts/deepagents-system-prompt.md`.
 `backend/.env` is the only env file used by the backend runtime.
-The default template already enables the sample tool, middleware, skills, and sandbox settings.
+The default template already enables the unified tool and middleware entrypoints,
+the default skills directory, and the sample sandbox settings.
+Tools are aggregated from `backend/extensions/tools/__init__.py:TOOLS`.
+Middleware is aggregated from `backend/extensions/middleware/__init__.py:MIDDLEWARE`.
+Skills are loaded from `DEEPAGENTS_SKILLS` by scanning subdirectories for
+`SKILL.md`, and the backend routes those skill paths to disk even when the main
+runtime backend is `state` or a sandbox rooted elsewhere.
 The default sandbox permissions are enforced in code and only allow read access
 to `backend/data/` and `backend/extensions/skills/`.
 Uploaded files are stored at `UPLOAD_STORAGE_DIR/<session_id>/<uuid>-<filename>`.

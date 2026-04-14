@@ -207,11 +207,15 @@ CUSTOM_API_DEFAULT_HEADERS=HTTP-Referer=https://app.example.com,X-Title=open_dee
 
 `backend/.env.example` 默认启用了以下示例扩展：
 
-- `DEEPAGENTS_TOOL_SPECS=extensions/tools/echo_tool.py:TOOLS`
-- `DEEPAGENTS_MIDDLEWARE_SPECS=extensions/middleware/audit_middleware.py:MIDDLEWARE`
+- `DEEPAGENTS_TOOL_SPECS=extensions/tools/__init__.py:TOOLS`
+- `DEEPAGENTS_MIDDLEWARE_SPECS=extensions/middleware/__init__.py:MIDDLEWARE`
 - `DEEPAGENTS_SKILLS=extensions/skills`
 - `DEEPAGENTS_SANDBOX_KIND=state`
 - `DEEPAGENTS_SANDBOX_ROOT_DIR=./data/sandbox`
+
+后端会把 `DEEPAGENTS_SKILLS=extensions/skills` 规范化为 DeepAgents 可见的
+`/extensions/skills/`，并把这个 source 路由到磁盘上的项目目录，因此即使主运行时
+后端是 `state`，或者沙箱根目录位于 `backend/data/sandbox` 下，技能仍然可以被发现。
 
 ### 默认沙箱权限
 
@@ -267,7 +271,9 @@ CUSTOM_API_DEFAULT_HEADERS=HTTP-Referer=https://app.example.com,X-Title=open_dee
 
 ### 工具与中间件
 
+- 统一工具入口：[backend/extensions/tools/__init__.py](backend/extensions/tools/__init__.py)
 - 工具模板：[backend/extensions/tools/echo_tool.py](backend/extensions/tools/echo_tool.py)
+- 统一中间件入口：[backend/extensions/middleware/__init__.py](backend/extensions/middleware/__init__.py)
 - 中间件模板：[backend/extensions/middleware/audit_middleware.py](backend/extensions/middleware/audit_middleware.py)
 
 入口格式：
@@ -276,10 +282,27 @@ CUSTOM_API_DEFAULT_HEADERS=HTTP-Referer=https://app.example.com,X-Title=open_dee
 path/to/file.py:OBJECT_NAME
 ```
 
+推荐模式：
+
+- 在 `backend/extensions/tools/` 下新增工具模块
+- 在 `backend/extensions/tools/__init__.py` 中统一导出 `TOOLS`
+- 在 `backend/extensions/middleware/` 下新增中间件模块
+- 在 `backend/extensions/middleware/__init__.py` 中统一导出 `MIDDLEWARE`
+
 ### 技能
 
 - 技能模板目录：[backend/extensions/skills](backend/extensions/skills)
 - 通过 `DEEPAGENTS_SKILLS` 配置
+- 每个技能都需要自己的子目录，并在其中放置 `SKILL.md`
+
+结构示例：
+
+```text
+backend/extensions/skills/
+  web-research/
+    SKILL.md
+    helper.py
+```
 
 ### 记忆
 

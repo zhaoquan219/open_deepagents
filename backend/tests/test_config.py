@@ -7,7 +7,9 @@ from app.core.config import (
     DEEPAGENTS_SYSTEM_PROMPT_PATH,
     DEFAULT_SANDBOX_READ_PATHS,
     Settings,
+    normalize_runtime_backend_path,
     normalize_sandbox_permission_path,
+    resolve_runtime_disk_path,
 )
 
 
@@ -140,6 +142,32 @@ def test_runtime_config_logging_summary_is_safe_and_concise() -> None:
     assert summary["sandbox_root_dir_configured"] is True
     assert "secret-key" not in summary_text
     assert "example.com" not in summary_text
+
+
+def test_runtime_config_normalizes_skill_sources_for_deepagents() -> None:
+    settings = Settings(
+        deepagents_model="openai:gpt-5.4",
+        deepagents_skills="extensions/skills",
+    )
+
+    runtime_config = settings.to_runtime_config()
+
+    assert runtime_config.skills == ("/extensions/skills/",)
+    assert len(runtime_config.skill_sources) == 1
+    assert runtime_config.skill_sources[0].source_path == "/extensions/skills/"
+    assert runtime_config.skill_sources[0].disk_path == str(
+        resolve_runtime_disk_path("extensions/skills", base_dir=BACKEND_ROOT)
+    )
+
+
+def test_normalize_runtime_backend_path_prefers_repo_relative_sources() -> None:
+    path = normalize_runtime_backend_path(
+        "extensions/skills",
+        base_dir=BACKEND_ROOT,
+        trailing_slash=True,
+    )
+
+    assert path == "/extensions/skills/"
 
 
 def test_runtime_model_logging_summary_is_safe_and_descriptive() -> None:

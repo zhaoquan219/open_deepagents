@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -10,15 +11,18 @@ from unittest.mock import patch
 
 from deepagents.backends import FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.protocol import BackendProtocol
+from deepagents.middleware.skills import _list_skills
 
 from deepagents_integration import (
     DeepAgentsRuntimeConfig,
     SandboxConfig,
+    SkillSourceConfig,
     build_deep_agent,
     load_middleware_extensions,
     load_tool_extensions,
     normalize_runtime_event,
     resolve_backend,
+    route_skill_sources,
     stream_sse_envelopes,
     validate_sse_event,
 )
@@ -83,6 +87,119 @@ class DeepAgentsConfigTests(unittest.TestCase):
             self.assertEqual(tools[0]("hello"), "HELLO")
             self.assertEqual(len(middleware), 1)
             self.assertEqual(type(middleware[0]).__name__, "DemoMiddleware")
+
+    def test_tool_and_middleware_specs_load_from_unified_init_entrypoints(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            tools_dir = root / "extensions" / "tools"
+            middleware_dir = root / "extensions" / "middleware"
+            tools_dir.mkdir(parents=True)
+            middleware_dir.mkdir(parents=True)
+
+            (tools_dir / "echo_tool.py").write_text(
+                textwrap.dedent(
+                    """
+                    def sample_tool(query: str) -> str:
+                        return query.upper()
+
+                    TOOLS = [sample_tool]
+                    """
+                )
+            )
+            (tools_dir / "__init__.py").write_text(
+                "from extensions.tools.echo_tool import TOOLS as SAMPLE_TOOLS\n"
+                "TOOLS = [*SAMPLE_TOOLS]\n"
+            )
+            (middleware_dir / "audit_middleware.py").write_text(
+                textwrap.dedent(
+                    """
+                    class DemoMiddleware:
+                        pass
+
+                    MIDDLEWARE = [DemoMiddleware()]
+                    """
+                )
+            )
+            (middleware_dir / "__init__.py").write_text(
+                "from extensions.middleware.audit_middleware import "
+                "MIDDLEWARE as SAMPLE_MIDDLEWARE\n"
+                "MIDDLEWARE = [*SAMPLE_MIDDLEWARE]\n"
+            )
+
+            saved_modules = {
+                name: sys.modules.pop(name, None)
+                for name in (
+                    "extensions",
+                    "extensions.tools",
+                    "extensions.tools.echo_tool",
+                    "extensions.middleware",
+                    "extensions.middleware.audit_middleware",
+                )
+            }
+            sys.path.insert(0, tmpdir)
+            try:
+                tools = load_tool_extensions((f"{tools_dir / '__init__.py'}:TOOLS",))
+                middleware = load_middleware_extensions(
+                    (f"{middleware_dir / '__init__.py'}:MIDDLEWARE",)
+                )
+            finally:
+                sys.path.pop(0)
+                for name, module in saved_modules.items():
+                    if module is None:
+                        sys.modules.pop(name, None)
+                    else:
+                        sys.modules[name] = module
+
+            self.assertEqual(len(tools), 1)
+            self.assertEqual(tools[0]("hello"), "HELLO")
+            self.assertEqual(len(middleware), 1)
+            self.assertEqual(type(middleware[0]).__name__, "DemoMiddleware")
+
+    def test_route_skill_sources_loads_disk_skills_with_state_backend(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_root = Path(tmpdir) / "skills"
+            skill_dir = skill_root / "web-research"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                textwrap.dedent(
+                    """\
+                    ---
+                    name: web-research
+                    description: Structured research workflow
+                    ---
+
+                    # Web Research
+                    """
+                ),
+                encoding="utf-8",
+            )
+
+            backend, active_sources = route_skill_sources(
+                StateBackend(),
+                (
+                    SkillSourceConfig(
+                        source_path="/extensions/skills/",
+                        disk_path=str(skill_root),
+                    ),
+                ),
+            )
+
+            self.assertEqual(active_sources, ("/extensions/skills/",))
+            skills = _list_skills(backend, "/extensions/skills/")
+            self.assertEqual(
+                skills,
+                [
+                    {
+                        "name": "web-research",
+                        "description": "Structured research workflow",
+                        "path": "/extensions/skills/web-research/SKILL.md",
+                        "metadata": {},
+                        "license": None,
+                        "compatibility": None,
+                        "allowed_tools": [],
+                    }
+                ],
+            )
 
     def test_backend_resolution_supports_builtin_and_custom_backends(self):
         self.assertIsInstance(resolve_backend(SandboxConfig(kind="state")), StateBackend)
@@ -170,7 +287,7 @@ class DeepAgentsConfigTests(unittest.TestCase):
 
     def test_sample_audit_middleware_supports_sync_and_async_tool_wrapping(self):
         [middleware] = load_middleware_extensions(
-            ("backend/extensions/middleware/audit_middleware.py:MIDDLEWARE",)
+            ("extensions/middleware/audit_middleware.py:MIDDLEWARE",)
         )
         self.assertEqual(type(middleware).__name__, SampleAuditMiddleware.__name__)
         request = object()
@@ -239,7 +356,11 @@ class DeepAgentsSseBridgeTests(unittest.IsolatedAsyncioTestCase):
 
         envelopes = [
             envelope
-            async for envelope in stream_sse_envelopes(runtime, {"messages": []}, bridge_run_id="app-run-7")
+            async for envelope in stream_sse_envelopes(
+                runtime,
+                {"messages": []},
+                bridge_run_id="app-run-7",
+            )
         ]
 
         self.assertEqual(envelopes[0].event, "bridge.hello")

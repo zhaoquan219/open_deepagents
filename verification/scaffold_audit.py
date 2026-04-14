@@ -29,7 +29,9 @@ REQUIRED_CONTRACT_FILES = (
     "packages/extension-manifest.template.json",
 )
 REQUIRED_EXTENSION_TEMPLATES = (
+    "backend/extensions/tools/__init__.py",
     "backend/extensions/tools/echo_tool.py",
+    "backend/extensions/middleware/__init__.py",
     "backend/extensions/middleware/audit_middleware.py",
     "backend/extensions/skills/README.md",
     "backend/extensions/sandboxes/README.md",

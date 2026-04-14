@@ -1,10 +1,10 @@
 {
   "version": "1.0",
   "tools": [
-    "backend/extensions/tools/echo_tool.py:TOOLS"
+    "backend/extensions/tools/__init__.py:TOOLS"
   ],
   "middleware": [
-    "backend/extensions/middleware/audit_middleware.py:MIDDLEWARE"
+    "backend/extensions/middleware/__init__.py:MIDDLEWARE"
   ],
   "skills": [
     "backend/extensions/skills"
