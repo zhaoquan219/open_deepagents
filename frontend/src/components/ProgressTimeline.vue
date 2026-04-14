@@ -6,6 +6,10 @@ const props = defineProps({
     type: Object,
     default: null,
   },
+  canStop: {
+    type: Boolean,
+    default: false,
+  },
   connectionState: {
     type: String,
     default: 'idle',
@@ -22,13 +26,19 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  stopping: {
+    type: Boolean,
+    default: false,
+  },
 })
-defineEmits(['close'])
+defineEmits(['close', 'stop-run'])
 
 function statusLabel(status) {
   if (status === 'info') return '信息'
   if (status === 'running' || status === 'in_progress') return '处理中'
   if (status === 'completed') return '已完成'
+  if (status === 'cancelling') return '停止中'
+  if (status === 'cancelled') return '已停止'
   if (status === 'failed') return '失败'
   if (status === 'queued') return '排队中'
   return '待命'
@@ -68,6 +78,7 @@ function entryLabel(entry) {
     'Run started': '开始处理',
     'Run running': '正在处理',
     'Run completed': '处理完成',
+    'Run cancelled': '已手动停止',
     'Run failed': '处理失败',
     'Assistant message finalized': '最终回复已写入会话',
   }
@@ -130,7 +141,7 @@ const mergedEntries = computed(() => {
     merged.push(normalized)
   }
 
-  return merged.slice(-12)
+  return merged
 })
 
 const summaryStatus = computed(() =>
@@ -143,6 +154,13 @@ const shortRunId = computed(() => {
   const runId = String(props.activeRun?.runId || '')
   return runId ? runId.slice(-8).toUpperCase() : ''
 })
+
+function statusTagType(status) {
+  if (status === 'failed') return 'danger'
+  if (status === 'completed') return 'success'
+  if (status === 'cancelled' || status === 'cancelling') return 'warning'
+  return 'primary'
+}
 </script>
 
 <template>
@@ -164,7 +182,17 @@ const shortRunId = computed(() => {
         </p>
       </div>
       <div class="runtime-header-actions">
-        <el-tag size="small" :type="summaryStatus === 'failed' ? 'danger' : summaryStatus === 'completed' ? 'success' : 'primary'" effect="light">
+        <el-button
+          v-if="props.activeRun && props.canStop"
+          size="small"
+          plain
+          type="danger"
+          :loading="props.stopping"
+          @click="$emit('stop-run')"
+        >
+          {{ props.stopping ? '停止中…' : '停止运行' }}
+        </el-button>
+        <el-tag size="small" :type="statusTagType(summaryStatus)" effect="light">
           {{ statusLabel(summaryStatus) }}
         </el-tag>
         <el-button v-if="props.dismissible" size="small" text @click="$emit('close')">收起</el-button>
@@ -214,7 +242,7 @@ const shortRunId = computed(() => {
               <p class="runtime-label">{{ entryLabel(entry) }}</p>
               <p v-if="entryDetail(entry)" class="runtime-detail">{{ entryDetail(entry) }}</p>
             </div>
-            <el-tag size="small" effect="plain" :type="entry.status === 'failed' ? 'danger' : entry.status === 'completed' ? 'success' : 'primary'">
+            <el-tag size="small" effect="plain" :type="statusTagType(entry.status)">
               {{ statusLabel(entry.status) }}
             </el-tag>
           </li>

@@ -5,6 +5,10 @@ import { computed, ref } from 'vue'
 import MessageThread from './MessageThread.vue'
 
 const props = defineProps({
+  canStop: {
+    type: Boolean,
+    default: false,
+  },
   currentSession: {
     type: Object,
     default: null,
@@ -45,9 +49,13 @@ const props = defineProps({
     type: Object,
     default: null,
   },
+  stopping: {
+    type: Boolean,
+    default: false,
+  },
 })
 
-const emit = defineEmits(['submit', 'upload'])
+const emit = defineEmits(['submit', 'upload', 'stop-run'])
 
 const draft = ref('')
 const fileInput = ref(null)
@@ -65,11 +73,21 @@ const runtimeCopy = computed(() => {
   if (props.runStatus === 'completed') {
     return '本轮处理已经完成，可以立刻继续追问。'
   }
+  if (props.runStatus === 'cancelled') {
+    return '本轮处理已手动停止，可以调整上下文后重新发起。'
+  }
   if (props.runStatus === 'failed') {
     return '本轮处理失败，先查看运行面板再决定是否重试。'
   }
   return '对话区已准备就绪，把目标和上下文一次说清就可以开始。'
 })
+
+function statusTagType(status) {
+  if (status === 'failed') return 'danger'
+  if (status === 'completed') return 'success'
+  if (status === 'cancelled' || status === 'cancelling') return 'warning'
+  return 'primary'
+}
 
 function uploadStatusLabel(status) {
   if (status === 'submitted') return '已提交'
@@ -138,9 +156,21 @@ function handleComposerKeydown(event) {
           </dl>
         </div>
       </div>
-      <el-tag size="small" :type="props.runStatus === 'failed' ? 'danger' : props.runStatus === 'completed' ? 'success' : 'primary'" effect="light">
-        {{ props.runStatusLabel }}
-      </el-tag>
+      <div class="workspace-header-actions">
+        <el-button
+          v-if="props.activeRun && props.canStop"
+          size="small"
+          plain
+          type="danger"
+          :loading="props.stopping"
+          @click="$emit('stop-run')"
+        >
+          {{ props.stopping ? '停止中…' : '停止运行' }}
+        </el-button>
+        <el-tag size="small" :type="statusTagType(props.runStatus)" effect="light">
+          {{ props.runStatusLabel }}
+        </el-tag>
+      </div>
     </div>
 
     <div class="workspace-main">

@@ -61,6 +61,20 @@ def get_run(run_id: str, request: Request, _: AdminUserDep) -> RunRead:
     )
 
 
+@router.post("/runs/{run_id}/cancel", response_model=RunRead)
+def cancel_run(run_id: str, request: Request, _: AdminUserDep) -> RunRead:
+    try:
+        run_state = get_run_service(request).cancel_run(run_id=run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found") from exc
+    return RunRead(
+        run_id=run_state.run_id,
+        session_id=run_state.session_id,
+        status=run_state.status,
+        created_at=run_state.created_at,
+    )
+
+
 @router.get("/runs/{run_id}/stream")
 async def stream_run(
     run_id: str,

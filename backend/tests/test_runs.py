@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -109,6 +110,34 @@ class BlockingToolRuntime:
 
 def build_blocking_tool_runtime(_config: Any) -> BlockingToolRuntime:
     return BlockingToolRuntime()
+
+
+class CancellableRuntime:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.cancelled = threading.Event()
+
+    async def astream_events(
+        self,
+        agent_input: Any,
+        *,
+        version: str = "v2",
+        config: Any = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        self.started.set()
+        yield {
+            "event": "on_chain_start",
+            "name": "deep-agent",
+            "run_id": "runtime-cancellable",
+            "metadata": {"langgraph_node": "agent"},
+            "data": {"input": agent_input},
+        }
+        try:
+            while True:
+                await asyncio.sleep(0.01)
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
 
 
 def build_failing_runtime(_config: Any) -> Any:
@@ -341,6 +370,80 @@ def test_stream_emits_keepalive_while_tool_execution_blocks(tmp_path) -> None:
 
     assert any('"type": "tool"' in chunk for chunk in chunks)
     assert ": keep-alive\n\n" in chunks
+
+
+def test_cancel_run_marks_run_cancelled_and_terminates_stream(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'cancel.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+    )
+    app = create_app(settings)
+    runtime = CancellableRuntime()
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        session = client.post("/api/sessions", headers=headers, json={"title": "Cancelable run"})
+        session_id = session.json()["id"]
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={"session_id": session_id, "prompt": "wait here", "attachments": []},
+        )
+        assert run.status_code == 201
+        run_id = run.json()["run_id"]
+        assert runtime.started.wait(timeout=1)
+
+        cancel = client.post(f"/api/runs/{run_id}/cancel", headers=headers)
+        assert cancel.status_code == 200
+        assert cancel.json()["status"] == "cancelled"
+
+        run_detail = client.get(f"/api/runs/{run_id}", headers=headers)
+        assert run_detail.status_code == 200
+        assert run_detail.json()["status"] == "cancelled"
+
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            payloads = []
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if not line or not line.startswith("data: "):
+                    continue
+                payloads.append(json.loads(line[6:]))
+
+    assert runtime.cancelled.wait(timeout=1)
+    assert any(
+        payload["type"] == "status" and payload["status"] == "cancelled" for payload in payloads
+    )
+    assert not any(
+        payload["type"] == "status" and payload["status"] == "completed" for payload in payloads
+    )
+    assert not any(payload["type"] == "message.final" for payload in payloads)
+
+    with app.state.database.session_factory() as db:
+        run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
+        assert run_record is not None
+        assert run_record.status == "cancelled"
+        assert run_record.completed_at is not None
+        assert run_record.error_text == "DeepAgents run was stopped by the user."
+        assert (
+            db.query(RunEventViewRecord)
+            .filter(
+                RunEventViewRecord.run_id == run_id,
+                RunEventViewRecord.status == "cancelled",
+            )
+            .count()
+            == 1
+        )
 
 
 def test_stream_route_resumes_from_last_event_id_header(tmp_path) -> None:

@@ -35,6 +35,7 @@ const authError = ref('')
 const authLoading = ref(false)
 const isAuthenticated = ref(false)
 const isWideLayout = ref(true)
+const stoppingRunId = ref('')
 const timelinePanelOpen = ref(true)
 let viewportMediaQuery = null
 
@@ -59,6 +60,12 @@ const connectionState = computed(
 const runtimeDiagnostics = computed(() => runStore.state.diagnostics)
 const runError = computed(() => runStore.state.error)
 const runStatus = computed(() => runStore.state.activeRun?.status || 'idle')
+const canStopRun = computed(
+  () => ['queued', 'running'].includes(runStatus.value) && Boolean(activeRun.value?.runId),
+)
+const stoppingRun = computed(
+  () => Boolean(stoppingRunId.value) && stoppingRunId.value === String(activeRun.value?.runId || ''),
+)
 const sessionCount = computed(() => sessions.value.length)
 const currentMessageCount = computed(() => currentMessages.value.length)
 const pendingUploadCount = computed(() => pendingUploads.value.length)
@@ -68,6 +75,9 @@ const topbarStatusCopy = computed(() => {
   }
   if (runStatus.value === 'completed') {
     return '本轮任务已经完成，当前会话里可以直接继续追问或回溯上下文。'
+  }
+  if (runStatus.value === 'cancelled') {
+    return '上一轮运行已手动停止，可以调整提示或附件后重新发起。'
   }
   if (runStatus.value === 'failed') {
     return '上一轮处理被中断，先查看运行面板里的错误，再决定是否重试。'
@@ -80,6 +90,8 @@ const runStatusLabel = computed(() => {
   if (status === 'queued') return '排队中'
   if (status === 'running') return '处理中'
   if (status === 'completed') return '已完成'
+  if (status === 'cancelling') return '停止中'
+  if (status === 'cancelled') return '已停止'
   if (status === 'failed') return '失败'
   return '处理中'
 })
@@ -162,7 +174,7 @@ function syncSessionTranscript(sessionId) {
 function isTerminalEnvelope(envelope) {
   return (
     envelope.type === 'error' ||
-    (envelope.type === 'status' && ['completed', 'failed'].includes(envelope.status))
+    (envelope.type === 'status' && ['completed', 'failed', 'cancelled'].includes(envelope.status))
   )
 }
 
@@ -195,6 +207,8 @@ function connectRunStream(runId, sessionId) {
   const terminalDetail = (envelope) =>
     envelope.type === 'error'
       ? '运行异常，实时连接已终止。'
+      : envelope.status === 'cancelled'
+        ? '当前运行已手动停止，实时连接已关闭。'
       : '本轮输出已结束，实时连接已关闭。'
   activeStream.value = apiClient.openRunStream(runId, {
     lastEventId: runStore.getLastEventId(runId),
@@ -221,6 +235,8 @@ function connectRunStream(runId, sessionId) {
           syncSessionTranscript(sessionId)
           if (envelope.type === 'status' && envelope.status === 'completed') {
             runStore.markCompleted(runId, '检测到终态事件重放，已同步最终回复。')
+          } else if (envelope.type === 'status' && envelope.status === 'cancelled') {
+            runStore.markCancelled(runId, '运行已被手动停止。')
           }
           closeStream({
             markDisconnected: true,
@@ -250,11 +266,14 @@ function connectRunStream(runId, sessionId) {
       }
     },
     onError(error) {
-      if (runStore.state.activeRun?.status === 'completed') {
+      if (['completed', 'cancelled'].includes(runStore.state.activeRun?.status || '')) {
         logRuntime('sse.closed', '实时事件流在完成后关闭', { runId, sessionId })
         closeStream({
           markDisconnected: true,
-          detail: '最终回复已写入，会话流已正常结束。',
+          detail:
+            runStore.state.activeRun?.status === 'cancelled'
+              ? '运行已手动停止，会话流已正常结束。'
+              : '最终回复已写入，会话流已正常结束。',
         })
         return
       }
@@ -388,6 +407,37 @@ async function handleSubmit({ prompt }) {
   }
 }
 
+async function handleStopRun() {
+  const runId = String(activeRun.value?.runId || '')
+  const sessionId = String(activeRun.value?.sessionId || currentSessionId.value || '')
+  if (!runId || !canStopRun.value || stoppingRunId.value) {
+    return
+  }
+
+  stoppingRunId.value = runId
+  try {
+    const result = await apiClient.cancelRun(runId)
+    if (result.status === 'completed') {
+      runStore.markCompleted(runId, '停止请求到达前，本轮处理已经完成。')
+      syncSessionTranscript(sessionId)
+    } else if (result.status === 'failed') {
+      runStore.markErrored(runId, '停止请求到达前，本轮处理已经失败。')
+    } else {
+      runStore.markCancelled(runId, '已手动停止当前运行。')
+    }
+    closeStream()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '停止运行失败，请稍后再试。'
+    runStore.recordClientIssue({
+      sessionId,
+      label: '停止运行失败',
+      detail: message,
+    })
+  } finally {
+    stoppingRunId.value = ''
+  }
+}
+
 onMounted(async () => {
   setupViewportTracking()
   try {
@@ -435,7 +485,19 @@ onBeforeUnmount(() => {
         </dl>
 
         <div class="toolbar-actions">
-          <el-tag size="small" :type="runStatus === 'failed' ? 'danger' : runStatus === 'completed' ? 'success' : 'primary'" effect="light">
+          <el-tag
+            size="small"
+            :type="
+              runStatus === 'failed'
+                ? 'danger'
+                : runStatus === 'completed'
+                  ? 'success'
+                  : runStatus === 'cancelled' || runStatus === 'cancelling'
+                    ? 'warning'
+                    : 'primary'
+            "
+            effect="light"
+          >
             {{ runStatusLabel }}
           </el-tag>
           <el-button v-if="!isWideLayout" size="small" plain @click="toggleTimelinePanel">
@@ -461,6 +523,7 @@ onBeforeUnmount(() => {
 
         <section class="workspace-shell" :class="{ 'workspace-shell--wide': isWideLayout }" aria-label="聊天工作区">
           <ChatWorkspace
+            :can-stop="canStopRun"
             :current-session="currentSession"
             :messages="currentMessages"
             :pending-uploads="pendingUploads"
@@ -470,8 +533,10 @@ onBeforeUnmount(() => {
             :active-run="activeRun"
             :run-status="runStatus"
             :run-status-label="runStatusLabel"
+            :stopping="stoppingRun"
             :error="combinedError"
             @submit="handleSubmit"
+            @stop-run="handleStopRun"
             @upload="handleUpload"
           />
 
@@ -489,11 +554,14 @@ onBeforeUnmount(() => {
           >
             <ProgressTimeline
               :active-run="activeRun"
+              :can-stop="canStopRun"
               :connection-state="connectionState"
               :diagnostics="runtimeDiagnostics"
               :runtime-error="runError"
               :dismissible="!isWideLayout"
+              :stopping="stoppingRun"
               @close="closeTimelinePanel"
+              @stop-run="handleStopRun"
             />
           </aside>
         </section>

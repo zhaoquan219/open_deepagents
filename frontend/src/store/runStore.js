@@ -32,6 +32,12 @@ function statusTimelineLabel(status) {
   if (status === 'queued') {
     return '排队中'
   }
+  if (status === 'cancelling') {
+    return '停止中'
+  }
+  if (status === 'cancelled') {
+    return '已手动停止'
+  }
   if (status === 'running') {
     return '处理中'
   }
@@ -103,7 +109,7 @@ export function reduceRunState(activeRun, envelope) {
 
   if (envelope.type === 'status') {
     next.status = envelope.status || next.status
-    if (next.status === 'completed' || next.status === 'failed') {
+    if (['completed', 'failed', 'cancelled'].includes(next.status)) {
       next.finishedAt = envelope.timestamp || next.finishedAt
     }
     appendTimeline(next, envelope, statusTimelineLabel(next.status))
@@ -147,7 +153,7 @@ export function createRunStore() {
         runId,
         timestamp: new Date().toISOString(),
       },
-    ].slice(-12)
+    ]
   }
 
   function ensureSeenSet(runId) {
@@ -237,14 +243,19 @@ export function createRunStore() {
     state.activeRun.connected = false
     state.activeRun.connectionState = 'closed'
     state.connectionState = 'closed'
-    appendTimeline(state.activeRun, {
-      type: 'connection',
-      label: '实时连接已关闭',
-      detail,
-      status: state.activeRun.status === 'failed' ? 'failed' : 'completed',
-      timestamp: new Date().toISOString(),
-      connectionState: 'closed',
-    })
+      appendTimeline(state.activeRun, {
+        type: 'connection',
+        label: '实时连接已关闭',
+        detail,
+        status:
+          state.activeRun.status === 'failed'
+            ? 'failed'
+            : state.activeRun.status === 'cancelled'
+              ? 'cancelled'
+              : 'completed',
+        timestamp: new Date().toISOString(),
+        connectionState: 'closed',
+      })
   }
 
   function markCompleted(runId, detail = '本轮处理已完成。') {
@@ -262,6 +273,26 @@ export function createRunStore() {
       label: '处理完成',
       detail,
       status: 'completed',
+      timestamp: state.activeRun.finishedAt,
+    })
+  }
+
+  function markCancelled(runId, detail = '当前运行已手动停止。') {
+    if (!state.activeRun || state.activeRun.runId !== runId) {
+      return
+    }
+    state.error = ''
+    state.activeRun.status = 'cancelled'
+    state.activeRun.connected = false
+    state.activeRun.connectionState = 'closed'
+    state.activeRun.finishedAt = new Date().toISOString()
+    state.activeRun.lastError = ''
+    state.connectionState = 'closed'
+    appendTimeline(state.activeRun, {
+      type: 'status',
+      label: '运行已手动停止',
+      detail,
+      status: 'cancelled',
       timestamp: state.activeRun.finishedAt,
     })
   }
@@ -326,6 +357,7 @@ export function createRunStore() {
     getLastEventId,
     markConnected,
     markCompleted,
+    markCancelled,
     markConnecting,
     markDisconnected,
     markErrored,

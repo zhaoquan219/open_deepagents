@@ -213,6 +213,19 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
       return {
         runId: String(record.run_id ?? record.runId ?? record.id),
         sessionId: String(record.session_id ?? record.sessionId ?? sessionId),
+        status: String(record.status ?? 'running'),
+      }
+    },
+
+    async cancelRun(runId) {
+      const payload = await fetchJson(`${baseUrl}/runs/${encodeURIComponent(runId)}/cancel`, {
+        method: 'POST',
+      })
+      const record = payload.run ?? payload.data ?? payload
+      return {
+        runId: String(record.run_id ?? record.runId ?? record.id ?? runId),
+        sessionId: String(record.session_id ?? record.sessionId ?? ''),
+        status: String(record.status ?? 'cancelled'),
       }
     },
 

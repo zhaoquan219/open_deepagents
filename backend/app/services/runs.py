@@ -54,10 +54,15 @@ class RunState:
     envelopes: list[dict[str, Any]] = field(default_factory=list)
     subscribers: set[RunSubscriber] = field(default_factory=set)
     completed: bool = False
+    cancel_requested: bool = False
+    execution_loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
+    execution_task: asyncio.Task[None] | None = field(default=None, repr=False)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    def publish(self, envelope: dict[str, Any]) -> None:
+    def publish(self, envelope: dict[str, Any]) -> bool:
         with self.lock:
+            if self.completed:
+                return False
             self.envelopes.append(envelope)
             if envelope.get("type") == "status":
                 self.status = str(envelope.get("status") or self.status)
@@ -66,14 +71,26 @@ class RunState:
             subscribers = tuple(self.subscribers)
         for subscriber in subscribers:
             subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, envelope)
+        return True
 
     def finish(self, status: str) -> None:
+        self.terminalize(status)
+
+    def terminalize(self, status: str, envelope: dict[str, Any] | None = None) -> bool:
         with self.lock:
+            if self.completed:
+                return False
+            if envelope is not None:
+                self.envelopes.append(envelope)
             self.status = status
             self.completed = True
             subscribers = tuple(self.subscribers)
+        if envelope is not None:
+            for subscriber in subscribers:
+                subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, envelope)
         for subscriber in subscribers:
             subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, None)
+        return True
 
     def backlog_after(self, last_event_id: str | None) -> list[dict[str, Any]]:
         with self.lock:
@@ -89,6 +106,39 @@ class RunState:
     def discard_subscriber(self, subscriber: RunSubscriber) -> None:
         with self.lock:
             self.subscribers.discard(subscriber)
+
+    def bind_execution(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        task: asyncio.Task[None],
+    ) -> None:
+        with self.lock:
+            self.execution_loop = loop
+            self.execution_task = task
+            should_cancel = self.cancel_requested or self.completed
+        if should_cancel:
+            loop.call_soon_threadsafe(task.cancel)
+
+    def clear_execution(self, task: asyncio.Task[None]) -> None:
+        with self.lock:
+            if self.execution_task is task:
+                self.execution_task = None
+                self.execution_loop = None
+
+    def request_cancel(self) -> bool:
+        with self.lock:
+            if self.completed:
+                return False
+            self.cancel_requested = True
+            loop = self.execution_loop
+            task = self.execution_task
+        if loop is not None and task is not None:
+            loop.call_soon_threadsafe(task.cancel)
+        return True
+
+    def next_sequence(self) -> int:
+        with self.lock:
+            return len(self.envelopes) + 1
 
 
 class RunManager:
@@ -211,7 +261,10 @@ class RunService:
         attachments: list[dict[str, Any]],
     ) -> None:
         def runner() -> None:
-            asyncio.run(
+            state = self.manager.get(run_id)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            task = loop.create_task(
                 self._execute_run(
                     settings=settings,
                     run_id=run_id,
@@ -220,6 +273,16 @@ class RunService:
                     attachments=attachments,
                 )
             )
+            if state is not None:
+                state.bind_execution(loop, task)
+            try:
+                loop.run_until_complete(task)
+            except asyncio.CancelledError:
+                pass
+            finally:
+                if state is not None:
+                    state.clear_execution(task)
+                loop.close()
 
         try:
             loop = asyncio.get_running_loop()
@@ -228,6 +291,33 @@ class RunService:
             thread.start()
             return
         loop.run_in_executor(None, runner)
+
+    def cancel_run(self, *, run_id: str) -> RunState:
+        state = self.manager.get(run_id)
+        if state is None:
+            raise KeyError(run_id)
+
+        if state.status in {"completed", "failed", "cancelled"}:
+            return state
+
+        detail = "DeepAgents run was stopped by the user."
+        terminalized = self._finalize_cancelled(
+            run_id=run_id,
+            session_id=state.session_id,
+            detail=detail,
+            state=state,
+        )
+        if terminalized:
+            _log_run(
+                logging.INFO,
+                "run cancelled by user request",
+                event="run.cancelled",
+                phase="cancelling execution",
+                run_id=run_id,
+                session_id=state.session_id,
+                status="cancelled",
+            )
+        return state
 
     async def _execute_run(
         self,
@@ -240,6 +330,8 @@ class RunService:
     ) -> None:
         state = self.manager.get(run_id)
         if state is None:
+            return
+        if state.status == "cancelled" or state.completed:
             return
 
         started_at = time.perf_counter()
@@ -329,6 +421,8 @@ class RunService:
                 bridge_run_id=run_id,
                 config={"recursion_limit": settings.deepagents_recursion_limit},
             ):
+                if state.status == "cancelled" or state.completed:
+                    return
                 runtime_event_counts[envelope.event] += 1
                 runtime_run_id = str(envelope.data.get("runtime_run_id") or runtime_run_id)
                 sequence += 1
@@ -337,6 +431,8 @@ class RunService:
                     session_id=session_id,
                     sequence=sequence,
                 )
+                if state.status == "cancelled" or state.completed:
+                    return
                 if ui_event["type"] == "status" and ui_event["status"] == "completed":
                     pending_completion_event = ui_event
                 else:
@@ -367,6 +463,9 @@ class RunService:
                     runtime_run_id=str(ui_event.get("data", {}).get("runtime_run_id") or ""),
                 )
 
+            if state.status == "cancelled" or state.completed:
+                return
+
             _log_run(
                 logging.INFO,
                 "stream finished with "
@@ -386,6 +485,8 @@ class RunService:
             )
 
             if final_message and not saw_message_delta and assistant_message_count == 0:
+                if state.status == "cancelled" or state.completed:
+                    return
                 sequence += 1
                 delta_event = _ui_envelope(
                         run_id=run_id,
@@ -405,6 +506,8 @@ class RunService:
                 assistant_message_count == 0 or final_message != last_assistant_message
             )
             if should_emit_terminal_message:
+                if state.status == "cancelled" or state.completed:
+                    return
                 sequence += 1
                 final_event = _ui_envelope(
                         run_id=run_id,
@@ -427,6 +530,8 @@ class RunService:
                 state.publish(final_event)
 
             phase = "persisting final message"
+            if state.status == "cancelled" or state.completed:
+                return
             with self.database.session_factory() as db:
                 session = _require_session(db, session_id)
                 if final_message:
@@ -521,6 +626,26 @@ class RunService:
                 tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
                 ui_event_count=len(state.envelopes),
             )
+        except asyncio.CancelledError:
+            if state.status != "cancelled":
+                self._finalize_cancelled(
+                    run_id=run_id,
+                    session_id=session_id,
+                    detail="DeepAgents run was stopped before completion.",
+                    state=state,
+                )
+            _log_run(
+                logging.INFO,
+                "run execution stopped before completion",
+                event="run.execution_cancelled",
+                phase=phase,
+                run_id=run_id,
+                session_id=session_id,
+                status="cancelled",
+                runtime_event_count=sum(runtime_event_counts.values()),
+                runtime_run_id=runtime_run_id,
+            )
+            return
         except GraphRecursionError as exc:
             phase = "persisting fallback response"
             fallback_message = _build_recursion_fallback(prompt, agent_input["messages"])
@@ -682,6 +807,70 @@ class RunService:
                 tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
                 ui_event_count=len(state.envelopes),
             )
+
+    def _finalize_cancelled(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        detail: str,
+        state: RunState | None = None,
+    ) -> bool:
+        current_state = state or self.manager.get(run_id)
+        if current_state is not None and current_state.status == "cancelled":
+            current_state.request_cancel()
+            return False
+
+        with self.database.session_factory() as db:
+            run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
+            if run_record is None:
+                raise KeyError(run_id)
+            if run_record.status in {"completed", "failed", "cancelled"}:
+                if current_state is not None:
+                    current_state.request_cancel()
+                return False
+
+            sequence = (
+                current_state.next_sequence()
+                if current_state is not None
+                else run_record.event_count + 1
+            )
+            cancel_envelope = _ui_envelope(
+                run_id=run_id,
+                session_id=session_id,
+                sequence=sequence,
+                event_type="status",
+                status="cancelled",
+                label="Run cancelled",
+                detail=detail,
+                data={"cancelled_by": "user"},
+            )
+            record = RunEventViewRecord(
+                id=str(cancel_envelope["event_id"]),
+                run_id=run_id,
+                session_id=session_id,
+                sequence=sequence,
+                event_type="status",
+                status="cancelled",
+                step_id=None,
+                message_id=None,
+                payload=dict(cancel_envelope),
+            )
+            db.merge(record)
+            run_record.status = "cancelled"
+            run_record.error_text = detail
+            run_record.event_count = max(run_record.event_count, sequence)
+            run_record.completed_at = utc_now()
+            db.add(run_record)
+            session = _require_session(db, session_id)
+            session.last_run_id = run_id
+            db.add(session)
+            db.commit()
+
+        if current_state is not None:
+            current_state.request_cancel()
+            return current_state.terminalize("cancelled", cancel_envelope)
+        return True
 
     def _build_agent_input(
         self,
