@@ -1,3 +1,4 @@
+import json
 from pathlib import PureWindowsPath
 
 import app.core.config as config_module
@@ -109,3 +110,32 @@ def test_resolve_model_passes_configured_temperature_and_headers(monkeypatch) ->
         "HTTP-Referer": "https://app.example.com",
         "X-Title": "open_deepagents",
     }
+
+
+def test_runtime_config_logging_summary_is_safe_and_concise() -> None:
+    settings = Settings(
+        custom_api_key="secret-key",
+        custom_api_url="https://example.com/chat/completions",
+        custom_api_model="demo-model",
+        deepagents_tool_specs="pkg.tools:ONE,pkg.tools:TWO",
+        deepagents_middleware_specs="pkg.middleware:AUDIT",
+        deepagents_skills="/skills/project",
+        deepagents_memory="/memory/AGENTS.md",
+        deepagents_sandbox_kind="custom",
+        deepagents_sandbox_backend_spec="pkg.backend:factory",
+        deepagents_sandbox_root_dir="/tmp/workspace",
+    )
+
+    summary = settings.to_runtime_config().logging_summary()
+    summary_text = json.dumps(summary, sort_keys=True)
+
+    assert summary["model_kind"] == "custom_api"
+    assert summary["model_name"] == "demo-model"
+    assert summary["tool_count"] == 2
+    assert summary["middleware_count"] == 1
+    assert summary["skill_count"] == 1
+    assert summary["memory_count"] == 1
+    assert summary["sandbox_backend_spec_configured"] is True
+    assert summary["sandbox_root_dir_configured"] is True
+    assert "secret-key" not in summary_text
+    assert "example.com" not in summary_text

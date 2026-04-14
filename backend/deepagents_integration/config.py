@@ -68,6 +68,25 @@ class DeepAgentsRuntimeConfig:
     permissions: tuple[Mapping[str, Any], ...] = ()
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
 
+    def logging_summary(self) -> dict[str, Any]:
+        model_kind, model_name = _describe_model(self.model)
+        return {
+            "agent_name": self.agent_name or "",
+            "debug": self.debug,
+            "memory_count": len(self.memory),
+            "middleware_count": len(self.middleware_specs),
+            "model_kind": model_kind,
+            "model_name": model_name,
+            "permission_count": len(self.permissions),
+            "sandbox_backend_spec_configured": bool(self.sandbox.backend_spec),
+            "sandbox_kind": self.sandbox.kind,
+            "sandbox_root_dir_configured": bool(self.sandbox.root_dir),
+            "sandbox_timeout": self.sandbox.timeout,
+            "sandbox_virtual_mode": self.sandbox.virtual_mode,
+            "skill_count": len(self.skills),
+            "tool_count": len(self.tool_specs),
+        }
+
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> DeepAgentsRuntimeConfig:
         return cls(
@@ -108,3 +127,22 @@ def _mapping_tuple(value: Any) -> tuple[Mapping[str, Any], ...]:
     if not isinstance(value, list | tuple) or not all(isinstance(item, Mapping) for item in value):
         raise ValueError("Expected a list of mappings")
     return tuple(value)
+
+
+def _describe_model(model: Any) -> tuple[str, str]:
+    if model is None:
+        return "unset", ""
+    if isinstance(model, str):
+        provider, separator, name = model.partition(":")
+        if separator:
+            return provider or "string", name
+        return "string", model
+
+    model_name = (
+        getattr(model, "model_name", None)
+        or getattr(model, "model", None)
+        or getattr(model, "model_id", None)
+        or ""
+    )
+    model_kind = "custom_api" if model.__class__.__name__ == "ChatOpenAI" else type(model).__name__
+    return str(model_kind), str(model_name)

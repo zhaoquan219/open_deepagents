@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
+import time
+from collections import Counter
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -14,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.database import DatabaseState
+from app.core.logging import format_log_fields
 from app.db.models import (
     AgentRunRecord,
     MessageRecord,
@@ -24,6 +28,7 @@ from app.db.models import (
 from deepagents_integration import DeepAgentsRuntimeConfig, SseEventEnvelope, stream_sse_envelopes
 
 RunBuilder = Callable[[DeepAgentsRuntimeConfig], Any]
+logger = logging.getLogger(__name__)
 
 
 def utc_now() -> datetime:
@@ -168,6 +173,15 @@ class RunService:
             db.add(session)
             db.commit()
 
+        logger.info(
+            "run.created %s",
+            format_log_fields(
+                attachment_count=len(attachments),
+                prompt_chars=len(prompt),
+                run_id=state.run_id,
+                session_id=session_id,
+            ),
+        )
         state.publish(
             _ui_envelope(
                 run_id=state.run_id,
@@ -230,17 +244,52 @@ class RunService:
         if state is None:
             return
 
+        started_at = time.perf_counter()
+        runtime_event_counts: Counter[str] = Counter()
+        runtime_run_id = ""
+        agent_input: dict[str, list[dict[str, str]]] = {"messages": []}
+
         try:
+            logger.info(
+                "run.execution_started %s",
+                format_log_fields(run_id=run_id, session_id=session_id),
+            )
             runtime_config = settings.to_runtime_config()
+            logger.info(
+                "run.runtime_config %s",
+                format_log_fields(
+                    recursion_limit=settings.deepagents_recursion_limit,
+                    run_id=run_id,
+                    session_id=session_id,
+                    **runtime_config.logging_summary(),
+                ),
+            )
             if runtime_config.model is None:
                 raise RuntimeError("DEEPAGENTS_MODEL is not configured in backend/.env")
 
+            logger.info(
+                "run.agent_build_started %s",
+                format_log_fields(run_id=run_id, session_id=session_id),
+            )
             agent = self.builder(runtime_config)
+            logger.info(
+                "run.agent_build_completed %s",
+                format_log_fields(run_id=run_id, session_id=session_id),
+            )
             agent_input = self._build_agent_input(
                 session_id=session_id,
                 run_id=run_id,
                 prompt=prompt,
                 attachments=attachments,
+            )
+            logger.info(
+                "run.stream_started %s",
+                format_log_fields(
+                    attachment_count=len(attachments),
+                    message_count=len(agent_input["messages"]),
+                    run_id=run_id,
+                    session_id=session_id,
+                ),
             )
 
             final_message = ""
@@ -254,6 +303,8 @@ class RunService:
                 bridge_run_id=run_id,
                 config={"recursion_limit": settings.deepagents_recursion_limit},
             ):
+                runtime_event_counts[envelope.event] += 1
+                runtime_run_id = str(envelope.data.get("runtime_run_id") or runtime_run_id)
                 sequence += 1
                 ui_event = _bridge_to_ui(
                     envelope=envelope,
@@ -273,6 +324,7 @@ class RunService:
                 elif candidate := _extract_message_text(ui_event.get("data")):
                     final_message = candidate
                 self._sync_runtime_link(
+                    run_id=run_id,
                     session_id=session_id,
                     runtime_run_id=str(ui_event.get("data", {}).get("runtime_run_id") or ""),
                 )
@@ -362,6 +414,28 @@ class RunService:
                 )
                 state.publish(completion_envelope)
             state.finish("completed")
+            if not runtime_run_id:
+                logger.warning(
+                    "run.runtime_link_missing %s",
+                    format_log_fields(run_id=run_id, session_id=session_id, status="completed"),
+                )
+            logger.info(
+                "run.completed %s",
+                format_log_fields(
+                    assistant_chars=len(final_message),
+                    duration_ms=_elapsed_ms(started_at),
+                    message_delta_events=runtime_event_counts["message.delta"],
+                    run_id=run_id,
+                    runtime_event_count=sum(runtime_event_counts.values()),
+                    runtime_run_id=runtime_run_id,
+                    sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
+                    session_id=session_id,
+                    skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
+                    status="completed",
+                    tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
+                    ui_event_count=len(state.envelopes),
+                ),
+            )
         except GraphRecursionError as exc:
             fallback_message = _build_recursion_fallback(prompt, agent_input["messages"])
             fallback_event = _ui_envelope(
@@ -418,6 +492,28 @@ class RunService:
                 db.add(recovered_session)
                 db.commit()
             state.finish("completed")
+            if not runtime_run_id:
+                logger.warning(
+                    "run.runtime_link_missing %s",
+                    format_log_fields(run_id=run_id, session_id=session_id, status="completed"),
+                )
+            logger.warning(
+                "run.recursion_fallback %s",
+                format_log_fields(
+                    assistant_chars=len(fallback_message),
+                    duration_ms=_elapsed_ms(started_at),
+                    error_type=type(exc).__name__,
+                    run_id=run_id,
+                    runtime_event_count=sum(runtime_event_counts.values()),
+                    runtime_run_id=runtime_run_id,
+                    sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
+                    session_id=session_id,
+                    skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
+                    status="completed",
+                    tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
+                    ui_event_count=len(state.envelopes),
+                ),
+            )
         except Exception as exc:
             error_envelope = _ui_envelope(
                     run_id=run_id,
@@ -460,6 +556,27 @@ class RunService:
                     db.add(failed_session)
                     db.commit()
             state.finish("failed")
+            if not runtime_run_id:
+                logger.warning(
+                    "run.runtime_link_missing %s",
+                    format_log_fields(run_id=run_id, session_id=session_id, status="failed"),
+                )
+            logger.exception(
+                "run.failed %s",
+                format_log_fields(
+                    duration_ms=_elapsed_ms(started_at),
+                    error_type=type(exc).__name__,
+                    run_id=run_id,
+                    runtime_event_count=sum(runtime_event_counts.values()),
+                    runtime_run_id=runtime_run_id,
+                    sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
+                    session_id=session_id,
+                    skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
+                    status="failed",
+                    tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
+                    ui_event_count=len(state.envelopes),
+                ),
+            )
 
     def _build_agent_input(
         self,
@@ -526,7 +643,7 @@ class RunService:
                 db.add(run_record)
             db.commit()
 
-    def _sync_runtime_link(self, *, session_id: str, runtime_run_id: str) -> None:
+    def _sync_runtime_link(self, *, run_id: str, session_id: str, runtime_run_id: str) -> None:
         if not runtime_run_id:
             return
         with self.database.session_factory() as db:
@@ -537,9 +654,42 @@ class RunService:
             )
             if record is None:
                 record = SessionRuntimeLinkRecord(session_id=session_id)
+            elif record.runtime_run_id and record.runtime_run_id != runtime_run_id:
+                logger.warning(
+                    "run.session_runtime_link_changed %s",
+                    format_log_fields(
+                        previous_runtime_run_id=record.runtime_run_id,
+                        run_id=run_id,
+                        runtime_run_id=runtime_run_id,
+                        session_id=session_id,
+                    ),
+                )
             record.runtime_run_id = runtime_run_id
             record.last_seen_at = utc_now()
             db.add(record)
+            run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
+            if run_record is None:
+                logger.warning(
+                    "run.runtime_link_run_missing %s",
+                    format_log_fields(
+                        run_id=run_id,
+                        runtime_run_id=runtime_run_id,
+                        session_id=session_id,
+                    ),
+                )
+            else:
+                if run_record.runtime_run_id and run_record.runtime_run_id != runtime_run_id:
+                    logger.warning(
+                        "run.runtime_run_id_changed %s",
+                        format_log_fields(
+                            previous_runtime_run_id=run_record.runtime_run_id,
+                            run_id=run_id,
+                            runtime_run_id=runtime_run_id,
+                            session_id=session_id,
+                        ),
+                    )
+                run_record.runtime_run_id = runtime_run_id
+                db.add(run_record)
             db.commit()
 
 
@@ -711,3 +861,11 @@ def _build_recursion_fallback(prompt: str, messages: list[dict[str, str]]) -> st
         "我已经尝试使用可用工具处理这个问题，但执行过程没有在预期步数内收敛。"
         "请换一个更具体的问法，或稍后重试。"
     )
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return int((time.perf_counter() - started_at) * 1000)
+
+
+def _count_runtime_events(counter: Counter[str], prefix: str) -> int:
+    return sum(count for name, count in counter.items() if name.startswith(prefix))

@@ -228,6 +228,20 @@ class Settings(BaseSettings):
     def get_cors_origins(self) -> list[str]:
         return list(self._split_csv(self.cors_allowed_origins))
 
+    def logging_summary(self) -> dict[str, object]:
+        return {
+            "app_name": self.app_name,
+            "cors_origin_count": len(self.get_cors_origins()),
+            "custom_api_enabled": bool(
+                self.custom_api_key and self.custom_api_url and self.custom_api_model
+            ),
+            "database_backend": "sqlite" if self.is_sqlite else "mysql" if self.is_mysql else "other",
+            "deepagents_agent_name": self.deepagents_agent_name,
+            "deepagents_model_configured": bool(self.deepagents_model or self.custom_api_model),
+            "sandbox_kind": self.deepagents_sandbox_kind,
+            "upload_storage_dir": str(self.upload_storage_dir),
+        }
+
     @staticmethod
     def _split_csv(value: str | None) -> tuple[str, ...]:
         if not value:

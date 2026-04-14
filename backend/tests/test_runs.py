@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -218,6 +219,7 @@ def test_run_lifecycle_and_stream(tmp_path) -> None:
             assert run_record is not None
             assert run_record.status == "completed"
             assert run_record.final_output_text == "Hello world"
+            assert run_record.runtime_run_id == "runtime-1"
 
             event_views = (
                 db.query(RunEventViewRecord)
@@ -442,3 +444,58 @@ def test_graph_recursion_error_returns_fallback_assistant_message(tmp_path) -> N
         transcript = client.get(f"/api/sessions/{session_id}/messages", headers=headers)
         contents = [item["content"] for item in transcript.json()]
         assert any("暂时无法给出更具体的目录路径" in content for content in contents)
+
+
+def test_run_logging_captures_lifecycle_without_prompt_or_attachment_content(
+    tmp_path,
+    caplog,
+) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'logging.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = build_fake_runtime
+
+    caplog.set_level(logging.INFO, logger="app.services.runs")
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post("/api/sessions", headers=headers, json={"title": "Logging demo"})
+        session_id = session.json()["id"]
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "super secret prompt",
+                "attachments": [{"name": "secret.txt", "content": "top-secret attachment"}],
+            },
+        )
+        run_id = run.json()["run_id"]
+
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and '"status": "completed"' in line:
+                    break
+
+    messages = [record.getMessage() for record in caplog.records]
+
+    assert any("run.created" in message for message in messages)
+    assert any("run.runtime_config" in message for message in messages)
+    assert any("run.agent_build_completed" in message for message in messages)
+    assert any("run.stream_started" in message for message in messages)
+    assert any("run.completed" in message for message in messages)
+    assert all("super secret prompt" not in message for message in messages)
+    assert all("top-secret attachment" not in message for message in messages)
+    assert any('"runtime_run_id": "runtime-1"' in message for message in messages)
