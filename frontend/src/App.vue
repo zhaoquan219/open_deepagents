@@ -523,12 +523,14 @@ onBeforeUnmount(() => {
 
         <section class="workspace-shell" :class="{ 'workspace-shell--wide': isWideLayout }" aria-label="聊天工作区">
           <ChatWorkspace
+            :can-stop="canStopRun"
             :current-session="currentSession"
             :messages="currentMessages"
             :pending-uploads="pendingUploads"
             :loading="loadingMessages"
             :uploading="uploading"
             :submitting="submitting"
+            :active-run="activeRun"
             :run-status="runStatus"
             :run-status-label="runStatusLabel"
             :stopping="stoppingRun"
@@ -557,7 +559,9 @@ onBeforeUnmount(() => {
               :diagnostics="runtimeDiagnostics"
               :runtime-error="runError"
               :dismissible="!isWideLayout"
+              :stopping="stoppingRun"
               @close="closeTimelinePanel"
+              @stop-run="handleStopRun"
             />
           </aside>
         </section>

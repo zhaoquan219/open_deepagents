@@ -26,8 +26,12 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  stopping: {
+    type: Boolean,
+    default: false,
+  },
 })
-defineEmits(['close'])
+defineEmits(['close', 'stop-run'])
 
 function statusLabel(status) {
   if (status === 'info') return '信息'
@@ -178,16 +182,22 @@ function statusTagType(status) {
         </p>
       </div>
       <div class="runtime-header-actions">
+        <el-button
+          v-if="props.activeRun && props.canStop"
+          size="small"
+          plain
+          type="danger"
+          :loading="props.stopping"
+          @click="$emit('stop-run')"
+        >
+          {{ props.stopping ? '停止中…' : '停止运行' }}
+        </el-button>
         <el-tag size="small" :type="statusTagType(summaryStatus)" effect="light">
           {{ statusLabel(summaryStatus) }}
         </el-tag>
         <el-button v-if="props.dismissible" size="small" text @click="$emit('close')">收起</el-button>
       </div>
     </div>
-
-    <p v-if="props.activeRun && props.canStop" class="runtime-action-hint">
-      停止当前运行请使用底部输入区的主按钮。
-    </p>
 
     <el-empty
       v-if="!props.activeRun && props.diagnostics.length === 0"

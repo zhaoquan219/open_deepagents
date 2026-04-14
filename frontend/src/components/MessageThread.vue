@@ -89,7 +89,7 @@ watch(
       <div class="message-bubble">
         <div class="message-header">
           <div class="message-header-main">
-            <span class="message-role-pill">{{ roleLabel(message.role) }}</span>
+            <strong>{{ roleLabel(message.role) }}</strong>
             <span class="message-timestamp">{{ formatDateTime(message.createdAt) }}</span>
           </div>
         </div>

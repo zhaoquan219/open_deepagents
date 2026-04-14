@@ -19,11 +19,11 @@
   --danger-soft: rgba(181, 72, 97, 0.12);
   --warning: #93691a;
   --warning-soft: rgba(147, 105, 26, 0.12);
-  --shadow-sm: 0 18px 44px rgba(35, 52, 73, 0.08);
-  --shadow-lg: 0 32px 72px rgba(35, 52, 73, 0.18);
-  --shadow-panel: 0 24px 52px rgba(26, 44, 65, 0.12);
-  --shadow-bubble: 0 18px 40px rgba(27, 42, 61, 0.12);
-  --shadow-bubble-user: 0 20px 44px rgba(10, 76, 146, 0.24);
+  --shadow-sm: 0 14px 34px rgba(35, 52, 73, 0.08);
+  --shadow-lg: 0 28px 60px rgba(35, 52, 73, 0.16);
+  --shadow-panel: 0 18px 38px rgba(26, 44, 65, 0.1);
+  --shadow-bubble: 0 16px 34px rgba(27, 42, 61, 0.09);
+  --shadow-bubble-user: 0 18px 38px rgba(10, 76, 146, 0.22);
   --radius-xl: 24px;
   --radius-lg: 18px;
   --radius-md: 14px;
@@ -88,10 +88,10 @@ button {
 .app-shell {
   height: 100dvh;
   min-height: 100dvh;
-  padding: 20px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   overflow: hidden;
 }
 
@@ -111,9 +111,9 @@ button {
 .app-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(240px, auto) auto;
-  gap: 14px 18px;
+  gap: 12px 16px;
   align-items: center;
-  padding: 18px 22px;
+  padding: 14px 18px;
 }
 
 .toolbar-brand,
@@ -181,13 +181,10 @@ button {
 .workspace-summary-list div,
 .runtime-summary-grid div {
   min-width: 0;
-  padding: 12px 14px;
-  border-radius: 16px;
-  border: 1px solid rgba(22, 48, 74, 0.1);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(247, 251, 255, 0.92) 100%);
-  box-shadow:
-    0 12px 26px rgba(30, 47, 69, 0.05),
-    inset 0 1px 0 rgba(255, 255, 255, 0.44);
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: var(--surface-strong);
 }
 
 .toolbar-metrics dt,
@@ -208,7 +205,7 @@ button {
 .auth-summary dd {
   margin: 0;
   color: var(--text);
-  font-size: 1rem;
+  font-size: 0.98rem;
   font-weight: 700;
   overflow-wrap: anywhere;
 }
@@ -235,7 +232,7 @@ button {
   min-width: 0;
   display: grid;
   grid-template-columns: clamp(220px, 21vw, 280px) minmax(0, 1fr);
-  gap: 16px;
+  gap: 12px;
   overflow: hidden;
 }
 
@@ -249,14 +246,12 @@ button {
 
 .sidebar-shell {
   display: flex;
-  background: linear-gradient(180deg, rgba(255, 251, 246, 0.94) 0%, rgba(244, 249, 255, 0.92) 100%);
 }
 
 .workspace-shell {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  background: linear-gradient(180deg, rgba(255, 252, 247, 0.96) 0%, rgba(242, 248, 255, 0.92) 100%);
 }
 
 .workspace-shell--wide {
@@ -280,19 +275,9 @@ button {
   display: flex;
   align-items: stretch;
   justify-content: space-between;
-  gap: 16px;
-  min-height: 144px;
-  padding: 22px 22px 18px;
-  border-bottom: 1px solid var(--line);
-}
-
-.sidebar-header-main,
-.workspace-header-main {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
   gap: 12px;
+  padding: 16px 18px 14px;
+  border-bottom: 1px solid var(--line);
 }
 
 .workspace {
@@ -301,10 +286,17 @@ button {
   height: 100%;
 }
 
+.workspace-header-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+}
+
 .workspace-header-top {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
-  gap: 14px 18px;
+  gap: 12px 16px;
   align-items: start;
 }
 
@@ -323,7 +315,7 @@ button {
 
 .sidebar-toolbar {
   justify-content: space-between;
-  padding: 14px 22px 0;
+  padding: 10px 18px 0;
 }
 
 .inline-error {
@@ -333,7 +325,7 @@ button {
 
 .sidebar-hint,
 .workspace-error {
-  padding: 0 22px 12px;
+  padding: 0 18px 10px;
 }
 
 .session-list,
@@ -362,10 +354,10 @@ button {
 
 .session-list {
   min-height: 0;
-  padding: 14px;
+  padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
 .session-item {
@@ -376,14 +368,12 @@ button {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid rgba(22, 48, 74, 0.1);
-  border-radius: 20px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(247, 243, 236, 0.82) 100%);
-  box-shadow:
-    0 14px 32px rgba(31, 49, 72, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.46);
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.78) 0%, rgba(248, 244, 237, 0.7) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.36);
   transition:
     border-color 0.2s ease,
     transform 0.2s ease,
@@ -394,11 +384,11 @@ button {
 .session-card:hover,
 .session-card.active {
   border-color: rgba(13, 102, 194, 0.24);
-  background: linear-gradient(180deg, rgba(244, 249, 255, 0.98) 0%, rgba(255, 255, 255, 0.92) 100%);
+  background: linear-gradient(180deg, rgba(244, 249, 255, 0.95) 0%, rgba(255, 255, 255, 0.88) 100%);
   box-shadow:
-    0 18px 40px rgba(13, 102, 194, 0.12),
+    0 14px 30px rgba(13, 102, 194, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.5);
-  transform: translateY(-2px);
+  transform: translateY(-1px);
 }
 
 .session-button {
@@ -432,7 +422,7 @@ button {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .session-title {
@@ -450,30 +440,7 @@ button {
 
 .session-delete {
   margin-left: auto;
-  align-self: center;
   color: var(--danger);
-}
-
-.sidebar-header-actions,
-.workspace-header-actions {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 10px;
-  flex: 0 0 auto;
-}
-
-.sidebar-header-meta {
-  margin: 0;
-  padding: 7px 11px;
-  border-radius: 999px;
-  border: 1px solid rgba(13, 102, 194, 0.14);
-  background: rgba(255, 255, 255, 0.84);
-  color: var(--text-soft);
-  font-size: 0.76rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
 }
 
 .workspace-summary-list {
@@ -486,8 +453,7 @@ button {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  padding: 18px 20px 0;
-  background: linear-gradient(180deg, rgba(241, 246, 252, 0.42) 0%, rgba(255, 252, 246, 0.64) 100%);
+  background: linear-gradient(180deg, rgba(241, 246, 252, 0.48) 0%, rgba(255, 252, 246, 0.7) 100%);
 }
 
 .workspace-thread-shell {
@@ -495,32 +461,25 @@ button {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid rgba(24, 49, 74, 0.1);
-  border-radius: 24px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(248, 251, 255, 0.94) 100%);
-  box-shadow:
-    0 24px 52px rgba(29, 47, 69, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.5);
 }
 
 .workspace-error-alert {
-  margin: 0 0 14px;
+  margin: 12px 12px 0;
 }
 
 .message-thread {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 22px 24px 26px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
 .message-row {
   display: flex;
   width: 100%;
-  padding-inline: 2px;
 }
 
 .message-row[data-role="user"] {
@@ -534,41 +493,31 @@ button {
 
 .message-bubble {
   width: auto;
-  position: relative;
-  max-width: min(80%, 820px);
+  max-width: min(82%, 800px);
   min-width: 0;
-  padding: 16px 18px 14px;
-  border-radius: 24px;
-  border: 1px solid rgba(24, 49, 74, 0.11);
+  padding: 13px 15px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.985) 0%, rgba(247, 251, 255, 0.94) 100%);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(250, 252, 255, 0.92) 100%);
   box-shadow:
     var(--shadow-bubble),
-    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+    inset 0 1px 0 rgba(255, 255, 255, 0.42);
   overflow: hidden;
-}
-
-.message-bubble::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent 38%);
-  pointer-events: none;
 }
 
 .message-row[data-role="assistant"] .message-bubble,
 .message-row[data-role="system"] .message-bubble {
-  border-top-left-radius: 12px;
+  border-top-left-radius: 10px;
 }
 
 .message-row[data-role="user"] .message-bubble {
   border-color: transparent;
-  border-top-right-radius: 12px;
+  border-top-right-radius: 10px;
   background: var(--user-bubble);
   box-shadow:
     var(--shadow-bubble-user),
-    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
   color: #ffffff;
 }
 
@@ -578,36 +527,15 @@ button {
 }
 
 .message-header {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .message-header-main {
   justify-content: space-between;
 }
 
-.message-role-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 5px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(13, 102, 194, 0.14);
-  background: rgba(11, 92, 173, 0.08);
-  color: var(--accent-strong);
-  font-size: 0.76rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
-.message-row[data-role="user"] .message-role-pill {
-  border-color: rgba(255, 255, 255, 0.26);
-  background: rgba(255, 255, 255, 0.12);
-  color: #ffffff;
-}
-
-.message-row[data-role="system"] .message-role-pill {
-  border-color: rgba(147, 105, 26, 0.16);
-  background: rgba(147, 105, 26, 0.08);
-  color: #75541b;
+.message-header strong {
+  font-size: 0.86rem;
 }
 
 .markdown-content,
@@ -657,7 +585,7 @@ button {
 }
 
 .attachment-list {
-  margin-top: 12px;
+  margin-top: 10px;
 }
 
 .attachment-list li,
@@ -665,9 +593,8 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 12px;
+  padding: 6px 10px;
   border-radius: 999px;
-  border: 1px solid rgba(13, 102, 194, 0.12);
   background: rgba(13, 102, 194, 0.08);
   color: var(--accent-strong);
   font-size: 0.78rem;
@@ -681,10 +608,10 @@ button {
 .empty-state,
 .runtime-empty,
 .sidebar-empty {
-  margin: 18px;
-  padding: 24px 22px;
+  margin: 12px;
+  padding: 18px 16px;
   border: 1px dashed var(--line-strong);
-  border-radius: 22px;
+  border-radius: 18px;
   background: linear-gradient(180deg, rgba(242, 247, 254, 0.84) 0%, rgba(255, 252, 246, 0.86) 100%);
 }
 
@@ -711,22 +638,16 @@ button {
 }
 
 .composer-panel {
-  margin: 16px 20px 20px;
-  padding: 18px 20px 20px;
-  border: 1px solid rgba(23, 44, 67, 0.1);
-  border-radius: 22px;
-  background: linear-gradient(180deg, rgba(255, 250, 243, 0.96) 0%, rgba(247, 251, 255, 0.94) 100%);
-  box-shadow:
-    0 18px 40px rgba(29, 46, 69, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.48);
+  padding: 14px 16px 16px;
+  border-top: 1px solid var(--line);
+  background: rgba(255, 249, 241, 0.92);
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
 }
 
 .upload-row {
   justify-content: space-between;
-  align-items: flex-start;
 }
 
 .upload-row-main {
@@ -747,13 +668,13 @@ button {
 }
 
 .composer-textarea .el-textarea__inner {
-  min-height: 96px !important;
+  min-height: 88px !important;
   max-height: 190px;
-  padding: 14px 15px;
-  border-radius: 18px;
+  padding: 10px 12px;
+  border-radius: 14px;
   line-height: 1.55;
   font-size: 0.92rem;
-  background: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.86);
 }
 
 .composer-panel .el-textarea__inner,
@@ -772,14 +693,10 @@ button {
   justify-content: space-between;
 }
 
-.composer-primary-button {
-  min-width: 104px;
-}
-
 .timeline-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(14, 24, 36, 0.22);
+  background: rgba(14, 24, 36, 0.18);
   z-index: 2;
 }
 
@@ -787,13 +704,8 @@ button {
   display: flex;
   min-width: 0;
   min-height: 0;
-  margin: 18px 18px 18px 0;
-  border: 1px solid rgba(23, 44, 67, 0.1);
-  border-radius: 24px;
-  background: linear-gradient(180deg, rgba(245, 249, 255, 0.94) 0%, rgba(255, 251, 245, 0.96) 100%);
-  box-shadow:
-    0 22px 46px rgba(29, 46, 69, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  border-left: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(245, 249, 255, 0.82) 0%, rgba(255, 251, 245, 0.94) 100%);
   overflow: hidden;
 }
 
@@ -813,10 +725,10 @@ button {
 .runtime-card {
   height: 100%;
   min-height: 0;
-  padding: 18px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
   overflow: hidden;
 }
 
@@ -825,6 +737,19 @@ button {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+.workspace-header-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.sidebar-header > .el-button {
+  align-self: flex-start;
+  margin-top: 2px;
 }
 
 .runtime-summary-grid {
@@ -839,8 +764,8 @@ button {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 2px;
+  gap: 8px;
+  padding: 2px 2px 4px 0;
 }
 
 .runtime-entry {
@@ -848,13 +773,13 @@ button {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: start;
-  padding: 12px 14px;
-  border-radius: 16px;
-  border: 1px solid rgba(24, 49, 74, 0.1);
-  background: rgba(255, 255, 255, 0.9);
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.86);
   box-shadow:
-    0 14px 30px rgba(33, 49, 71, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+    0 10px 22px rgba(33, 49, 71, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.38);
 }
 
 .runtime-label {
@@ -866,17 +791,6 @@ button {
 .runtime-entry[data-status="cancelled"] {
   border-color: rgba(147, 105, 26, 0.18);
   background: linear-gradient(180deg, rgba(255, 250, 240, 0.96) 0%, rgba(255, 246, 230, 0.9) 100%);
-}
-
-.runtime-action-hint {
-  margin: -4px 0 0;
-  padding: 10px 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(181, 72, 97, 0.12);
-  background: rgba(181, 72, 97, 0.06);
-  color: var(--text-soft);
-  font-size: 0.84rem;
-  line-height: 1.5;
 }
 
 .auth-layout {
@@ -964,7 +878,7 @@ button {
 
 @media (max-width: 900px) {
   .app-shell {
-    padding: 16px;
+    padding: 14px;
   }
 
   .workspace-summary-list {
@@ -986,7 +900,6 @@ button {
     align-items: stretch;
   }
 
-  .sidebar-header-actions,
   .workspace-header-actions {
     align-items: stretch;
   }
@@ -1020,6 +933,7 @@ button {
   .app-toolbar,
   .sidebar-header,
   .workspace-header,
+  .composer-panel,
   .runtime-card {
     padding-left: 16px;
     padding-right: 16px;
@@ -1030,22 +944,9 @@ button {
     padding-right: 16px;
   }
 
-  .workspace-main {
-    padding: 14px 14px 0;
-  }
-
-  .composer-panel {
-    margin: 14px;
-    padding: 16px;
-  }
-
   .message-thread,
   .session-list {
     padding: 12px;
-  }
-
-  .timeline-shell {
-    margin: 14px 14px 14px 0;
   }
 
   .message-bubble {
