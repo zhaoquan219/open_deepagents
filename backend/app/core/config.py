@@ -1,5 +1,6 @@
+import json
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from langchain_openai import ChatOpenAI
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -46,6 +47,8 @@ class Settings(BaseSettings):
     custom_api_key: str | None = None
     custom_api_url: str | None = None
     custom_api_model: str | None = None
+    custom_api_temperature: float | None = None
+    custom_api_default_headers: dict[str, str] = Field(default_factory=dict)
 
     model_config = SettingsConfigDict(
         env_file=BACKEND_ENV_PATH,
@@ -62,6 +65,7 @@ class Settings(BaseSettings):
         "custom_api_key",
         "custom_api_url",
         "custom_api_model",
+        "custom_api_temperature",
         mode="before",
     )
     @classmethod
@@ -76,6 +80,47 @@ class Settings(BaseSettings):
         if value in ("", None):
             return None
         return value
+
+    @field_validator("custom_api_default_headers", mode="before")
+    @classmethod
+    def parse_custom_api_default_headers(cls, value: object) -> dict[str, str]:
+        if value in ("", None):
+            return {}
+        if isinstance(value, dict):
+            if not all(
+                isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+            ):
+                raise ValueError("custom_api_default_headers must use string keys and values")
+            return dict(value)
+        if not isinstance(value, str):
+            raise ValueError("custom_api_default_headers must be a JSON object or KEY=VALUE pairs")
+
+        text = value.strip()
+        if not text:
+            return {}
+        if text.startswith("{"):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError("custom_api_default_headers JSON is invalid") from exc
+            if not isinstance(parsed, dict) or not all(
+                isinstance(key, str) and isinstance(item, str) for key, item in parsed.items()
+            ):
+                raise ValueError("custom_api_default_headers JSON must be an object of strings")
+            return dict(parsed)
+
+        headers: dict[str, str] = {}
+        for raw_item in text.replace("\n", ",").split(","):
+            item = raw_item.strip()
+            if not item:
+                continue
+            key, separator, header_value = item.partition("=")
+            if not separator or not key.strip():
+                raise ValueError(
+                    "custom_api_default_headers must be JSON or comma-separated KEY=VALUE pairs"
+                )
+            headers[key.strip()] = header_value.strip()
+        return headers
 
     @model_validator(mode="after")
     def apply_runtime_defaults(self) -> "Settings":
@@ -137,7 +182,9 @@ class Settings(BaseSettings):
         return (
             {
                 "operations": ["read"],
-                "paths": [str(path) for path in DEFAULT_SANDBOX_READ_PATHS],
+                "paths": [
+                    normalize_sandbox_permission_path(path) for path in DEFAULT_SANDBOX_READ_PATHS
+                ],
             },
         )
 
@@ -148,11 +195,33 @@ class Settings(BaseSettings):
                 base_url = base_url[: -len("/chat/completions")]
             elif not base_url.endswith("/v1"):
                 base_url = f"{base_url}/v1"
+            api_key = SecretStr(self.custom_api_key)
+            if self.custom_api_temperature is not None and self.custom_api_default_headers:
+                return ChatOpenAI(
+                    model=self.custom_api_model,
+                    api_key=api_key,
+                    base_url=base_url,
+                    temperature=self.custom_api_temperature,
+                    default_headers=self.custom_api_default_headers,
+                )
+            if self.custom_api_temperature is not None:
+                return ChatOpenAI(
+                    model=self.custom_api_model,
+                    api_key=api_key,
+                    base_url=base_url,
+                    temperature=self.custom_api_temperature,
+                )
+            if self.custom_api_default_headers:
+                return ChatOpenAI(
+                    model=self.custom_api_model,
+                    api_key=api_key,
+                    base_url=base_url,
+                    default_headers=self.custom_api_default_headers,
+                )
             return ChatOpenAI(
                 model=self.custom_api_model,
-                api_key=SecretStr(self.custom_api_key),
+                api_key=api_key,
                 base_url=base_url,
-                temperature=0,
             )
         return self.deepagents_model
 
@@ -169,3 +238,12 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
+
+
+def normalize_sandbox_permission_path(path: str | Path | PurePath) -> str:
+    """Return a DeepAgents-safe absolute path string across POSIX and Windows hosts."""
+
+    normalized = path.as_posix() if isinstance(path, PurePath) else str(path).replace("\\", "/")
+    if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/":
+        return f"/{normalized}"
+    return normalized

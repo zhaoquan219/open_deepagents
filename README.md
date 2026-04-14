@@ -1,178 +1,211 @@
 # open_deepagents
 
-`open_deepagents` 是一个用于实验和搭建 DeepAgents Web 工作台的全栈脚手架。
+`open_deepagents` is a full-stack scaffold for building a DeepAgents-powered web workspace.
 
-它当前包含两条真实主线：
+It is designed as a practical foundation rather than a finished product. The repository already supports local end-to-end runs, administrator authentication, session management, uploads, run streaming, and DeepAgents runtime integration, while still leaving room for project-specific extensions.
 
-- `backend/`：基于 FastAPI 的后端服务，负责鉴权、会话、消息、上传、运行流和 DeepAgents 集成
-- `frontend/`：基于 Vue 3 + Vite 的操作台前端，负责会话管理、聊天界面、流式事件展示和运行时间线
+Chinese documentation: [README_CH.md](README_CH.md)
 
-这个仓库已经能完成本地端到端运行，但定位仍然是“可继续扩展的基础工程”，而不是开箱即用的成品平台。
+## Architecture
 
-## 项目包含什么
+The repository is split into two main application lanes:
 
-### 后端能力
+- `backend/`: a FastAPI service that owns authentication, persistence, uploads, run orchestration, and DeepAgents runtime integration.
+- `frontend/`: a Vue 3 + Vite console for login, session management, chat, attachments, streamed events, and run timelines.
 
-- FastAPI 应用工厂与 `/health` 健康检查
-- 单管理员 Bearer Token 鉴权
-- 会话、消息、上传的 CRUD
-- DeepAgents 运行创建、事件桥接与 SSE 流输出
-- 本地文件上传存储
-- 可配置的工具、中间件、技能、记忆、沙箱后端
-- SQLite 本地默认配置，以及 MySQL 部署兼容
+The current request flow is:
 
-### 前端能力
+1. An administrator signs in from the frontend.
+2. The frontend stores the bearer token and calls the backend API.
+3. A user creates or reuses a session.
+4. The user uploads files and submits a prompt.
+5. The backend creates a run, stores the user message, and starts a DeepAgents runtime.
+6. Runtime events are bridged into the frontend SSE envelope format.
+7. The frontend updates the chat transcript and run timeline from the streamed events.
 
-- 管理员登录页
-- 会话列表与切换
-- 聊天工作区与附件上传
-- Markdown 与 Mermaid 渲染
-- 基于 SSE 的运行状态流
-- 运行步骤、工具、技能、沙箱事件时间线
+For a deeper repository map, see [docs/repository-architecture.md](docs/repository-architecture.md).
 
-### 工程能力
-
-- SSE 契约文件
-- 仓库结构审计脚本
-- 后端、前端、契约相关测试
-- 扩展模板与架构说明文档
-
-## 仓库结构
+## Repository layout
 
 ```text
 .
 ├── backend/
-│   ├── app/                          FastAPI 主应用
-│   ├── deepagents_integration/       DeepAgents 运行时桥接层
-│   ├── extensions/                   工具 / 中间件 / 技能 / 沙箱扩展模板
-│   ├── prompts/                      项目内管理的系统提示词
-│   └── tests/                        后端测试
+│   ├── app/                          FastAPI application code
+│   ├── deepagents_integration/       Thin DeepAgents runtime bridge
+│   ├── extensions/                   Tool / middleware / skill / sandbox templates
+│   ├── prompts/                      Project-managed runtime prompt
+│   └── tests/                        Backend tests
 ├── frontend/
-│   └── src/                          前端源码
+│   └── src/                          Frontend source
 ├── packages/
-│   ├── contracts/                    共享契约
+│   ├── contracts/                    Shared contracts
 │   └── extension-manifest.template.json
-├── docs/                             架构与清理说明
-├── tests/                            仓库级测试
-└── verification/                     审计与契约校验
+├── docs/                             Architecture and maintenance docs
+├── tests/                            Repository-level tests
+└── verification/                     Audit and contract checks
 ```
 
-## 整体架构
+## Features
 
-当前请求链路如下：
+### Backend
 
-1. 管理员在前端登录
-2. 前端保存 Bearer Token，并调用后端 API
-3. 用户创建或选择会话
-4. 用户上传附件并提交 prompt
-5. 后端创建 run，写入用户消息，并启动 DeepAgents 运行
-6. 运行时事件被桥接为前端可消费的 SSE 信封格式
-7. 前端消费流式事件，更新消息区和运行时间线
+- FastAPI app factory and `/health` health check
+- Single-admin bearer-token authentication
+- CRUD for sessions, messages, and uploads
+- DeepAgents run creation, runtime event bridging, and SSE streaming
+- Local file upload storage
+- Configurable tools, middleware, skills, memory, and sandbox backends
+- SQLite-first local development with MySQL-compatible models
 
-建议结合 [docs/repository-architecture.md](/Users/zhaoquan/AI_Coding/open_deepagents/docs/repository-architecture.md) 一起阅读，会更容易理解目录边界。
+### Frontend
 
-## 环境要求
+- Admin login page
+- Session list and session switching
+- Chat workspace with file attachments
+- Markdown and Mermaid rendering
+- SSE-driven run status streaming
+- Timeline views for run steps, tools, skills, and sandbox events
 
-- Python `3.11` 或 `3.12`
-- [uv](https://docs.astral.sh/uv/) 用于后端依赖管理
+### Engineering support
+
+- Shared SSE contract definitions
+- Repository audit checks
+- Backend, frontend, and contract tests
+- Extension templates and architecture notes
+
+## Requirements
+
+- Python `3.11` or `3.12`
+- [uv](https://docs.astral.sh/uv/) for backend dependency management
 - Node.js `18+`
 - npm
-- 一个可用的模型来源：
-  - 常规模型字符串，例如 `openai:gpt-5.4`
-  - 或 OpenAI-compatible 自定义端点
+- A model source:
+  - a standard model string such as `openai:gpt-5.4`, or
+  - an OpenAI-compatible custom endpoint
 
-## 快速开始
+## Quick start
 
-### 1. 配置后端环境变量
+### 1. Configure backend environment variables
 
-复制模板：
+Copy the template:
 
 ```bash
 cp backend/.env.example backend/.env
 ```
 
-关键说明：
+Key points:
 
-- 后端只读取 `backend/.env`
-- 如果没有配置 `DATABASE_URL`，后端会回退为 `sqlite+pysqlite:///./data/backend.db`
-- 系统提示词不在 `.env` 中，而是放在 [backend/prompts/deepagents-system-prompt.md](/Users/zhaoquan/AI_Coding/open_deepagents/backend/prompts/deepagents-system-prompt.md)
-- 如果 `CUSTOM_API_KEY`、`CUSTOM_API_URL`、`CUSTOM_API_MODEL` 三项同时配置，后端会优先走自定义兼容端点，此时 `CUSTOM_API_MODEL` 优先于 `DEEPAGENTS_MODEL`
+- The backend only reads `backend/.env`.
+- If `DATABASE_URL` is unset, the backend falls back to `sqlite+pysqlite:///./data/backend.db`.
+- The runtime system prompt is stored in [backend/prompts/deepagents-system-prompt.md](backend/prompts/deepagents-system-prompt.md), not in `.env`.
+- If `CUSTOM_API_KEY`, `CUSTOM_API_URL`, and `CUSTOM_API_MODEL` are all set, the backend uses that OpenAI-compatible endpoint and `CUSTOM_API_MODEL` takes precedence over `DEEPAGENTS_MODEL`.
 
-### 2. 安装后端依赖
+### 2. Install backend dependencies
 
 ```bash
 cd backend
 uv sync --group dev
 ```
 
-### 3. 安装前端依赖
+### 3. Install frontend dependencies
 
 ```bash
 cd frontend
 npm install
 ```
 
-### 4. 启动后端
+### 4. Start the backend
 
 ```bash
 cd backend
 uv run uvicorn app.main:app --reload
 ```
 
-默认地址：
+Default URLs:
 
-- API：`http://127.0.0.1:8000/api`
-- 健康检查：`http://127.0.0.1:8000/health`
-- OpenAPI：`http://127.0.0.1:8000/docs`
+- API: `http://127.0.0.1:8000/api`
+- health check: `http://127.0.0.1:8000/health`
+- OpenAPI: `http://127.0.0.1:8000/docs`
 
-### 5. 启动前端
+### 5. Start the frontend
 
 ```bash
 cd frontend
 npm run dev
 ```
 
-默认情况下，前端按 `/api` 访问后端。若需要覆盖，可配置 `VITE_API_BASE_URL`。
+By default the frontend talks to the backend through `/api`. Override it with `VITE_API_BASE_URL` if needed.
 
-### 6. 登录
+### 6. Sign in
 
-默认凭据来自 `backend/.env`：
+Default credentials come from `backend/.env`:
 
 - `ADMIN_USERNAME`
 - `ADMIN_PASSWORD`
 
-## 环境变量说明
+## Configuration guide
 
-### 后端环境文件：`backend/.env`
+### Core backend settings
 
-常用配置如下：
+Common settings in `backend/.env`:
 
-| 变量 | 说明 |
+| Variable | Purpose |
 | --- | --- |
-| `APP_NAME` | FastAPI 应用名 |
-| `API_PREFIX` | API 前缀，默认 `/api` |
-| `DATABASE_URL` | 完整数据库连接串 |
-| `ADMIN_EMAIL` | 管理员邮箱，可选 |
-| `ADMIN_USERNAME` | 管理员用户名 |
-| `ADMIN_PASSWORD` | 管理员密码 |
-| `ADMIN_TOKEN_SECRET` | JWT 签名密钥 |
-| `ADMIN_TOKEN_EXPIRE_MINUTES` | Token 过期时间（分钟） |
-| `CORS_ALLOWED_ORIGINS` | 允许的前端来源，逗号分隔 |
-| `UPLOAD_STORAGE_DIR` | 上传文件目录 |
-| `MAX_UPLOAD_SIZE_BYTES` | 单文件上传大小限制 |
-| `DEEPAGENTS_MODEL` | 默认模型配置 |
-| `DEEPAGENTS_AGENT_NAME` | Agent 名称 |
-| `DEEPAGENTS_DEBUG` | 是否开启调试 |
-| `DEEPAGENTS_TOOL_SPECS` | 工具扩展入口 |
-| `DEEPAGENTS_MIDDLEWARE_SPECS` | 中间件扩展入口 |
-| `DEEPAGENTS_SKILLS` | 技能目录 |
-| `DEEPAGENTS_MEMORY` | 额外记忆/指导文件 |
-| `DEEPAGENTS_SANDBOX_*` | 沙箱相关配置 |
-| `CUSTOM_API_*` | OpenAI-compatible 自定义端点配置 |
+| `APP_NAME` | FastAPI application name |
+| `API_PREFIX` | API prefix, default `/api` |
+| `DATABASE_URL` | Full database connection string |
+| `ADMIN_EMAIL` | Optional admin email |
+| `ADMIN_USERNAME` | Admin username |
+| `ADMIN_PASSWORD` | Admin password |
+| `ADMIN_TOKEN_SECRET` | JWT signing secret |
+| `ADMIN_TOKEN_EXPIRE_MINUTES` | Token expiry in minutes |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated frontend origins |
+| `UPLOAD_STORAGE_DIR` | Upload directory |
+| `MAX_UPLOAD_SIZE_BYTES` | Per-file upload limit |
+| `DEEPAGENTS_MODEL` | Default model configuration |
+| `DEEPAGENTS_AGENT_NAME` | Runtime agent name |
+| `DEEPAGENTS_DEBUG` | Enable DeepAgents debug mode |
+| `DEEPAGENTS_TOOL_SPECS` | Tool extension entrypoints |
+| `DEEPAGENTS_MIDDLEWARE_SPECS` | Middleware extension entrypoints |
+| `DEEPAGENTS_SKILLS` | Skill directories |
+| `DEEPAGENTS_MEMORY` | Extra memory / guidance files |
+| `DEEPAGENTS_SANDBOX_*` | Sandbox backend configuration |
 
-### 当前默认扩展配置
+### OpenAI-compatible custom model settings
 
-`backend/.env.example` 默认已经显式启用：
+If all three required variables are present, the backend builds a `ChatOpenAI` client instead of passing `DEEPAGENTS_MODEL` through directly:
+
+- `CUSTOM_API_KEY`
+- `CUSTOM_API_URL`
+- `CUSTOM_API_MODEL`
+
+Optional variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `CUSTOM_API_TEMPERATURE` | Optional custom-model temperature. If unset or empty, the backend does not send a `temperature` field to `ChatOpenAI`. |
+| `CUSTOM_API_DEFAULT_HEADERS` | Optional request headers for the custom endpoint. Recommended format: JSON object string. |
+
+Recommended header format:
+
+```dotenv
+CUSTOM_API_DEFAULT_HEADERS={"HTTP-Referer":"https://app.example.com","X-Title":"open_deepagents"}
+```
+
+Backward-compatible fallback format is also accepted:
+
+```dotenv
+CUSTOM_API_DEFAULT_HEADERS=HTTP-Referer=https://app.example.com,X-Title=open_deepagents
+```
+
+`CUSTOM_API_URL` is normalized to the base API URL before client creation:
+
+- if it ends with `/chat/completions`, that suffix is removed
+- otherwise `/v1` is appended unless it is already present
+
+### Default extension settings
+
+`backend/.env.example` enables these sample extensions by default:
 
 - `DEEPAGENTS_TOOL_SPECS=extensions/tools/echo_tool.py:TOOLS`
 - `DEEPAGENTS_MIDDLEWARE_SPECS=extensions/middleware/audit_middleware.py:MIDDLEWARE`
@@ -180,25 +213,25 @@ npm run dev
 - `DEEPAGENTS_SANDBOX_KIND=state`
 - `DEEPAGENTS_SANDBOX_ROOT_DIR=./data/sandbox`
 
-### 默认沙箱权限
+### Default sandbox permissions
 
-默认沙箱权限是代码里强制注入的，而不是仅靠模板说明：
+Default sandbox permissions are enforced in code rather than left to documentation alone:
 
-- 只允许 `read`
-- 只允许读取：
-  - [backend/data](/Users/zhaoquan/AI_Coding/open_deepagents/backend/data)
-  - [backend/extensions/skills](/Users/zhaoquan/AI_Coding/open_deepagents/backend/extensions/skills)
+- operations: read-only
+- allowed paths:
+  - `backend/data`
+  - `backend/extensions/skills`
 
-也就是说，默认 baseline 是一个偏保守的只读沙箱。
+These permission paths are normalized to DeepAgents-safe absolute strings, including Windows-safe slash normalization for drive-letter paths.
 
-## 后端 API 概览
+## Backend API overview
 
-### 管理员鉴权
+### Admin auth
 
 - `POST /api/admin/login`
 - `GET /api/admin/me`
 
-### 会话
+### Sessions
 
 - `GET /api/sessions`
 - `POST /api/sessions`
@@ -206,7 +239,7 @@ npm run dev
 - `PATCH /api/sessions/{session_id}`
 - `DELETE /api/sessions/{session_id}`
 
-### 消息
+### Messages
 
 - `GET /api/sessions/{session_id}/messages`
 - `POST /api/sessions/{session_id}/messages`
@@ -214,7 +247,7 @@ npm run dev
 - `PATCH /api/messages/{message_id}`
 - `DELETE /api/messages/{message_id}`
 
-### 上传
+### Uploads
 
 - `GET /api/sessions/{session_id}/uploads`
 - `POST /api/sessions/{session_id}/uploads`
@@ -222,139 +255,51 @@ npm run dev
 - `GET /api/uploads/{upload_id}`
 - `GET /api/uploads/{upload_id}/content`
 
-### 运行
+### Runs
 
 - `POST /api/runs`
 - `GET /api/runs/{run_id}`
 - `GET /api/runs/{run_id}/stream`
 
-## 扩展点
+## Extension points
 
-后端运行时支持通过配置加载扩展，而不是硬编码。
+The backend resolves extensions from configuration rather than hardcoding them.
 
-### 工具与中间件
+### Tools and middleware
 
-- 工具模板：[backend/extensions/tools/echo_tool.py](/Users/zhaoquan/AI_Coding/open_deepagents/backend/extensions/tools/echo_tool.py)
-- 中间件模板：[backend/extensions/middleware/audit_middleware.py](/Users/zhaoquan/AI_Coding/open_deepagents/backend/extensions/middleware/audit_middleware.py)
+- Tool template: [backend/extensions/tools/echo_tool.py](backend/extensions/tools/echo_tool.py)
+- Middleware template: [backend/extensions/middleware/audit_middleware.py](backend/extensions/middleware/audit_middleware.py)
 
-路径格式为：
+Entrypoint format:
 
 ```text
 path/to/file.py:OBJECT_NAME
 ```
 
-### 技能
+### Skills
 
-- 技能目录模板：[backend/extensions/skills](/Users/zhaoquan/AI_Coding/open_deepagents/backend/extensions/skills)
-- 通过 `DEEPAGENTS_SKILLS` 配置
+- Skill template directory: [backend/extensions/skills](backend/extensions/skills)
+- configured through `DEEPAGENTS_SKILLS`
 
-### 记忆
+### Memory
 
-- 通过 `DEEPAGENTS_MEMORY` 配置额外记忆或指导文件路径
+- configured through `DEEPAGENTS_MEMORY`
 
-### 沙箱
+### Sandboxes
 
-支持的沙箱类型包括：
+Supported sandbox kinds:
 
 - `state`
 - `filesystem`
 - `local_shell`
 - `custom`
 
-如果使用自定义沙箱后端，可通过 `DEEPAGENTS_SANDBOX_BACKEND_SPEC` 指向工厂函数或对象。
+## Development and verification
 
-### 扩展清单模板
-
-[packages/extension-manifest.template.json](/Users/zhaoquan/AI_Coding/open_deepagents/packages/extension-manifest.template.json) 展示了一种统一描述工具、中间件、技能和沙箱扩展的写法。
-
-## 契约与流式事件
-
-当前有两个关键契约面：
-
-- [packages/contracts/deepagents-sse-event-v1.json](/Users/zhaoquan/AI_Coding/open_deepagents/packages/contracts/deepagents-sse-event-v1.json)
-  仓库级 SSE 契约
-- 前端运行时会把事件标准化为：
-  - `status`
-  - `message.delta`
-  - `message.final`
-  - `step`
-  - `tool`
-  - `skill`
-  - `sandbox`
-  - `error`
-
-如果你修改了流格式，最好同时更新：
-
-- 契约文件
-- 标准化逻辑
-- 测试
-
-## 常用开发命令
-
-### 根目录
+Backend checks are run from `backend/`. Typical commands:
 
 ```bash
-python -m unittest discover -s tests
-python verification/scaffold_audit.py
-```
-
-### 后端
-
-```bash
-cd backend
-uv run uvicorn app.main:app --reload
 uv run pytest
+uv run mypy app
 uv run ruff check .
-uv run mypy .
 ```
-
-### 前端
-
-```bash
-cd frontend
-npm run dev
-npm run test
-npm run typecheck
-npm run check
-```
-
-## 测试与验证
-
-当前覆盖包括：
-
-- 后端鉴权、会话、上传、运行生命周期测试
-- DeepAgents 配置、扩展加载、SSE 桥接测试
-- 契约校验测试
-- 仓库结构审计测试
-
-常用验证命令：
-
-```bash
-cd backend && uv run pytest
-cd backend && uv run ruff check .
-cd backend && uv run mypy .
-cd frontend && npm run check
-python -m unittest discover -s tests
-python verification/scaffold_audit.py
-```
-
-## 当前限制
-
-- 当前鉴权模型仍然比较简单，只支持单管理员
-- 上传文件默认保存在本地文件系统
-- 还没有数据库迁移体系
-- 前端是操作台壳层，不是完整多角色产品
-- 生产部署、反向代理、对象存储等仍需要你按场景补齐
-
-## 建议阅读顺序
-
-如果你第一次进入这个仓库，建议按这个顺序看：
-
-1. 本 README
-2. [docs/repository-architecture.md](/Users/zhaoquan/AI_Coding/open_deepagents/docs/repository-architecture.md)
-3. [backend/app/main.py](/Users/zhaoquan/AI_Coding/open_deepagents/backend/app/main.py)
-4. [frontend/src/App.vue](/Users/zhaoquan/AI_Coding/open_deepagents/frontend/src/App.vue)
-5. [backend/app/services/runs.py](/Users/zhaoquan/AI_Coding/open_deepagents/backend/app/services/runs.py)
-6. [frontend/src/api/client.js](/Users/zhaoquan/AI_Coding/open_deepagents/frontend/src/api/client.js)
-
-这样能最快建立对真实运行路径的理解。

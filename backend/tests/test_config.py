@@ -1,4 +1,12 @@
-from app.core.config import DEEPAGENTS_SYSTEM_PROMPT_PATH, DEFAULT_SANDBOX_READ_PATHS, Settings
+from pathlib import PureWindowsPath
+
+import app.core.config as config_module
+from app.core.config import (
+    DEEPAGENTS_SYSTEM_PROMPT_PATH,
+    DEFAULT_SANDBOX_READ_PATHS,
+    Settings,
+    normalize_sandbox_permission_path,
+)
 
 
 def test_runtime_config_loads_system_prompt_from_project_file() -> None:
@@ -23,6 +31,81 @@ def test_runtime_config_uses_default_read_only_permissions_for_data_and_skills()
     assert runtime_config.permissions == (
         {
             "operations": ["read"],
-            "paths": [str(path) for path in DEFAULT_SANDBOX_READ_PATHS],
+            "paths": [
+                normalize_sandbox_permission_path(path) for path in DEFAULT_SANDBOX_READ_PATHS
+            ],
         },
     )
+
+
+def test_normalize_sandbox_permission_path_supports_windows_drive_paths() -> None:
+    path = PureWindowsPath(r"C:\repo\backend\data")
+
+    assert normalize_sandbox_permission_path(path) == "/C:/repo/backend/data"
+
+
+def test_custom_api_default_headers_accepts_json_and_legacy_pairs() -> None:
+    settings = Settings(
+        custom_api_default_headers='{"HTTP-Referer":"https://app.example.com","X-Title":"open_deepagents"}'
+    )
+    legacy_settings = Settings(custom_api_default_headers="X-One=1, X-Two=2")
+
+    assert settings.custom_api_default_headers == {
+        "HTTP-Referer": "https://app.example.com",
+        "X-Title": "open_deepagents",
+    }
+    assert legacy_settings.custom_api_default_headers == {"X-One": "1", "X-Two": "2"}
+
+
+def test_resolve_model_omits_optional_custom_model_kwargs(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(config_module, "ChatOpenAI", FakeChatOpenAI)
+
+    settings = Settings(
+        custom_api_key="secret",
+        custom_api_url="https://example.com/inference",
+        custom_api_model="demo-model",
+        custom_api_temperature=None,
+        custom_api_default_headers="",
+    )
+
+    model = settings.resolve_model()
+
+    assert isinstance(model, FakeChatOpenAI)
+    assert captured["model"] == "demo-model"
+    assert captured["base_url"] == "https://example.com/inference/v1"
+    assert "temperature" not in captured
+    assert "default_headers" not in captured
+
+
+def test_resolve_model_passes_configured_temperature_and_headers(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(config_module, "ChatOpenAI", FakeChatOpenAI)
+
+    settings = Settings(
+        custom_api_key="secret",
+        custom_api_url="https://example.com/chat/completions",
+        custom_api_model="demo-model",
+        custom_api_temperature=0.35,
+        custom_api_default_headers='{"HTTP-Referer":"https://app.example.com","X-Title":"open_deepagents"}',
+    )
+
+    model = settings.resolve_model()
+
+    assert isinstance(model, FakeChatOpenAI)
+    assert captured["base_url"] == "https://example.com"
+    assert captured["temperature"] == 0.35
+    assert captured["default_headers"] == {
+        "HTTP-Referer": "https://app.example.com",
+        "X-Title": "open_deepagents",
+    }

@@ -27,3 +27,8 @@ The runtime system prompt is managed in `backend/prompts/deepagents-system-promp
 The default template already enables the sample tool, middleware, skills, and sandbox settings.
 The default sandbox permissions are enforced in code and only allow read access
 to `backend/data/` and `backend/extensions/skills/`.
+If `CUSTOM_API_KEY`, `CUSTOM_API_URL`, and `CUSTOM_API_MODEL` are all set,
+the backend builds a `ChatOpenAI` client for that endpoint.
+`CUSTOM_API_TEMPERATURE` is optional and omitted entirely when unset.
+`CUSTOM_API_DEFAULT_HEADERS` accepts a JSON object string and also supports
+comma-separated `KEY=VALUE` pairs for compatibility.
