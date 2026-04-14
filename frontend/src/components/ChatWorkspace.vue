@@ -113,27 +113,32 @@ function handleComposerKeydown(event) {
   <div class="workspace">
     <div class="workspace-header">
       <div class="workspace-header-main">
-        <div class="workspace-heading">
-          <p class="eyebrow">当前会话</p>
-          <h2>{{ props.currentSession?.title || '新会话' }}</h2>
+        <div class="workspace-header-top">
+          <div class="workspace-heading-block">
+            <div class="workspace-heading">
+              <p class="eyebrow">当前会话</p>
+              <h2>{{ props.currentSession?.title || '新会话' }}</h2>
+            </div>
+            <p class="workspace-runtime-copy">{{ runtimeCopy }}</p>
+          </div>
+
+          <dl class="workspace-summary-list">
+            <div>
+              <dt>消息</dt>
+              <dd>{{ messageCount }}</dd>
+            </div>
+            <div>
+              <dt>助手回复</dt>
+              <dd>{{ assistantMessageCount }}</dd>
+            </div>
+            <div>
+              <dt>待发附件</dt>
+              <dd>{{ props.pendingUploads.length }}</dd>
+            </div>
+          </dl>
         </div>
-        <p class="workspace-runtime-copy">{{ runtimeCopy }}</p>
-        <dl class="workspace-summary-list">
-          <div>
-            <dt>消息</dt>
-            <dd>{{ messageCount }}</dd>
-          </div>
-          <div>
-            <dt>助手回复</dt>
-            <dd>{{ assistantMessageCount }}</dd>
-          </div>
-          <div>
-            <dt>待发附件</dt>
-            <dd>{{ props.pendingUploads.length }}</dd>
-          </div>
-        </dl>
       </div>
-      <el-tag :type="props.runStatus === 'failed' ? 'danger' : props.runStatus === 'completed' ? 'success' : 'primary'" effect="light">
+      <el-tag size="small" :type="props.runStatus === 'failed' ? 'danger' : props.runStatus === 'completed' ? 'success' : 'primary'" effect="light">
         {{ props.runStatusLabel }}
       </el-tag>
     </div>
@@ -180,7 +185,7 @@ function handleComposerKeydown(event) {
             }}
           </span>
         </div>
-        <el-button plain :icon="UploadFilled" :disabled="props.uploading || isRunLocked" @click="triggerFilePicker">
+        <el-button size="small" plain :icon="UploadFilled" :disabled="props.uploading || isRunLocked" @click="triggerFilePicker">
           上传附件
         </el-button>
         <input ref="fileInput" class="hidden-input" type="file" multiple @change="handleFileSelection" />
@@ -197,7 +202,7 @@ function handleComposerKeydown(event) {
         v-model="draft"
         class="composer-textarea"
         type="textarea"
-        :autosize="{ minRows: 4, maxRows: 8 }"
+        :autosize="{ minRows: 3, maxRows: 6 }"
         resize="none"
         :disabled="isRunLocked"
         placeholder="请输入你的问题，或结合附件说明要处理的任务。"
@@ -206,7 +211,7 @@ function handleComposerKeydown(event) {
 
       <div class="composer-actions">
         <span class="muted-copy">按 Ctrl 或 Command + Enter 可快速发送</span>
-        <el-button type="primary" :disabled="props.submitting || isRunLocked || !draft.trim()" @click="submitDraft">
+        <el-button size="small" type="primary" :disabled="props.submitting || isRunLocked || !draft.trim()" @click="submitDraft">
           {{ props.submitting || isRunLocked ? '处理中…' : '发送' }}
         </el-button>
       </div>

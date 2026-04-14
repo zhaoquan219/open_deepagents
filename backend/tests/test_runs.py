@@ -13,6 +13,7 @@ from langgraph.errors import GraphRecursionError
 from app.core.config import Settings
 from app.db.models import (
     AgentRunRecord,
+    MessageRecord,
     RunEventViewRecord,
     SessionRecord,
     SessionRuntimeLinkRecord,
@@ -110,6 +111,10 @@ def build_blocking_tool_runtime(_config: Any) -> BlockingToolRuntime:
     return BlockingToolRuntime()
 
 
+def build_failing_runtime(_config: Any) -> Any:
+    raise RuntimeError("builder exploded")
+
+
 class CapturingConversationRuntime:
     def __init__(self) -> None:
         self.inputs: list[Any] = []
@@ -162,6 +167,56 @@ class RecursingRuntime:
             "data": {"input": agent_input},
         }
         raise GraphRecursionError("Recursion limit of 25 reached without hitting a stop condition.")
+
+
+class MultiMessageRuntime:
+    async def astream_events(
+        self,
+        agent_input: Any,
+        *,
+        version: str = "v2",
+        config: Any = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "event": "on_chain_start",
+            "name": "deep-agent",
+            "run_id": "runtime-multi",
+            "metadata": {"langgraph_node": "agent"},
+            "data": {"input": agent_input},
+        }
+        yield {
+            "event": "on_chat_model_end",
+            "name": "model",
+            "run_id": "runtime-multi",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"output": {"messages": [{"content": "让我检查一下目录的内容"}]}},
+        }
+        yield {
+            "event": "on_tool_start",
+            "name": "search_files",
+            "run_id": "runtime-multi",
+            "data": {"input": {"path": "extensions/skills"}},
+        }
+        yield {
+            "event": "on_tool_end",
+            "name": "search_files",
+            "run_id": "runtime-multi",
+            "data": {"output": {"text": "empty"}},
+        }
+        yield {
+            "event": "on_chat_model_end",
+            "name": "model",
+            "run_id": "runtime-multi",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"output": {"messages": [{"content": "目录是空的"}]}},
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "deep-agent",
+            "run_id": "runtime-multi",
+            "metadata": {"langgraph_node": "agent"},
+            "data": {"output": {"messages": [{"content": "目录是空的"}]}},
+        }
 
 
 def test_run_lifecycle_and_stream(tmp_path) -> None:
@@ -393,6 +448,92 @@ def test_second_run_receives_prior_session_messages(tmp_path) -> None:
     ]
 
 
+def test_intermediate_assistant_messages_do_not_complete_the_run_or_disappear(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'multi-message.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = lambda _config: MultiMessageRuntime()
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post("/api/sessions", headers=headers, json={"title": "Multi message"})
+        session_id = session.json()["id"]
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "看一下 extensions/skills",
+                "attachments": [],
+            },
+        )
+        run_id = run.json()["run_id"]
+
+        payloads = []
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if not line or not line.startswith("data: "):
+                    continue
+                payload = json.loads(line[6:])
+                payloads.append(payload)
+                if payload["type"] == "status" and payload["status"] == "completed":
+                    break
+
+        interim_index = next(
+            index
+            for index, payload in enumerate(payloads)
+            if payload["type"] == "message.final"
+            and payload["message"]["content"] == "让我检查一下目录的内容"
+        )
+        tool_index = next(
+            index for index, payload in enumerate(payloads) if payload["type"] == "tool"
+        )
+        completion_index = next(
+            index
+            for index, payload in enumerate(payloads)
+            if payload["type"] == "status" and payload["status"] == "completed"
+        )
+
+        assert payloads[interim_index]["status"] == "running"
+        assert interim_index < tool_index < completion_index
+        assert any(
+            payload["type"] == "message.final"
+            and payload["message"]["content"] == "目录是空的"
+            for payload in payloads
+        )
+
+        transcript = client.get(f"/api/sessions/{session_id}/messages", headers=headers)
+        contents = [item["content"] for item in transcript.json()]
+        assert contents == ["看一下 extensions/skills", "让我检查一下目录的内容", "目录是空的"]
+
+        with app.state.database.session_factory() as db:
+            assistant_rows = (
+                db.query(MessageRecord)
+                .filter(MessageRecord.session_id == session_id, MessageRecord.role == "assistant")
+                .order_by(MessageRecord.created_at.asc(), MessageRecord.id.asc())
+                .all()
+            )
+            assert [
+                (row.content, row.is_final)
+                for row in assistant_rows
+            ] == [
+                ("让我检查一下目录的内容", False),
+                ("目录是空的", True),
+            ]
+
+
 def test_graph_recursion_error_returns_fallback_assistant_message(tmp_path) -> None:
     settings = Settings(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'recursion.db'}",
@@ -491,11 +632,71 @@ def test_run_logging_captures_lifecycle_without_prompt_or_attachment_content(
 
     messages = [record.getMessage() for record in caplog.records]
 
-    assert any("run.created" in message for message in messages)
-    assert any("run.runtime_config" in message for message in messages)
-    assert any("run.agent_build_completed" in message for message in messages)
-    assert any("run.stream_started" in message for message in messages)
-    assert any("run.completed" in message for message in messages)
+    assert any("run started with 1 attachment" in message for message in messages)
+    assert any(
+        "resolved runtime config using" in message
+        or "resolved custom model config using" in message
+        for message in messages
+    )
+    assert any("DeepAgents agent is ready" in message for message in messages)
+    assert any(
+        "stream started with 1 input message and 1 attachment" in message
+        for message in messages
+    )
+    assert any(
+        "stream finished with" in message and "runtime events" in message for message in messages
+    )
+    assert any(
+        "run completed with" in message and "runtime events" in message for message in messages
+    )
+    assert any('"event": "run.created"' in message for message in messages)
+    assert any('"phase": "streaming"' in message for message in messages)
     assert all("super secret prompt" not in message for message in messages)
     assert all("top-secret attachment" not in message for message in messages)
     assert any('"runtime_run_id": "runtime-1"' in message for message in messages)
+
+
+def test_run_failure_logging_identifies_the_failing_phase(tmp_path, caplog) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'logging-failure.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = build_failing_runtime
+
+    caplog.set_level(logging.INFO, logger="app.services.runs")
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post("/api/sessions", headers=headers, json={"title": "Logging failure"})
+        session_id = session.json()["id"]
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={"session_id": session_id, "prompt": "hello", "attachments": []},
+        )
+        run_id = run.json()["run_id"]
+
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and '"status": "failed"' in line:
+                    break
+
+    messages = [record.getMessage() for record in caplog.records]
+
+    assert any("run failed while building agent" in message for message in messages)
+    assert any('"phase": "building agent"' in message for message in messages)
+    assert any(
+        '"next_step": "inspect the DeepAgents builder and runtime dependencies"' in message
+        for message in messages
+    )

@@ -51,6 +51,32 @@ describe('normalizeStreamEnvelope', () => {
     })
   })
 
+  it('keeps explicit running message.final payloads non-terminal', () => {
+    const envelope = normalizeStreamEnvelope({
+      event_id: 'evt-3b',
+      type: 'message.final',
+      run_id: 'run-9b',
+      session_id: 'session-4b',
+      status: 'running',
+      message: {
+        id: 'msg-9b',
+        role: 'assistant',
+        content: '让我先检查一下',
+      },
+    })
+
+    expect(envelope).toMatchObject({
+      eventId: 'evt-3b',
+      type: 'message.final',
+      status: 'running',
+      terminal: false,
+      message: {
+        id: 'msg-9b',
+        content: '让我先检查一下',
+      },
+    })
+  })
+
   it('maps step payloads with tool labels into tool events', () => {
     const envelope = normalizeStreamEnvelope({
       event_id: 'evt-4',
@@ -88,9 +114,10 @@ describe('normalizeStreamEnvelope', () => {
     expect(envelope).toMatchObject({
       eventId: 'evt-5',
       type: 'message.final',
-      status: 'completed',
+      status: 'running',
+      terminal: false,
       message: {
-        id: 'final:run-11',
+        id: 'message:evt-5',
         content: 'echo:ping',
       },
     })
@@ -133,7 +160,9 @@ describe('normalizeStreamEnvelope', () => {
     expect(envelope).toMatchObject({
       eventId: 'evt-6',
       type: 'message.final',
+      status: 'running',
       message: {
+        id: 'message:evt-6',
         content: 'echo:ping',
       },
     })

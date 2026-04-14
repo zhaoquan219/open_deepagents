@@ -37,12 +37,12 @@ const props = defineProps({
           {{ props.currentSessionId ? '切换任意会话都可以继续它的上下文。' : '新建一条会话后即可开始对话。' }}
         </p>
       </div>
-      <el-button type="primary" :icon="Plus" @click="$emit('new-session')">新建</el-button>
+      <el-button size="small" type="primary" :icon="Plus" @click="$emit('new-session')">新建</el-button>
     </div>
 
     <div class="sidebar-toolbar">
       <span class="muted-copy">按最近更新时间排序</span>
-      <el-button :icon="RefreshRight" plain @click="$emit('refresh')">刷新</el-button>
+      <el-button size="small" :icon="RefreshRight" plain @click="$emit('refresh')">刷新</el-button>
     </div>
 
     <p v-if="props.error" class="inline-error sidebar-hint">{{ props.error }}</p>
@@ -75,6 +75,7 @@ const props = defineProps({
             </button>
             <el-button
               class="session-delete"
+              size="small"
               text
               type="danger"
               :loading="props.deletingSessionId === session.id"

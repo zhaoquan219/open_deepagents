@@ -1,6 +1,7 @@
 import json
 from functools import lru_cache
 from pathlib import Path, PurePath
+from urllib.parse import urlsplit, urlunsplit
 
 from langchain_openai import ChatOpenAI
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -235,12 +236,62 @@ class Settings(BaseSettings):
             "custom_api_enabled": bool(
                 self.custom_api_key and self.custom_api_url and self.custom_api_model
             ),
-            "database_backend": "sqlite" if self.is_sqlite else "mysql" if self.is_mysql else "other",
+            "database_backend": (
+                "sqlite" if self.is_sqlite else "mysql" if self.is_mysql else "other"
+            ),
             "deepagents_agent_name": self.deepagents_agent_name,
             "deepagents_model_configured": bool(self.deepagents_model or self.custom_api_model),
             "sandbox_kind": self.deepagents_sandbox_kind,
             "upload_storage_dir": str(self.upload_storage_dir),
         }
+
+    def runtime_model_logging_summary(self) -> dict[str, object]:
+        model_source = "unset"
+        model_provider = ""
+        model_name = ""
+        custom_model_base_url: str | None = None
+        custom_model_headers_count = 0
+        custom_model_temperature_configured = False
+
+        if self._uses_custom_api_model():
+            model_source = "custom_api"
+            model_provider = "custom_api"
+            model_name = self.custom_api_model or ""
+            custom_model_base_url = self.normalized_custom_api_base_url()
+            custom_model_headers_count = len(self.custom_api_default_headers)
+            custom_model_temperature_configured = self.custom_api_temperature is not None
+        elif self.deepagents_model:
+            model_source = "configured_model"
+            model_provider, model_name = describe_model_reference(self.deepagents_model)
+
+        return {
+            "selected_model_source": model_source,
+            "selected_model_provider": model_provider,
+            "selected_model_name": model_name,
+            "custom_model_base_url": custom_model_base_url,
+            "custom_model_headers_count": custom_model_headers_count,
+            "custom_model_temperature_configured": custom_model_temperature_configured,
+        }
+
+    def normalized_custom_api_base_url(self) -> str | None:
+        if not self.custom_api_url:
+            return None
+        parts = urlsplit(self.custom_api_url)
+        path = parts.path.rstrip("/")
+        if path.endswith("/chat/completions"):
+            path = path[: -len("/chat/completions")]
+        elif not path.endswith("/v1"):
+            path = f"{path}/v1"
+        hostname = parts.hostname or parts.netloc
+        if not hostname:
+            return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+        netloc = hostname
+        if parts.port is not None:
+            netloc = f"{hostname}:{parts.port}"
+        return urlunsplit((parts.scheme, netloc, path, "", ""))
+
+    def _uses_custom_api_model(self) -> bool:
+        return bool(self.custom_api_key and self.custom_api_url and self.custom_api_model)
 
     @staticmethod
     def _split_csv(value: str | None) -> tuple[str, ...]:
@@ -261,3 +312,12 @@ def normalize_sandbox_permission_path(path: str | Path | PurePath) -> str:
     if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/":
         return f"/{normalized}"
     return normalized
+
+
+def describe_model_reference(model: str | None) -> tuple[str, str]:
+    if not model:
+        return "", ""
+    provider, separator, name = model.partition(":")
+    if separator:
+        return provider or "string", name
+    return "string", model

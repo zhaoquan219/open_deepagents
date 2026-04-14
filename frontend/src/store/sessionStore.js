@@ -131,14 +131,24 @@ export function finalizeAssistantMessage(messages, { runId, message }) {
   const streamId = `stream:${runId}`
   const transcript = messages.filter((entry) => entry.id !== streamId)
   const extra = message?.extra && typeof message.extra === 'object' ? message.extra : {}
-  transcript.push({
+  const nextMessage = {
     id: String(message.id ?? `final:${runId}`),
     role: String(message.role ?? 'assistant'),
     content: normalizeContent(message.content ?? message.text ?? extra.content ?? ''),
     createdAt: String(message.createdAt ?? message.created_at ?? new Date().toISOString()),
     attachments: normalizeAttachments(message.attachments ?? extra.attachments),
     streaming: false,
-  })
+  }
+  const existingIndex = transcript.findIndex((entry) => entry.id === nextMessage.id)
+  if (existingIndex === -1) {
+    transcript.push(nextMessage)
+    return transcript
+  }
+
+  transcript[existingIndex] = {
+    ...transcript[existingIndex],
+    ...nextMessage,
+  }
   return transcript
 }
 

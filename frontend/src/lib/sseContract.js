@@ -100,7 +100,29 @@ function normalizeType(rawType, label, detail, data) {
   return type
 }
 
-function extractMessagePayload(payload, data, type, timestamp, runId) {
+function isTerminalAssistantMessage(label, payload, data) {
+  const explicitStatus = asString(payload.status ?? data.status).toLowerCase()
+  if (explicitStatus) {
+    return explicitStatus === 'completed' || explicitStatus === 'failed'
+  }
+
+  if (typeof data.final === 'boolean') {
+    return data.final
+  }
+
+  if (payload.type === 'message.final' || payload.event_type === 'message.final' || payload.eventType === 'message.final') {
+    return true
+  }
+
+  const normalizedLabel = asString(label).toLowerCase()
+  if (normalizedLabel === 'message.final') {
+    return true
+  }
+
+  return Boolean(data.final)
+}
+
+function extractMessagePayload(payload, data, type, timestamp, runId, eventId, terminal) {
   const messagePayload = payload.message && typeof payload.message === 'object' ? payload.message : data.message
   if (messagePayload && typeof messagePayload === 'object') {
     return messagePayload
@@ -116,7 +138,7 @@ function extractMessagePayload(payload, data, type, timestamp, runId) {
   }
 
   return {
-    id: `final:${runId || 'stream'}`,
+    id: terminal ? `final:${runId || 'stream'}` : `message:${eventId || runId || 'stream'}`,
     role: 'assistant',
     content,
     createdAt: timestamp,
@@ -139,12 +161,13 @@ export function normalizeStreamEnvelope(payload) {
   const label = asString(payload.label ?? data.label ?? data.name ?? rawType)
   const detail = asString(payload.detail ?? data.detail ?? data.summary ?? data.node ?? data.message ?? '')
   const type = normalizeType(rawType, label, detail, data)
+  const terminalAssistantMessage = isTerminalAssistantMessage(label, payload, data)
   const status =
     asString(payload.status ?? payload.run_status ?? payload.runStatus ?? data.status) ||
-    (type === 'message.final' ? 'completed' : '')
+    (type === 'message.final' ? (terminalAssistantMessage ? 'completed' : 'running') : '')
   const stepId = asString(payload.step_id ?? payload.stepId ?? data.step_id ?? data.stepId)
   const delta = asString(data.delta ?? payload.delta) || extractText(data.chunk ?? data.text)
-  const message = extractMessagePayload(payload, data, type, timestamp, runId)
+  const message = extractMessagePayload(payload, data, type, timestamp, runId, eventId, terminalAssistantMessage)
 
   if (!eventId || !type || !allowedTypes.has(type)) {
     return null
@@ -164,5 +187,6 @@ export function normalizeStreamEnvelope(payload) {
     data,
     delta,
     message,
+    terminal: terminalAssistantMessage,
   }
 }

@@ -121,8 +121,6 @@ export function reduceRunState(activeRun, envelope) {
   }
 
   if (envelope.type === 'message.final') {
-    next.status = next.status === 'failed' ? 'failed' : 'completed'
-    next.finishedAt = envelope.timestamp || next.finishedAt
     appendTimeline(next, envelope, '最终回复已写入会话')
     return next
   }

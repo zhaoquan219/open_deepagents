@@ -103,7 +103,7 @@ function setupViewportTracking() {
     return
   }
 
-  viewportMediaQuery = window.matchMedia('(min-width: 1180px)')
+  viewportMediaQuery = window.matchMedia('(min-width: 1320px)')
   applyViewportLayout(viewportMediaQuery.matches)
 
   if (typeof viewportMediaQuery.addEventListener === 'function') {
@@ -159,6 +159,13 @@ function syncSessionTranscript(sessionId) {
   void sessionStore.selectSession(String(sessionId))
 }
 
+function isTerminalEnvelope(envelope) {
+  return (
+    envelope.type === 'error' ||
+    (envelope.type === 'status' && ['completed', 'failed'].includes(envelope.status))
+  )
+}
+
 async function handleLogin() {
   authLoading.value = true
   authError.value = ''
@@ -210,11 +217,7 @@ function connectRunStream(runId, sessionId) {
 
       const accepted = runStore.consume(envelope)
       if (!accepted) {
-        if (
-          envelope.type === 'message.final' ||
-          envelope.type === 'error' ||
-          (envelope.type === 'status' && ['completed', 'failed'].includes(envelope.status))
-        ) {
+        if (isTerminalEnvelope(envelope)) {
           syncSessionTranscript(sessionId)
           if (envelope.type === 'status' && envelope.status === 'completed') {
             runStore.markCompleted(runId, '检测到终态事件重放，已同步最终回复。')
@@ -236,11 +239,7 @@ function connectRunStream(runId, sessionId) {
         syncSessionTranscript(sessionId)
       }
 
-      if (
-        envelope.type === 'message.final' ||
-        envelope.type === 'error' ||
-        (envelope.type === 'status' && ['completed', 'failed'].includes(envelope.status))
-      ) {
+      if (isTerminalEnvelope(envelope)) {
         if (envelope.type === 'status' && envelope.status === 'completed') {
           syncSessionTranscript(sessionId)
         }
@@ -436,10 +435,10 @@ onBeforeUnmount(() => {
         </dl>
 
         <div class="toolbar-actions">
-          <el-tag :type="runStatus === 'failed' ? 'danger' : runStatus === 'completed' ? 'success' : 'primary'" effect="light">
+          <el-tag size="small" :type="runStatus === 'failed' ? 'danger' : runStatus === 'completed' ? 'success' : 'primary'" effect="light">
             {{ runStatusLabel }}
           </el-tag>
-          <el-button v-if="!isWideLayout" plain @click="toggleTimelinePanel">
+          <el-button v-if="!isWideLayout" size="small" plain @click="toggleTimelinePanel">
             {{ timelineToggleLabel }}
           </el-button>
         </div>

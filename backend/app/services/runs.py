@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.database import DatabaseState
-from app.core.logging import format_log_fields
+from app.core.logging import format_log_message
 from app.db.models import (
     AgentRunRecord,
     MessageRecord,
@@ -82,14 +82,13 @@ class RunState:
     def add_subscriber(self, subscriber: RunSubscriber) -> None:
         with self.lock:
             self.subscribers.add(subscriber)
+            completed = self.completed
+        if completed:
+            subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, None)
 
     def discard_subscriber(self, subscriber: RunSubscriber) -> None:
         with self.lock:
             self.subscribers.discard(subscriber)
-
-    def is_drained(self, subscriber: RunSubscriber) -> bool:
-        with self.lock:
-            return self.completed and subscriber.queue.empty()
 
 
 class RunManager:
@@ -117,8 +116,6 @@ class RunManager:
                 yield _to_sse(envelope)
 
             while True:
-                if state.is_drained(subscriber):
-                    break
                 try:
                     item = await asyncio.wait_for(
                         subscriber.queue.get(),
@@ -173,14 +170,15 @@ class RunService:
             db.add(session)
             db.commit()
 
-        logger.info(
-            "run.created %s",
-            format_log_fields(
-                attachment_count=len(attachments),
-                prompt_chars=len(prompt),
-                run_id=state.run_id,
-                session_id=session_id,
-            ),
+        _log_run(
+            logging.INFO,
+            f"run started with {_count_phrase(len(attachments), 'attachment')}",
+            event="run.created",
+            phase="queued",
+            run_id=state.run_id,
+            session_id=session_id,
+            attachment_count=len(attachments),
+            prompt_chars=len(prompt),
         )
         state.publish(
             _ui_envelope(
@@ -248,53 +246,81 @@ class RunService:
         runtime_event_counts: Counter[str] = Counter()
         runtime_run_id = ""
         agent_input: dict[str, list[dict[str, str]]] = {"messages": []}
+        phase = "starting execution"
 
         try:
-            logger.info(
-                "run.execution_started %s",
-                format_log_fields(run_id=run_id, session_id=session_id),
+            _log_run(
+                logging.INFO,
+                "run execution started",
+                event="run.execution_started",
+                phase=phase,
+                run_id=run_id,
+                session_id=session_id,
             )
+            phase = "resolving runtime config"
             runtime_config = settings.to_runtime_config()
-            logger.info(
-                "run.runtime_config %s",
-                format_log_fields(
-                    recursion_limit=settings.deepagents_recursion_limit,
-                    run_id=run_id,
-                    session_id=session_id,
-                    **runtime_config.logging_summary(),
-                ),
+            runtime_summary_message, runtime_summary_fields = _runtime_config_log_summary(settings)
+            runtime_log_fields: dict[str, Any] = {
+                "recursion_limit": settings.deepagents_recursion_limit,
+                **runtime_summary_fields,
+                **runtime_config.logging_summary(),
+            }
+            _log_run(
+                logging.INFO,
+                runtime_summary_message,
+                event="run.runtime_config",
+                phase=phase,
+                run_id=run_id,
+                session_id=session_id,
+                **runtime_log_fields,
             )
             if runtime_config.model is None:
                 raise RuntimeError("DEEPAGENTS_MODEL is not configured in backend/.env")
 
-            logger.info(
-                "run.agent_build_started %s",
-                format_log_fields(run_id=run_id, session_id=session_id),
+            phase = "building agent"
+            _log_run(
+                logging.INFO,
+                "building DeepAgents agent",
+                event="run.agent_build_started",
+                phase=phase,
+                run_id=run_id,
+                session_id=session_id,
             )
             agent = self.builder(runtime_config)
-            logger.info(
-                "run.agent_build_completed %s",
-                format_log_fields(run_id=run_id, session_id=session_id),
+            _log_run(
+                logging.INFO,
+                "DeepAgents agent is ready",
+                event="run.agent_build_completed",
+                phase=phase,
+                run_id=run_id,
+                session_id=session_id,
             )
+            phase = "building agent input"
             agent_input = self._build_agent_input(
                 session_id=session_id,
                 run_id=run_id,
                 prompt=prompt,
                 attachments=attachments,
             )
-            logger.info(
-                "run.stream_started %s",
-                format_log_fields(
-                    attachment_count=len(attachments),
-                    message_count=len(agent_input["messages"]),
-                    run_id=run_id,
-                    session_id=session_id,
-                ),
+            phase = "streaming"
+            _log_run(
+                logging.INFO,
+                "stream started with "
+                f"{_count_phrase(len(agent_input['messages']), 'input message')} and "
+                f"{_count_phrase(len(attachments), 'attachment')}",
+                event="run.stream_started",
+                phase=phase,
+                run_id=run_id,
+                session_id=session_id,
+                attachment_count=len(attachments),
+                message_count=len(agent_input["messages"]),
             )
 
             final_message = ""
             saw_message_delta = False
-            saw_message_final = False
+            assistant_message_count = 0
+            last_assistant_message = ""
+            last_assistant_record_id: str | None = None
             pending_completion_event: dict[str, Any] | None = None
             sequence = 1
             async for envelope in stream_sse_envelopes(
@@ -311,16 +337,28 @@ class RunService:
                     session_id=session_id,
                     sequence=sequence,
                 )
-                self._persist_event(run_id=run_id, session_id=session_id, envelope=ui_event)
                 if ui_event["type"] == "status" and ui_event["status"] == "completed":
                     pending_completion_event = ui_event
                 else:
+                    self._persist_event(run_id=run_id, session_id=session_id, envelope=ui_event)
                     state.publish(ui_event)
                 if ui_event["type"] == "message.delta" and ui_event.get("delta"):
                     saw_message_delta = True
                 if ui_event["type"] == "message.final":
-                    saw_message_final = True
-                    final_message = str(ui_event["message"]["content"])
+                    assistant_content = str(ui_event.get("message", {}).get("content") or "")
+                    if assistant_content:
+                        assistant_message_count += 1
+                        final_message = assistant_content
+                        last_assistant_message = assistant_content
+                        last_assistant_record_id = self._create_message_record(
+                            session_id=session_id,
+                            role="assistant",
+                            content=assistant_content,
+                            run_id=run_id,
+                            is_final=False,
+                            step_id=str(ui_event.get("step_id") or "") or None,
+                            extra={"event_id": str(ui_event["event_id"])},
+                        )
                 elif candidate := _extract_message_text(ui_event.get("data")):
                     final_message = candidate
                 self._sync_runtime_link(
@@ -329,10 +367,27 @@ class RunService:
                     runtime_run_id=str(ui_event.get("data", {}).get("runtime_run_id") or ""),
                 )
 
-            if final_message and not saw_message_delta:
+            _log_run(
+                logging.INFO,
+                "stream finished with "
+                f"{_count_phrase(sum(runtime_event_counts.values()), 'runtime event')} in "
+                f"{_elapsed_ms(started_at)} ms",
+                event="run.stream_finished",
+                phase=phase,
+                run_id=run_id,
+                session_id=session_id,
+                duration_ms=_elapsed_ms(started_at),
+                message_delta_events=runtime_event_counts["message.delta"],
+                runtime_event_count=sum(runtime_event_counts.values()),
+                runtime_run_id=runtime_run_id,
+                sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
+                skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
+                tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
+            )
+
+            if final_message and not saw_message_delta and assistant_message_count == 0:
                 sequence += 1
-                state.publish(
-                    _ui_envelope(
+                delta_event = _ui_envelope(
                         run_id=run_id,
                         session_id=session_id,
                         sequence=sequence,
@@ -343,12 +398,15 @@ class RunService:
                         data={},
                         delta=final_message,
                     )
-                )
+                self._persist_event(run_id=run_id, session_id=session_id, envelope=delta_event)
+                state.publish(delta_event)
 
-            if final_message and not saw_message_final:
+            should_emit_terminal_message = bool(final_message) and (
+                assistant_message_count == 0 or final_message != last_assistant_message
+            )
+            if should_emit_terminal_message:
                 sequence += 1
-                state.publish(
-                    _ui_envelope(
+                final_event = _ui_envelope(
                         run_id=run_id,
                         session_id=session_id,
                         sequence=sequence,
@@ -356,7 +414,7 @@ class RunService:
                         status="completed",
                         label="message.final",
                         detail="Assistant response completed.",
-                        data={},
+                        data={"final": True},
                         message={
                             "id": f"final:{run_id}",
                             "role": "assistant",
@@ -365,78 +423,106 @@ class RunService:
                             "attachments": [],
                         },
                     )
-                )
+                self._persist_event(run_id=run_id, session_id=session_id, envelope=final_event)
+                state.publish(final_event)
 
+            phase = "persisting final message"
             with self.database.session_factory() as db:
                 session = _require_session(db, session_id)
-                db.add(
-                    MessageRecord(
-                        session_id=session_id,
-                        role="assistant",
-                        content=final_message,
-                        run_id=run_id,
-                        is_final=True,
-                    )
-                )
+                if final_message:
+                    if (
+                        last_assistant_record_id is not None
+                        and last_assistant_message == final_message
+                    ):
+                        existing_record = (
+                            db.query(MessageRecord)
+                            .filter(MessageRecord.id == last_assistant_record_id)
+                            .first()
+                        )
+                        if existing_record is not None:
+                            existing_record.is_final = True
+                            db.add(existing_record)
+                    else:
+                        db.add(
+                            MessageRecord(
+                                session_id=session_id,
+                                role="assistant",
+                                content=final_message,
+                                run_id=run_id,
+                                is_final=True,
+                            )
+                        )
                 session.last_run_id = run_id
                 run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
                 if run_record is not None:
                     run_record.status = "completed"
-                    run_record.final_output_text = final_message
+                    run_record.final_output_text = final_message or None
                     run_record.event_count = len(state.envelopes)
                     run_record.completed_at = utc_now()
                     db.add(run_record)
                 db.add(session)
                 db.commit()
 
+            phase = "finalizing completion"
+            completion_label = "Run completed"
+            completion_detail = "DeepAgents run finished successfully."
+            completion_data: dict[str, Any] = {}
             if pending_completion_event is not None:
-                self._persist_event(
+                completion_label = str(pending_completion_event.get("label") or completion_label)
+                completion_detail = str(
+                    pending_completion_event.get("detail") or completion_detail
+                )
+                completion_data = dict(pending_completion_event.get("data") or {})
+            completion_envelope = _ui_envelope(
                     run_id=run_id,
                     session_id=session_id,
-                    envelope=pending_completion_event,
+                    sequence=sequence + 1,
+                    event_type="status",
+                    status="completed",
+                    label=completion_label,
+                    detail=completion_detail,
+                    data=completion_data,
                 )
-                state.publish(pending_completion_event)
-            else:
-                completion_envelope = _ui_envelope(
-                        run_id=run_id,
-                        session_id=session_id,
-                        sequence=sequence + 1,
-                        event_type="status",
-                        status="completed",
-                        label="Run completed",
-                        detail="DeepAgents run finished successfully.",
-                        data={},
-                    )
-                self._persist_event(
-                    run_id=run_id,
-                    session_id=session_id,
-                    envelope=completion_envelope,
-                )
-                state.publish(completion_envelope)
+            self._persist_event(
+                run_id=run_id,
+                session_id=session_id,
+                envelope=completion_envelope,
+            )
+            state.publish(completion_envelope)
             state.finish("completed")
             if not runtime_run_id:
-                logger.warning(
-                    "run.runtime_link_missing %s",
-                    format_log_fields(run_id=run_id, session_id=session_id, status="completed"),
-                )
-            logger.info(
-                "run.completed %s",
-                format_log_fields(
-                    assistant_chars=len(final_message),
-                    duration_ms=_elapsed_ms(started_at),
-                    message_delta_events=runtime_event_counts["message.delta"],
+                _log_run(
+                    logging.WARNING,
+                    "run completed without receiving an upstream runtime link",
+                    event="run.runtime_link_missing",
+                    phase=phase,
                     run_id=run_id,
-                    runtime_event_count=sum(runtime_event_counts.values()),
-                    runtime_run_id=runtime_run_id,
-                    sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
                     session_id=session_id,
-                    skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
+                    next_step="inspect upstream runtime envelopes for a missing runtime_run_id",
                     status="completed",
-                    tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
-                    ui_event_count=len(state.envelopes),
-                ),
+                )
+            _log_run(
+                logging.INFO,
+                "run completed with "
+                f"{_count_phrase(sum(runtime_event_counts.values()), 'runtime event')} in "
+                f"{_elapsed_ms(started_at)} ms",
+                event="run.completed",
+                phase=phase,
+                run_id=run_id,
+                session_id=session_id,
+                assistant_chars=len(final_message),
+                duration_ms=_elapsed_ms(started_at),
+                message_delta_events=runtime_event_counts["message.delta"],
+                runtime_event_count=sum(runtime_event_counts.values()),
+                runtime_run_id=runtime_run_id,
+                sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
+                skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
+                status="completed",
+                tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
+                ui_event_count=len(state.envelopes),
             )
         except GraphRecursionError as exc:
+            phase = "persisting fallback response"
             fallback_message = _build_recursion_fallback(prompt, agent_input["messages"])
             fallback_event = _ui_envelope(
                 run_id=run_id,
@@ -493,26 +579,35 @@ class RunService:
                 db.commit()
             state.finish("completed")
             if not runtime_run_id:
-                logger.warning(
-                    "run.runtime_link_missing %s",
-                    format_log_fields(run_id=run_id, session_id=session_id, status="completed"),
-                )
-            logger.warning(
-                "run.recursion_fallback %s",
-                format_log_fields(
-                    assistant_chars=len(fallback_message),
-                    duration_ms=_elapsed_ms(started_at),
-                    error_type=type(exc).__name__,
+                _log_run(
+                    logging.WARNING,
+                    "run completed without receiving an upstream runtime link",
+                    event="run.runtime_link_missing",
+                    phase=phase,
                     run_id=run_id,
-                    runtime_event_count=sum(runtime_event_counts.values()),
-                    runtime_run_id=runtime_run_id,
-                    sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
                     session_id=session_id,
-                    skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
+                    next_step="inspect upstream runtime envelopes for a missing runtime_run_id",
                     status="completed",
-                    tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
-                    ui_event_count=len(state.envelopes),
-                ),
+                )
+            _log_run(
+                logging.WARNING,
+                "run completed with a fallback response after the recursion limit was reached",
+                event="run.recursion_fallback",
+                phase=phase,
+                run_id=run_id,
+                session_id=session_id,
+                reason="recursion_limit",
+                next_step="inspect recursive tool or agent loops in the upstream runtime trace",
+                assistant_chars=len(fallback_message),
+                duration_ms=_elapsed_ms(started_at),
+                error_type=type(exc).__name__,
+                runtime_event_count=sum(runtime_event_counts.values()),
+                runtime_run_id=runtime_run_id,
+                sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
+                skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
+                status="completed",
+                tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
+                ui_event_count=len(state.envelopes),
             )
         except Exception as exc:
             error_envelope = _ui_envelope(
@@ -557,25 +652,35 @@ class RunService:
                     db.commit()
             state.finish("failed")
             if not runtime_run_id:
-                logger.warning(
-                    "run.runtime_link_missing %s",
-                    format_log_fields(run_id=run_id, session_id=session_id, status="failed"),
-                )
-            logger.exception(
-                "run.failed %s",
-                format_log_fields(
-                    duration_ms=_elapsed_ms(started_at),
-                    error_type=type(exc).__name__,
+                _log_run(
+                    logging.WARNING,
+                    "run failed before an upstream runtime link was available",
+                    event="run.runtime_link_missing",
+                    phase=phase,
                     run_id=run_id,
-                    runtime_event_count=sum(runtime_event_counts.values()),
-                    runtime_run_id=runtime_run_id,
-                    sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
                     session_id=session_id,
-                    skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
+                    next_step="inspect upstream runtime envelopes for a missing runtime_run_id",
                     status="failed",
-                    tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
-                    ui_event_count=len(state.envelopes),
-                ),
+                )
+            _log_run(
+                logging.ERROR,
+                f"run failed while {phase}",
+                event="run.failed",
+                phase=phase,
+                run_id=run_id,
+                session_id=session_id,
+                reason=type(exc).__name__,
+                next_step=_phase_failure_hint(phase),
+                exc_info=True,
+                duration_ms=_elapsed_ms(started_at),
+                error_type=type(exc).__name__,
+                runtime_event_count=sum(runtime_event_counts.values()),
+                runtime_run_id=runtime_run_id,
+                sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
+                skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
+                status="failed",
+                tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
+                ui_event_count=len(state.envelopes),
             )
 
     def _build_agent_input(
@@ -655,42 +760,146 @@ class RunService:
             if record is None:
                 record = SessionRuntimeLinkRecord(session_id=session_id)
             elif record.runtime_run_id and record.runtime_run_id != runtime_run_id:
-                logger.warning(
-                    "run.session_runtime_link_changed %s",
-                    format_log_fields(
-                        previous_runtime_run_id=record.runtime_run_id,
-                        run_id=run_id,
-                        runtime_run_id=runtime_run_id,
-                        session_id=session_id,
-                    ),
+                _log_run(
+                    logging.WARNING,
+                    "session runtime link changed from "
+                    f"{record.runtime_run_id} to {runtime_run_id}",
+                    event="run.session_runtime_link_changed",
+                    phase="syncing runtime link",
+                    run_id=run_id,
+                    session_id=session_id,
+                    previous_runtime_run_id=record.runtime_run_id,
+                    runtime_run_id=runtime_run_id,
                 )
             record.runtime_run_id = runtime_run_id
             record.last_seen_at = utc_now()
             db.add(record)
             run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
             if run_record is None:
-                logger.warning(
-                    "run.runtime_link_run_missing %s",
-                    format_log_fields(
-                        run_id=run_id,
-                        runtime_run_id=runtime_run_id,
-                        session_id=session_id,
-                    ),
+                _log_run(
+                    logging.WARNING,
+                    "runtime link resolved before the run record was available",
+                    event="run.runtime_link_run_missing",
+                    phase="syncing runtime link",
+                    run_id=run_id,
+                    session_id=session_id,
+                    runtime_run_id=runtime_run_id,
+                    next_step="inspect run persistence ordering if runtime links stop attaching",
                 )
             else:
                 if run_record.runtime_run_id and run_record.runtime_run_id != runtime_run_id:
-                    logger.warning(
-                        "run.runtime_run_id_changed %s",
-                        format_log_fields(
-                            previous_runtime_run_id=run_record.runtime_run_id,
-                            run_id=run_id,
-                            runtime_run_id=runtime_run_id,
-                            session_id=session_id,
-                        ),
+                    _log_run(
+                        logging.WARNING,
+                        "run runtime link changed from "
+                        f"{run_record.runtime_run_id} to {runtime_run_id}",
+                        event="run.runtime_run_id_changed",
+                        phase="syncing runtime link",
+                        run_id=run_id,
+                        session_id=session_id,
+                        previous_runtime_run_id=run_record.runtime_run_id,
+                        runtime_run_id=runtime_run_id,
                     )
                 run_record.runtime_run_id = runtime_run_id
                 db.add(run_record)
             db.commit()
+
+    def _create_message_record(
+        self,
+        *,
+        session_id: str,
+        role: str,
+        content: str,
+        run_id: str | None = None,
+        is_final: bool = True,
+        step_id: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> str:
+        with self.database.session_factory() as db:
+            session = _require_session(db, session_id)
+            record = MessageRecord(
+                session_id=session_id,
+                role=role,
+                content=content,
+                run_id=run_id,
+                is_final=is_final,
+                step_id=step_id,
+                extra=extra or {},
+            )
+            session.last_run_id = run_id or session.last_run_id
+            db.add(record)
+            db.add(session)
+            db.commit()
+            db.refresh(record)
+            return str(record.id)
+
+
+def _log_run(
+    level: int,
+    summary: str,
+    *,
+    event: str,
+    phase: str,
+    run_id: str,
+    session_id: str,
+    reason: str | None = None,
+    next_step: str | None = None,
+    exc_info: bool = False,
+    **fields: Any,
+) -> None:
+    payload: dict[str, Any] = {
+        "event": event,
+        "phase": phase,
+        "run_id": run_id,
+        "session_id": session_id,
+    }
+    if reason:
+        payload["reason"] = reason
+    if next_step:
+        payload["next_step"] = next_step
+    payload.update(
+        {key: value for key, value in fields.items() if value is not None and value != ""}
+    )
+    logger.log(level, "%s", format_log_message(summary, **payload), exc_info=exc_info)
+
+
+def _count_phrase(count: int, singular: str, plural: str | None = None) -> str:
+    noun = singular if count == 1 else (plural or f"{singular}s")
+    return f"{count} {noun}"
+
+
+def _runtime_config_log_summary(settings: Settings) -> tuple[str, dict[str, object]]:
+    fields = settings.runtime_model_logging_summary()
+    if fields["selected_model_source"] == "custom_api":
+        base_url = fields.get("custom_model_base_url") or "configured base URL"
+        return (
+            "resolved custom model config using "
+            f"{fields.get('selected_model_provider') or 'custom_api'} base URL {base_url} with "
+            f"{fields.get('custom_model_headers_count', 0)} default headers",
+            fields,
+        )
+    if fields["selected_model_name"]:
+        provider = fields.get("selected_model_provider") or "configured"
+        return (
+            f"resolved runtime config using {provider} model {fields['selected_model_name']}",
+            fields,
+        )
+    return "resolved runtime config without a configured model", fields
+
+
+def _phase_failure_hint(phase: str) -> str:
+    if phase == "resolving runtime config":
+        return "inspect backend model settings and custom API configuration"
+    if phase == "building agent":
+        return "inspect the DeepAgents builder and runtime dependencies"
+    if phase == "streaming":
+        return "inspect upstream runtime events, tool calls, and model responses"
+    if phase == "persisting final message":
+        return "inspect database writes and the final assistant message payload"
+    if phase == "persisting fallback response":
+        return "inspect fallback message persistence and recursion-limit handling"
+    if phase == "finalizing completion":
+        return "inspect completion event persistence and run state finalization"
+    return "inspect the previous stage log and structured metadata for the failing step"
 
 
 def _require_session(db: Session, session_id: str) -> SessionRecord:
@@ -773,20 +982,20 @@ def _bridge_to_ui(*, envelope: SseEventEnvelope, session_id: str, sequence: int)
         detail = "Streaming assistant response."
     elif event == "message.completed":
         event_type = "message.final"
-        status = "completed"
         content = _extract_message_text(data)
         if not content:
             event_type = "step"
             detail = "Model completed without a direct text payload."
         else:
+            data = {**data, "final": False}
             message = {
-                "id": f"final:{envelope.run_id}",
+                "id": f"message:{envelope.event_id}",
                 "role": "assistant",
                 "content": content,
                 "createdAt": utc_now().isoformat(),
                 "attachments": [],
             }
-            detail = "Assistant response completed."
+            detail = "Assistant response updated."
     elif event.startswith("tool."):
         event_type = "tool"
         status = "completed" if event.endswith("completed") else "running"

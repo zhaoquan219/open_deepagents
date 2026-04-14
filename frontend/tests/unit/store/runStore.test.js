@@ -20,13 +20,42 @@ describe('runStore reducer', () => {
       runId: 'run-1',
       sessionId: 'session-1',
       timestamp: '2026-04-12T14:00:10.000Z',
+      status: 'running',
       label: 'Assistant message finalized',
       detail: 'Stored final transcript row',
     })
+    const settled = reduceRunState(completed, {
+      eventId: 'evt-3',
+      type: 'status',
+      runId: 'run-1',
+      sessionId: 'session-1',
+      timestamp: '2026-04-12T14:00:11.000Z',
+      status: 'completed',
+      label: 'Run completed',
+      detail: 'DeepAgents run completed.',
+    })
 
     expect(running.status).toBe('running')
-    expect(completed.status).toBe('completed')
-    expect(completed.timeline).toHaveLength(2)
+    expect(completed.status).toBe('running')
+    expect(settled.status).toBe('completed')
+    expect(settled.timeline).toHaveLength(3)
+  })
+
+  it('keeps the run open when an assistant message finalizes mid-run', () => {
+    const started = createInitialRun('run-mid', 'session-mid')
+    const afterMessage = reduceRunState(started, {
+      eventId: 'evt-mid-1',
+      type: 'message.final',
+      runId: 'run-mid',
+      sessionId: 'session-mid',
+      timestamp: '2026-04-12T14:00:10.000Z',
+      status: 'running',
+      label: 'message.completed',
+      detail: 'Assistant response updated.',
+    })
+
+    expect(afterMessage.status).toBe('running')
+    expect(afterMessage.finishedAt).toBe('')
   })
 
   it('marks the run as connected and closed around stream lifecycle', () => {

@@ -73,7 +73,9 @@ function entryLabel(entry) {
   }
   if (labelMap[label]) return labelMap[label]
   if (entry?.kind === 'message.delta') return '正在生成回复'
-  if (entry?.kind === 'message.final') return '回复生成完成'
+  if (entry?.kind === 'message.final') {
+    return entry?.status === 'completed' ? '回复生成完成' : '回复已更新'
+  }
   if (entry?.kind === 'tool') return '工具执行'
   if (entry?.kind === 'skill') return '技能执行'
   if (entry?.kind === 'sandbox') return '沙箱执行'
@@ -162,10 +164,10 @@ const shortRunId = computed(() => {
         </p>
       </div>
       <div class="runtime-header-actions">
-        <el-tag :type="summaryStatus === 'failed' ? 'danger' : summaryStatus === 'completed' ? 'success' : 'primary'" effect="light">
+        <el-tag size="small" :type="summaryStatus === 'failed' ? 'danger' : summaryStatus === 'completed' ? 'success' : 'primary'" effect="light">
           {{ statusLabel(summaryStatus) }}
         </el-tag>
-        <el-button v-if="props.dismissible" text @click="$emit('close')">收起</el-button>
+        <el-button v-if="props.dismissible" size="small" text @click="$emit('close')">收起</el-button>
       </div>
     </div>
 

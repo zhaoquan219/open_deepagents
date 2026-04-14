@@ -39,6 +39,36 @@ describe('sessionStore transcript helpers', () => {
     ])
   })
 
+  it('updates an existing assistant row when the same message id is replayed', () => {
+    const finalized = finalizeAssistantMessage(
+      [
+        {
+          id: 'msg-final',
+          role: 'assistant',
+          content: '旧内容',
+          createdAt: '2026-04-13T10:00:00.000Z',
+          attachments: [],
+          streaming: false,
+        },
+      ],
+      {
+        runId: 'run-2',
+        message: {
+          id: 'msg-final',
+          content: '新内容',
+        },
+      },
+    )
+
+    expect(finalized).toEqual([
+      expect.objectContaining({
+        id: 'msg-final',
+        content: '新内容',
+        streaming: false,
+      }),
+    ])
+  })
+
   it('consumes finalized events even when the payload only contains a top-level message', () => {
     const apiClient = {
       createSession: vi.fn(),

@@ -139,3 +139,26 @@ def test_runtime_config_logging_summary_is_safe_and_concise() -> None:
     assert summary["sandbox_root_dir_configured"] is True
     assert "secret-key" not in summary_text
     assert "example.com" not in summary_text
+
+
+def test_runtime_model_logging_summary_is_safe_and_descriptive() -> None:
+    settings = Settings(
+        custom_api_key="secret-key",
+        custom_api_url="https://user:pass@example.com/chat/completions?token=abc",
+        custom_api_model="demo-model",
+        custom_api_temperature=0.2,
+        custom_api_default_headers='{"HTTP-Referer":"https://app.example.com","X-Title":"open_deepagents"}',
+    )
+
+    summary = settings.runtime_model_logging_summary()
+    summary_text = json.dumps(summary, sort_keys=True)
+
+    assert summary["selected_model_source"] == "custom_api"
+    assert summary["selected_model_provider"] == "custom_api"
+    assert summary["selected_model_name"] == "demo-model"
+    assert summary["custom_model_base_url"] == "https://example.com"
+    assert summary["custom_model_headers_count"] == 2
+    assert summary["custom_model_temperature_configured"] is True
+    assert "secret-key" not in summary_text
+    assert "user:pass" not in summary_text
+    assert "token=abc" not in summary_text
