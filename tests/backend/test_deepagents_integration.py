@@ -22,6 +22,7 @@ from deepagents_integration import (
     stream_sse_envelopes,
     validate_sse_event,
 )
+from extensions.middleware.audit_middleware import SampleAuditMiddleware
 
 
 class DummyBackend(BackendProtocol):
@@ -166,6 +167,27 @@ class DeepAgentsConfigTests(unittest.TestCase):
             self.assertEqual(kwargs["memory"], ["/memory/AGENTS.md"])
             self.assertEqual(kwargs["permissions"][0].operations, ["read", "write"])
             self.assertIsInstance(kwargs["backend"], FilesystemBackend)
+
+    def test_sample_audit_middleware_supports_sync_and_async_tool_wrapping(self):
+        [middleware] = load_middleware_extensions(
+            ("backend/extensions/middleware/audit_middleware.py:MIDDLEWARE",)
+        )
+        self.assertEqual(type(middleware).__name__, SampleAuditMiddleware.__name__)
+        request = object()
+
+        def sync_handler(received_request):
+            self.assertIs(received_request, request)
+            return "sync-result"
+
+        async def async_handler(received_request):
+            self.assertIs(received_request, request)
+            return "async-result"
+
+        self.assertEqual(middleware.wrap_tool_call(request, sync_handler), "sync-result")
+        self.assertEqual(
+            asyncio.run(middleware.awrap_tool_call(request, async_handler)),
+            "async-result",
+        )
 
 
 class DeepAgentsSseBridgeTests(unittest.IsolatedAsyncioTestCase):

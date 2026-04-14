@@ -10,6 +10,17 @@ function resolveAccessToken() {
   return window.localStorage.getItem('deepagents.admin.token') || ''
 }
 
+function normalizeSessionTitle(value) {
+  const title = String(value ?? '').trim()
+  const englishDefaults = new Set(['new session', 'new chat', 'untitled', 'untitled session'])
+
+  if (!title || englishDefaults.has(title.toLowerCase())) {
+    return '新会话'
+  }
+
+  return title
+}
+
 function unwrapCollection(payload, preferredKey) {
   if (Array.isArray(payload)) {
     return payload
@@ -67,7 +78,7 @@ function normalizeAttachments(attachments) {
 function normalizeSession(session) {
   return {
     id: String(session.id ?? session.session_id ?? session.sessionId),
-    title: String(session.title ?? session.name ?? '新会话'),
+    title: normalizeSessionTitle(session.title ?? session.name),
     updatedAt: String(session.updated_at ?? session.updatedAt ?? session.created_at ?? session.createdAt ?? ''),
     status: String(session.status ?? 'idle'),
   }
@@ -100,7 +111,7 @@ async function fetchJson(url, options = {}) {
 
   if (!response.ok) {
     const message = await response.text()
-    throw new Error(message || `Request failed with status ${response.status}`)
+    throw new Error(message || `请求失败（状态码 ${response.status}）`)
   }
 
   if (response.status === 204) {
@@ -173,7 +184,7 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
 
         if (!response.ok) {
           const message = await response.text()
-          throw new Error(message || `Upload failed for ${file.name}`)
+          throw new Error(message || `上传附件失败：${file.name}`)
         }
 
         const payload = await response.json()
@@ -209,11 +220,15 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
       const streamUrl = new URL(`${baseUrl}/runs/${encodeURIComponent(runId)}/stream`, window.location.origin)
       const accessToken = resolveAccessToken()
       let closed = false
+      let recoveryTimer = 0
+      let recovering = false
       const {
         lastEventId = '',
         onOpen,
         onEvent,
         onError,
+        onRetry,
+        reconnectGraceMs = 6000,
       } = options
       if (accessToken) {
         streamUrl.searchParams.set('access_token', accessToken)
@@ -223,7 +238,39 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
       }
 
       const eventSource = new EventSource(streamUrl.toString(), { withCredentials: true })
-      eventSource.onopen = () => onOpen?.()
+      const clearRecoveryWindow = () => {
+        if (!recoveryTimer) {
+          return
+        }
+        globalThis.clearTimeout(recoveryTimer)
+        recoveryTimer = 0
+      }
+
+      const startRecoveryWindow = () => {
+        if (closed || recoveryTimer) {
+          return
+        }
+
+        recovering = true
+        onRetry?.()
+        recoveryTimer = globalThis.setTimeout(() => {
+          recoveryTimer = 0
+          recovering = false
+          if (closed) {
+            return
+          }
+          closed = true
+          eventSource.close()
+          onError?.(new Error('实时连接恢复失败，请稍后重试。'))
+        }, reconnectGraceMs)
+      }
+
+      eventSource.onopen = () => {
+        const resumed = recovering
+        clearRecoveryWindow()
+        recovering = false
+        onOpen?.({ resumed })
+      }
       eventSource.onmessage = (event) => {
         if (closed) {
           return
@@ -231,19 +278,21 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
         try {
           onEvent?.(JSON.parse(event.data))
         } catch (error) {
-          onError?.(error instanceof Error ? error : new Error('Invalid SSE payload.'))
+          onError?.(error instanceof Error ? error : new Error('实时事件格式无效。'))
         }
       }
       eventSource.onerror = () => {
         if (closed || eventSource.readyState === EventSource.CLOSED) {
           return
         }
-        onError?.(new Error('SSE connection closed unexpectedly.'))
+        startRecoveryWindow()
       }
 
       return {
         close() {
           closed = true
+          clearRecoveryWindow()
+          recovering = false
           eventSource.close()
         },
       }

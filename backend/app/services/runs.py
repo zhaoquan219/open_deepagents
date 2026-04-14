@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from langgraph.errors import GraphRecursionError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
@@ -32,6 +34,12 @@ def new_run_id() -> str:
     return f"run-{uuid4()}"
 
 
+@dataclass(frozen=True)
+class RunSubscriber:
+    queue: asyncio.Queue[dict[str, Any] | None]
+    loop: asyncio.AbstractEventLoop
+
+
 @dataclass
 class RunState:
     run_id: str
@@ -39,28 +47,50 @@ class RunState:
     status: str = "queued"
     created_at: datetime = field(default_factory=utc_now)
     envelopes: list[dict[str, Any]] = field(default_factory=list)
-    subscribers: set[asyncio.Queue[dict[str, Any] | None]] = field(default_factory=set)
+    subscribers: set[RunSubscriber] = field(default_factory=set)
     completed: bool = False
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def publish(self, envelope: dict[str, Any]) -> None:
-        self.envelopes.append(envelope)
-        if envelope.get("type") == "status":
-            self.status = str(envelope.get("status") or self.status)
-        elif envelope.get("type") == "error":
-            self.status = "failed"
-        for subscriber in list(self.subscribers):
-            subscriber.put_nowait(envelope)
+        with self.lock:
+            self.envelopes.append(envelope)
+            if envelope.get("type") == "status":
+                self.status = str(envelope.get("status") or self.status)
+            elif envelope.get("type") == "error":
+                self.status = "failed"
+            subscribers = tuple(self.subscribers)
+        for subscriber in subscribers:
+            subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, envelope)
 
     def finish(self, status: str) -> None:
-        self.status = status
-        self.completed = True
-        for subscriber in list(self.subscribers):
-            subscriber.put_nowait(None)
+        with self.lock:
+            self.status = status
+            self.completed = True
+            subscribers = tuple(self.subscribers)
+        for subscriber in subscribers:
+            subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, None)
+
+    def backlog_after(self, last_event_id: str | None) -> list[dict[str, Any]]:
+        with self.lock:
+            return _backlog_after(list(self.envelopes), last_event_id)
+
+    def add_subscriber(self, subscriber: RunSubscriber) -> None:
+        with self.lock:
+            self.subscribers.add(subscriber)
+
+    def discard_subscriber(self, subscriber: RunSubscriber) -> None:
+        with self.lock:
+            self.subscribers.discard(subscriber)
+
+    def is_drained(self, subscriber: RunSubscriber) -> bool:
+        with self.lock:
+            return self.completed and subscriber.queue.empty()
 
 
 class RunManager:
-    def __init__(self) -> None:
+    def __init__(self, keepalive_interval: float = 15.0) -> None:
         self._runs: dict[str, RunState] = {}
+        self.keepalive_interval = keepalive_interval
 
     def create(self, session_id: str) -> RunState:
         state = RunState(run_id=new_run_id(), session_id=session_id)
@@ -75,17 +105,20 @@ class RunManager:
         if state is None:
             raise KeyError(run_id)
 
-        subscriber: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-        state.subscribers.add(subscriber)
+        subscriber = RunSubscriber(queue=asyncio.Queue(), loop=asyncio.get_running_loop())
+        state.add_subscriber(subscriber)
         try:
-            for envelope in _backlog_after(state.envelopes, last_event_id):
+            for envelope in state.backlog_after(last_event_id):
                 yield _to_sse(envelope)
 
             while True:
-                if state.completed and subscriber.empty():
+                if state.is_drained(subscriber):
                     break
                 try:
-                    item = await asyncio.wait_for(subscriber.get(), timeout=15)
+                    item = await asyncio.wait_for(
+                        subscriber.queue.get(),
+                        timeout=self.keepalive_interval,
+                    )
                 except TimeoutError:
                     yield ": keep-alive\n\n"
                     continue
@@ -93,7 +126,7 @@ class RunManager:
                     break
                 yield _to_sse(item)
         finally:
-            state.subscribers.discard(subscriber)
+            state.discard_subscriber(subscriber)
 
 
 class RunService:
@@ -147,16 +180,42 @@ class RunService:
                 data={"attachments": attachments, "prompt": prompt},
             )
         )
-        asyncio.create_task(
-            self._execute_run(
-                settings=settings,
-                run_id=state.run_id,
-                session_id=session_id,
-                prompt=prompt,
-                attachments=attachments,
-            )
+        self._launch_run(
+            settings=settings,
+            run_id=state.run_id,
+            session_id=session_id,
+            prompt=prompt,
+            attachments=attachments,
         )
         return state
+
+    def _launch_run(
+        self,
+        *,
+        settings: Settings,
+        run_id: str,
+        session_id: str,
+        prompt: str,
+        attachments: list[dict[str, Any]],
+    ) -> None:
+        def runner() -> None:
+            asyncio.run(
+                self._execute_run(
+                    settings=settings,
+                    run_id=run_id,
+                    session_id=session_id,
+                    prompt=prompt,
+                    attachments=attachments,
+                )
+            )
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            thread = threading.Thread(target=runner, daemon=True)
+            thread.start()
+            return
+        loop.run_in_executor(None, runner)
 
     async def _execute_run(
         self,
@@ -177,12 +236,12 @@ class RunService:
                 raise RuntimeError("DEEPAGENTS_MODEL is not configured in backend/.env")
 
             agent = self.builder(runtime_config)
-            prompt_with_attachments = prompt
-            if attachments:
-                names = ", ".join(
-                    str(item.get("name") or item.get("id") or "attachment") for item in attachments
-                )
-                prompt_with_attachments = f"{prompt}\n\nAttached files: {names}"
+            agent_input = self._build_agent_input(
+                session_id=session_id,
+                run_id=run_id,
+                prompt=prompt,
+                attachments=attachments,
+            )
 
             final_message = ""
             saw_message_delta = False
@@ -191,8 +250,9 @@ class RunService:
             sequence = 1
             async for envelope in stream_sse_envelopes(
                 agent,
-                {"messages": [{"role": "user", "content": prompt_with_attachments}]},
+                agent_input,
                 bridge_run_id=run_id,
+                config={"recursion_limit": settings.deepagents_recursion_limit},
             ):
                 sequence += 1
                 ui_event = _bridge_to_ui(
@@ -302,6 +362,62 @@ class RunService:
                 )
                 state.publish(completion_envelope)
             state.finish("completed")
+        except GraphRecursionError as exc:
+            fallback_message = _build_recursion_fallback(prompt, agent_input["messages"])
+            fallback_event = _ui_envelope(
+                run_id=run_id,
+                session_id=session_id,
+                sequence=len(state.envelopes) + 1,
+                event_type="message.final",
+                status="completed",
+                label="message.final",
+                detail="Assistant response completed with fallback after recursion limit.",
+                data={"warning": str(exc)},
+                message={
+                    "id": f"final:{run_id}",
+                    "role": "assistant",
+                    "content": fallback_message,
+                    "createdAt": utc_now().isoformat(),
+                    "attachments": [],
+                },
+            )
+            self._persist_event(run_id=run_id, session_id=session_id, envelope=fallback_event)
+            state.publish(fallback_event)
+            completion_event = _ui_envelope(
+                run_id=run_id,
+                session_id=session_id,
+                sequence=len(state.envelopes) + 1,
+                event_type="status",
+                status="completed",
+                label="Run completed",
+                detail="DeepAgents run completed with a fallback response.",
+                data={"warning": str(exc)},
+            )
+            self._persist_event(run_id=run_id, session_id=session_id, envelope=completion_event)
+            state.publish(completion_event)
+            with self.database.session_factory() as db:
+                recovered_session = _require_session(db, session_id)
+                db.add(
+                    MessageRecord(
+                        session_id=session_id,
+                        role="assistant",
+                        content=fallback_message,
+                        run_id=run_id,
+                        is_final=True,
+                    )
+                )
+                recovered_session.last_run_id = run_id
+                run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
+                if run_record is not None:
+                    run_record.status = "completed"
+                    run_record.error_text = str(exc)
+                    run_record.final_output_text = fallback_message
+                    run_record.event_count = len(state.envelopes)
+                    run_record.completed_at = utc_now()
+                    db.add(run_record)
+                db.add(recovered_session)
+                db.commit()
+            state.finish("completed")
         except Exception as exc:
             error_envelope = _ui_envelope(
                     run_id=run_id,
@@ -344,6 +460,45 @@ class RunService:
                     db.add(failed_session)
                     db.commit()
             state.finish("failed")
+
+    def _build_agent_input(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        prompt: str,
+        attachments: list[dict[str, Any]],
+    ) -> dict[str, list[dict[str, str]]]:
+        with self.database.session_factory() as db:
+            records = (
+                db.query(MessageRecord)
+                .filter(MessageRecord.session_id == session_id)
+                .order_by(MessageRecord.created_at.asc(), MessageRecord.id.asc())
+                .all()
+            )
+
+        messages: list[dict[str, str]] = []
+        for record in records:
+            if record.role not in {"user", "assistant"}:
+                continue
+            content = record.content or ""
+            if record.role == "user" and record.run_id == run_id:
+                content = _append_attachment_names(content, attachments)
+            if not content.strip():
+                continue
+            messages.append({"role": record.role, "content": content})
+
+        if messages:
+            return {"messages": messages}
+
+        return {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": _append_attachment_names(prompt, attachments),
+                }
+            ]
+        }
 
     def _persist_event(self, *, run_id: str, session_id: str, envelope: dict[str, Any]) -> None:
         event_id = str(envelope["event_id"])
@@ -469,7 +624,7 @@ def _bridge_to_ui(*, envelope: SseEventEnvelope, session_id: str, sequence: int)
     elif event == "message.completed":
         event_type = "message.final"
         status = "completed"
-        content = str(data.get("text") or "")
+        content = _extract_message_text(data)
         if not content:
             event_type = "step"
             detail = "Model completed without a direct text payload."
@@ -531,3 +686,28 @@ def _extract_message_text(payload: Any) -> str:
         if "text" in payload and isinstance(payload["text"], str):
             return payload["text"]
     return ""
+
+
+def _append_attachment_names(prompt: str, attachments: list[dict[str, Any]]) -> str:
+    if not attachments:
+        return prompt
+    names = ", ".join(
+        str(item.get("name") or item.get("id") or "attachment") for item in attachments
+    )
+    return f"{prompt}\n\nAttached files: {names}"
+
+
+def _build_recursion_fallback(prompt: str, messages: list[dict[str, str]]) -> str:
+    if "目录" in prompt:
+        if any("没有文件" in str(message.get("content", "")) for message in messages):
+            return (
+                "我多次尝试用现有工具确认目录，但当前可访问文件视图仍然为空，"
+                "暂时无法给出更具体的目录路径。"
+            )
+        return "我多次尝试用现有工具确认目录，但当前工具结果还不足以给出稳定的目录路径。"
+    if "文件" in prompt:
+        return "我多次尝试列出可访问文件，但当前工具返回的文件视图仍然为空。"
+    return (
+        "我已经尝试使用可用工具处理这个问题，但执行过程没有在预期步数内收敛。"
+        "请换一个更具体的问法，或稍后重试。"
+    )

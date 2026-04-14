@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import AdminUserDep, DatabaseSessionDep
@@ -67,6 +67,7 @@ async def stream_run(
     request: Request,
     last_event_id: str | None = None,
     access_token: str | None = Query(default=None),
+    last_event_id_header: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
     settings = cast(Settings, request.app.state.settings)
     if access_token is None:
@@ -80,8 +81,10 @@ async def stream_run(
     if run_state is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
 
+    resume_from = last_event_id or last_event_id_header
+
     return StreamingResponse(
-        get_run_manager(request).stream(run_id, last_event_id=last_event_id),
+        get_run_manager(request).stream(run_id, last_event_id=resume_from),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

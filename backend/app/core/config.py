@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     deepagents_middleware_specs: str | None = None
     deepagents_skills: str | None = None
     deepagents_memory: str | None = None
+    deepagents_recursion_limit: int = 60
     deepagents_sandbox_kind: str = "state"
     deepagents_sandbox_root_dir: str | None = None
     deepagents_sandbox_virtual_mode: bool | None = None

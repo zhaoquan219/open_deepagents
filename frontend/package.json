@@ -7,20 +7,25 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "lint": "eslint \"src/**/*.js\" \"vite.config.js\"",
+    "lint": "eslint \"src/**/*.{js,vue}\" \"tests/**/*.js\" \"vite.config.js\"",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "check": "npm run lint && npm run test && npm run typecheck && npm run build"
   },
   "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "element-plus": "^2.13.7",
     "marked": "^15",
     "mermaid": "^11",
     "vue": "^3"
   },
   "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.6",
     "eslint": "^9",
+    "eslint-plugin-vue": "^10.8.0",
     "typescript": "^5",
     "vite": "^6",
-    "vitest": "^3"
+    "vitest": "^3",
+    "vue-eslint-parser": "^10.4.0"
   }
 }

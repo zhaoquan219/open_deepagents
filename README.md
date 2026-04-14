@@ -353,7 +353,7 @@ python verification/scaffold_audit.py
 1. 本 README
 2. [docs/repository-architecture.md](/Users/zhaoquan/AI_Coding/open_deepagents/docs/repository-architecture.md)
 3. [backend/app/main.py](/Users/zhaoquan/AI_Coding/open_deepagents/backend/app/main.py)
-4. [frontend/src/App.js](/Users/zhaoquan/AI_Coding/open_deepagents/frontend/src/App.js)
+4. [frontend/src/App.vue](/Users/zhaoquan/AI_Coding/open_deepagents/frontend/src/App.vue)
 5. [backend/app/services/runs.py](/Users/zhaoquan/AI_Coding/open_deepagents/backend/app/services/runs.py)
 6. [frontend/src/api/client.js](/Users/zhaoquan/AI_Coding/open_deepagents/frontend/src/api/client.js)
 

@@ -18,7 +18,72 @@ function asString(value) {
   return String(value)
 }
 
-function normalizeType(rawType, data) {
+function normalizeStepLikeType(label, detail, data) {
+  const normalizedLabel = asString(label).toLowerCase()
+  const normalizedDetail = asString(detail).toLowerCase()
+
+  if (normalizedLabel === 'message.final') {
+    return 'message.final'
+  }
+  if (normalizedLabel === 'message.completed') {
+    return extractText(data.text ?? data.output ?? data.payload ?? data) ? 'message.final' : 'step'
+  }
+  if (normalizedLabel === 'message.delta') {
+    return 'message.delta'
+  }
+  if (
+    normalizedLabel.startsWith('tool.') ||
+    normalizedDetail.includes('tool') ||
+    normalizedDetail === 'tools'
+  ) {
+    return 'tool'
+  }
+  if (normalizedLabel.startsWith('skill.') || normalizedDetail.includes('skill')) {
+    return 'skill'
+  }
+  if (normalizedLabel.startsWith('sandbox.') || normalizedDetail.includes('sandbox')) {
+    return 'sandbox'
+  }
+  if (normalizedLabel === 'run.started' || normalizedLabel === 'run.completed') {
+    return 'status'
+  }
+  if (normalizedLabel === 'run.failed') {
+    return 'error'
+  }
+  return 'step'
+}
+
+function extractText(value) {
+  if (value === undefined || value === null) {
+    return ''
+  }
+  if (typeof value === 'string') {
+    return value
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => extractText(item)).join('')
+  }
+  if (typeof value === 'object') {
+    if ('messages' in value && Array.isArray(value.messages)) {
+      return value.messages.map((message) => extractText(message)).join('')
+    }
+    if ('content' in value) {
+      return extractText(value.content)
+    }
+    if (typeof value.text === 'string') {
+      return value.text
+    }
+    if ('output' in value) {
+      return extractText(value.output)
+    }
+    if ('payload' in value) {
+      return extractText(value.payload)
+    }
+  }
+  return ''
+}
+
+function normalizeType(rawType, label, detail, data) {
   const type = asString(rawType)
   if (type === 'message') {
     if (data.final || data.message) {
@@ -29,7 +94,34 @@ function normalizeType(rawType, data) {
   if (type === 'run') {
     return 'status'
   }
+  if (type === 'step') {
+    return normalizeStepLikeType(label, detail, data)
+  }
   return type
+}
+
+function extractMessagePayload(payload, data, type, timestamp, runId) {
+  const messagePayload = payload.message && typeof payload.message === 'object' ? payload.message : data.message
+  if (messagePayload && typeof messagePayload === 'object') {
+    return messagePayload
+  }
+
+  if (type !== 'message.final') {
+    return null
+  }
+
+  const content = extractText(data.text ?? data.output ?? data.payload ?? data)
+  if (!content) {
+    return null
+  }
+
+  return {
+    id: `final:${runId || 'stream'}`,
+    role: 'assistant',
+    content,
+    createdAt: timestamp,
+    attachments: [],
+  }
 }
 
 export function normalizeStreamEnvelope(payload) {
@@ -38,19 +130,21 @@ export function normalizeStreamEnvelope(payload) {
   }
 
   const data = payload.data && typeof payload.data === 'object' ? payload.data : {}
-  const type = normalizeType(payload.type ?? payload.event_type ?? payload.eventType, data)
+  const rawType = payload.type ?? payload.event_type ?? payload.eventType
   const eventId = asString(payload.event_id ?? payload.eventId ?? payload.id)
   const runId = asString(payload.run_id ?? payload.runId ?? payload.run?.id ?? data.run_id ?? data.runId)
   const sessionId = asString(payload.session_id ?? payload.sessionId ?? payload.session?.id ?? data.session_id ?? data.sessionId)
   const timestamp = asString(payload.timestamp ?? payload.created_at ?? payload.createdAt ?? new Date().toISOString())
   const version = asString(payload.version ?? payload.schema_version ?? payload.schemaVersion ?? STREAM_SCHEMA_VERSION)
-  const status = asString(payload.status ?? payload.run_status ?? payload.runStatus ?? data.status)
+  const label = asString(payload.label ?? data.label ?? data.name ?? rawType)
+  const detail = asString(payload.detail ?? data.detail ?? data.summary ?? data.node ?? data.message ?? '')
+  const type = normalizeType(rawType, label, detail, data)
+  const status =
+    asString(payload.status ?? payload.run_status ?? payload.runStatus ?? data.status) ||
+    (type === 'message.final' ? 'completed' : '')
   const stepId = asString(payload.step_id ?? payload.stepId ?? data.step_id ?? data.stepId)
-  const label = asString(payload.label ?? data.label ?? data.name ?? type)
-  const detail = asString(payload.detail ?? data.detail ?? data.summary ?? data.message ?? '')
-  const messagePayload = payload.message && typeof payload.message === 'object' ? payload.message : data.message
-  const message = messagePayload && typeof messagePayload === 'object' ? messagePayload : null
-  const delta = asString(data.delta ?? payload.delta)
+  const delta = asString(data.delta ?? payload.delta) || extractText(data.chunk ?? data.text)
+  const message = extractMessagePayload(payload, data, type, timestamp, runId)
 
   if (!eventId || !type || !allowedTypes.has(type)) {
     return null

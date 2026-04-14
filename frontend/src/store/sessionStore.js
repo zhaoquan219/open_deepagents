@@ -70,6 +70,39 @@ function normalizeAttachments(attachments) {
   }))
 }
 
+function messageSignature(message) {
+  const attachments = Array.isArray(message?.attachments)
+    ? message.attachments.map((attachment) => attachment?.name || attachment?.id || '').join('|')
+    : ''
+  return [
+    String(message?.role || ''),
+    normalizeContent(message?.content ?? message?.text ?? ''),
+    attachments,
+  ].join('::')
+}
+
+export function reconcileMessages(localMessages, fetchedMessages) {
+  const local = Array.isArray(localMessages) ? [...localMessages] : []
+  const fetched = Array.isArray(fetchedMessages) ? [...fetchedMessages] : []
+
+  if (local.length === 0) {
+    return fetched
+  }
+  if (fetched.length === 0) {
+    return local
+  }
+
+  const fetchedIsPrefixOfLocal =
+    fetched.length <= local.length &&
+    fetched.every((message, index) => messageSignature(message) === messageSignature(local[index]))
+
+  if (fetchedIsPrefixOfLocal) {
+    return [...fetched, ...local.slice(fetched.length)]
+  }
+
+  return fetched
+}
+
 export function mergeAssistantDelta(messages, { runId, delta }) {
   const streamId = `stream:${runId}`
   const transcript = [...messages]
@@ -212,12 +245,13 @@ export function createSessionStore(apiClient) {
 
   async function selectSession(sessionId) {
     const normalizedId = String(sessionId)
+    const localMessages = state.messagesBySession[normalizedId] || []
     state.currentSessionId = normalizedId
     state.loadingMessages = true
     state.error = ''
     try {
       const messages = await apiClient.getSessionMessages(normalizedId)
-      state.messagesBySession[normalizedId] = messages
+      state.messagesBySession[normalizedId] = reconcileMessages(localMessages, messages)
     } catch (error) {
       state.error = error instanceof Error ? error.message : '加载消息失败。'
       state.messagesBySession[normalizedId] = state.messagesBySession[normalizedId] || []

@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createSessionStore, finalizeAssistantMessage, mergeAssistantDelta } from './sessionStore.js'
+import {
+  createSessionStore,
+  finalizeAssistantMessage,
+  mergeAssistantDelta,
+  reconcileMessages,
+} from '../../../src/store/sessionStore.js'
 
 describe('sessionStore transcript helpers', () => {
   it('merges assistant deltas into a transient streaming message', () => {
@@ -64,6 +69,46 @@ describe('sessionStore transcript helpers', () => {
         content: '完整回复',
         streaming: false,
       }),
+    ])
+  })
+
+  it('preserves newer local messages when a session refresh returns a stale prefix', () => {
+    const reconciled = reconcileMessages(
+      [
+        { id: 'user-1', role: 'user', content: '看下你本地有哪些文件？', attachments: [] },
+        { id: 'assistant-1', role: 'assistant', content: '当前目录为空，没有文件。', attachments: [] },
+      ],
+      [{ id: 'server-user-1', role: 'user', content: '看下你本地有哪些文件？', attachments: [] }],
+    )
+
+    expect(reconciled).toEqual([
+      expect.objectContaining({ role: 'user', content: '看下你本地有哪些文件？' }),
+      expect.objectContaining({ role: 'assistant', content: '当前目录为空，没有文件。' }),
+    ])
+  })
+
+  it('merges a stale fetch without dropping local assistant output', async () => {
+    const apiClient = {
+      createSession: vi.fn(),
+      deleteSession: vi.fn(async () => null),
+      getSessionMessages: vi.fn(async () => [
+        { id: 'server-user-1', role: 'user', content: '第一问', attachments: [] },
+      ]),
+      listSessions: vi.fn(),
+      uploadFiles: vi.fn(),
+    }
+    const store = createSessionStore(apiClient)
+    store.state.currentSessionId = 'session-1'
+    store.state.messagesBySession['session-1'] = [
+      { id: 'local-user-1', role: 'user', content: '第一问', attachments: [] },
+      { id: 'local-assistant-1', role: 'assistant', content: '第一答', attachments: [] },
+    ]
+
+    await store.selectSession('session-1')
+
+    expect(store.state.messagesBySession['session-1']).toEqual([
+      expect.objectContaining({ role: 'user', content: '第一问' }),
+      expect.objectContaining({ role: 'assistant', content: '第一答' }),
     ])
   })
 

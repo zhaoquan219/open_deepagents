@@ -28,15 +28,60 @@ export function createInitialRun(runId, sessionId) {
   }
 }
 
+function statusTimelineLabel(status) {
+  if (status === 'queued') {
+    return '排队中'
+  }
+  if (status === 'running') {
+    return '处理中'
+  }
+  if (status === 'completed') {
+    return '处理完成'
+  }
+  if (status === 'failed') {
+    return '处理失败'
+  }
+  return '状态更新'
+}
+
+function shouldCollapseDuplicate(previous, entry) {
+  return (
+    previous &&
+    previous.kind === entry.kind &&
+    previous.label === entry.label &&
+    previous.detail === entry.detail &&
+    previous.status === entry.status
+  )
+}
+
 function appendTimeline(activeRun, envelope, fallbackLabel) {
-  activeRun.timeline.push({
+  const entry = {
     id: envelope.eventId || createClientId(),
     kind: envelope.type,
     label: envelope.label || fallbackLabel,
     detail: envelope.detail,
     status: envelope.status || 'in_progress',
     timestamp: envelope.timestamp || new Date().toISOString(),
-  })
+    aggregateCount: 1,
+  }
+  const previous = activeRun.timeline.at(-1)
+
+  if (previous?.kind === 'message.delta' && entry.kind === 'message.delta') {
+    const aggregateCount = Number(previous.aggregateCount || 1) + 1
+    previous.aggregateCount = aggregateCount
+    previous.timestamp = entry.timestamp
+    previous.status = entry.status
+    previous.detail = `已连续接收 ${aggregateCount} 段回复内容。`
+    return
+  }
+
+  if (shouldCollapseDuplicate(previous, entry)) {
+    previous.aggregateCount = Number(previous.aggregateCount || 1) + 1
+    previous.timestamp = entry.timestamp
+    return
+  }
+
+  activeRun.timeline.push(entry)
 }
 
 export function reduceRunState(activeRun, envelope) {
@@ -61,7 +106,7 @@ export function reduceRunState(activeRun, envelope) {
     if (next.status === 'completed' || next.status === 'failed') {
       next.finishedAt = envelope.timestamp || next.finishedAt
     }
-    appendTimeline(next, envelope, `Run ${next.status}`)
+    appendTimeline(next, envelope, statusTimelineLabel(next.status))
     return next
   }
 
@@ -71,14 +116,14 @@ export function reduceRunState(activeRun, envelope) {
     next.connected = false
     next.finishedAt = envelope.timestamp || next.finishedAt
     next.lastError = envelope.detail || next.lastError
-    appendTimeline(next, envelope, 'Run failed')
+    appendTimeline(next, envelope, '处理失败')
     return next
   }
 
   if (envelope.type === 'message.final') {
     next.status = next.status === 'failed' ? 'failed' : 'completed'
     next.finishedAt = envelope.timestamp || next.finishedAt
-    appendTimeline(next, envelope, 'Assistant message finalized')
+    appendTimeline(next, envelope, '最终回复已写入会话')
     return next
   }
 
@@ -164,6 +209,26 @@ export function createRunStore() {
     }
   }
 
+  function markConnecting(runId, detail = '实时连接恢复中。') {
+    if (!state.activeRun || state.activeRun.runId !== runId) {
+      return
+    }
+    if (state.activeRun.connectionState === 'connecting') {
+      return
+    }
+    state.activeRun.connected = false
+    state.activeRun.connectionState = 'connecting'
+    state.connectionState = 'connecting'
+    appendTimeline(state.activeRun, {
+      type: 'connection',
+      label: '实时连接恢复中',
+      detail,
+      status: 'running',
+      timestamp: new Date().toISOString(),
+      connectionState: 'connecting',
+    })
+  }
+
   function markDisconnected(runId, detail = '实时连接已关闭。') {
     if (!state.activeRun || state.activeRun.runId !== runId) {
       return
@@ -181,6 +246,25 @@ export function createRunStore() {
       status: state.activeRun.status === 'failed' ? 'failed' : 'completed',
       timestamp: new Date().toISOString(),
       connectionState: 'closed',
+    })
+  }
+
+  function markCompleted(runId, detail = '本轮处理已完成。') {
+    if (!state.activeRun || state.activeRun.runId !== runId) {
+      return
+    }
+    state.error = ''
+    state.activeRun.status = 'completed'
+    state.activeRun.connected = false
+    state.activeRun.connectionState = 'closed'
+    state.activeRun.finishedAt = new Date().toISOString()
+    state.connectionState = 'closed'
+    appendTimeline(state.activeRun, {
+      type: 'status',
+      label: '处理完成',
+      detail,
+      status: 'completed',
+      timestamp: state.activeRun.finishedAt,
     })
   }
 
@@ -243,6 +327,8 @@ export function createRunStore() {
     consume,
     getLastEventId,
     markConnected,
+    markCompleted,
+    markConnecting,
     markDisconnected,
     markErrored,
     recordClientIssue,

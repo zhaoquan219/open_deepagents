@@ -61,7 +61,7 @@ The frontend uses a flat, small-app layout:
 
 ```text
 frontend/src/
-├── App.js          Root UI composition
+├── App.vue         Root UI composition
 ├── api/            Backend HTTP client
 ├── components/     Reusable view components
 ├── lib/            Pure rendering and normalization helpers
@@ -71,11 +71,12 @@ frontend/src/
 
 Rules:
 
-- `App.js` composes the screen and owns page-level behavior.
+- `App.vue` composes the screen and owns page-level behavior.
 - `api/` is the only place that should know fetch and endpoint details.
 - `components/` contains presentational and interaction units.
 - `lib/` contains pure helpers such as markdown rendering and SSE normalization.
 - `store/` contains state transitions and view-model logic.
+- `frontend/tests/unit/` contains Vitest coverage and stays separate from source files.
 
 Removed from the canonical path:
 
@@ -104,7 +105,7 @@ For a new developer, the fastest way to understand the project is:
 1. read `README.md`
 2. read this file
 3. inspect `backend/app/main.py`
-4. inspect `frontend/src/App.js`
+4. inspect `frontend/src/App.vue`
 5. inspect `backend/app/services/runs.py`
 6. inspect `frontend/src/api/client.js`
 
