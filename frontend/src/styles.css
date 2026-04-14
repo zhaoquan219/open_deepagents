@@ -349,7 +349,7 @@ button {
 .sidebar-toolbar-actions {
   display: flex;
   align-items: stretch;
-  gap: 8px;
+  gap: 10px;
   flex: 0 0 auto;
 }
 
