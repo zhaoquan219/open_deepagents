@@ -5,10 +5,6 @@ import { computed, ref } from 'vue'
 import MessageThread from './MessageThread.vue'
 
 const props = defineProps({
-  canStop: {
-    type: Boolean,
-    default: false,
-  },
   currentSession: {
     type: Object,
     default: null,
@@ -45,10 +41,6 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
-  activeRun: {
-    type: Object,
-    default: null,
-  },
   stopping: {
     type: Boolean,
     default: false,
@@ -66,9 +58,35 @@ const assistantMessageCount = computed(
   () => props.messages.filter((message) => message?.role === 'assistant').length,
 )
 const isRunLocked = computed(() => ['queued', 'running'].includes(props.runStatus))
+const canSubmitDraft = computed(() => Boolean(draft.value.trim()))
+const primaryActionLabel = computed(() => {
+  if (props.stopping) {
+    return '停止中…'
+  }
+  if (isRunLocked.value) {
+    return '停止'
+  }
+  if (props.submitting) {
+    return '发送中…'
+  }
+  return '发送'
+})
+const primaryActionType = computed(() => (isRunLocked.value ? 'danger' : 'primary'))
+const composerStatusCopy = computed(() => {
+  if (props.stopping) {
+    return '正在请求停止当前运行，界面会在服务端确认后恢复可发送状态。'
+  }
+  if (isRunLocked.value) {
+    return '主按钮已切换为停止操作；发送下一轮前需要先结束当前运行。'
+  }
+  if (props.uploading) {
+    return '附件上传中…'
+  }
+  return '附件会自动附加到下一次发送。'
+})
 const runtimeCopy = computed(() => {
   if (props.runStatus === 'running') {
-    return '当前任务仍在处理中，新的内容会自动追加到下方消息流，完成前不能继续发送下一轮。'
+    return '当前任务仍在处理中，底部主按钮已经切换为停止操作，新的内容会自动追加到消息流。'
   }
   if (props.runStatus === 'completed') {
     return '本轮处理已经完成，可以立刻继续追问。'
@@ -125,6 +143,14 @@ function handleComposerKeydown(event) {
     submitDraft()
   }
 }
+
+function handlePrimaryAction() {
+  if (isRunLocked.value) {
+    emit('stop-run')
+    return
+  }
+  submitDraft()
+}
 </script>
 
 <template>
@@ -157,16 +183,6 @@ function handleComposerKeydown(event) {
         </div>
       </div>
       <div class="workspace-header-actions">
-        <el-button
-          v-if="props.activeRun && props.canStop"
-          size="small"
-          plain
-          type="danger"
-          :loading="props.stopping"
-          @click="$emit('stop-run')"
-        >
-          {{ props.stopping ? '停止中…' : '停止运行' }}
-        </el-button>
         <el-tag size="small" :type="statusTagType(props.runStatus)" effect="light">
           {{ props.runStatusLabel }}
         </el-tag>
@@ -205,20 +221,24 @@ function handleComposerKeydown(event) {
       <div class="upload-row">
         <div class="upload-row-main">
           <p class="composer-label">输入内容</p>
-          <span class="muted-copy">
-            {{
-              isRunLocked
-                ? '当前任务处理中，完成后才能继续发送或追加附件。'
-                : props.uploading
-                  ? '附件上传中…'
-                  : '附件会自动附加到下一次发送。'
-            }}
-          </span>
+          <span class="muted-copy">{{ composerStatusCopy }}</span>
         </div>
-        <el-button size="small" plain :icon="UploadFilled" :disabled="props.uploading || isRunLocked" @click="triggerFilePicker">
+        <el-button
+          size="small"
+          plain
+          :icon="UploadFilled"
+          :disabled="props.uploading || isRunLocked"
+          @click="triggerFilePicker"
+        >
           上传附件
         </el-button>
-        <input ref="fileInput" class="hidden-input" type="file" multiple @change="handleFileSelection" />
+        <input
+          ref="fileInput"
+          class="hidden-input"
+          type="file"
+          multiple
+          @change="handleFileSelection"
+        />
       </div>
 
       <ul v-if="props.pendingUploads.length" class="upload-list">
@@ -240,9 +260,18 @@ function handleComposerKeydown(event) {
       />
 
       <div class="composer-actions">
-        <span class="muted-copy">按 Ctrl 或 Command + Enter 可快速发送</span>
-        <el-button size="small" type="primary" :disabled="props.submitting || isRunLocked || !draft.trim()" @click="submitDraft">
-          {{ props.submitting || isRunLocked ? '处理中…' : '发送' }}
+        <span class="muted-copy">
+          {{ isRunLocked ? '当前运行中，主按钮已切换为停止。' : '按 Ctrl 或 Command + Enter 可快速发送' }}
+        </span>
+        <el-button
+          class="composer-primary-button"
+          size="small"
+          :type="primaryActionType"
+          :loading="props.submitting || props.stopping"
+          :disabled="(!isRunLocked && !canSubmitDraft) || (isRunLocked && props.stopping)"
+          @click="handlePrimaryAction"
+        >
+          {{ primaryActionLabel }}
         </el-button>
       </div>
     </div>

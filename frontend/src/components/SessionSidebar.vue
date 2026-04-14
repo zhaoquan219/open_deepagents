@@ -1,5 +1,6 @@
 <script setup>
 import { Plus, RefreshRight } from '@element-plus/icons-vue'
+import { computed } from 'vue'
 
 defineEmits(['new-session', 'refresh', 'select-session', 'delete-session'])
 
@@ -25,19 +26,28 @@ const props = defineProps({
     default: '',
   },
 })
+
+const sessionCount = computed(() => props.sessions.length)
 </script>
 
 <template>
   <div class="sidebar">
     <div class="sidebar-header">
-      <div class="sidebar-heading">
-        <p class="eyebrow">会话</p>
-        <h2>历史会话</h2>
-        <p class="sidebar-summary">
-          {{ props.currentSessionId ? '切换任意会话都可以继续它的上下文。' : '新建一条会话后即可开始对话。' }}
-        </p>
+      <div class="sidebar-header-main">
+        <div class="sidebar-heading">
+          <p class="eyebrow">会话</p>
+          <h2>历史会话</h2>
+          <p class="sidebar-summary">
+            {{ props.currentSessionId ? '切换任意会话都可以继续它的上下文。' : '新建一条会话后即可开始对话。' }}
+          </p>
+        </div>
       </div>
-      <el-button size="small" type="primary" :icon="Plus" @click="$emit('new-session')">新建</el-button>
+      <div class="sidebar-header-actions">
+        <p class="sidebar-header-meta">共 {{ sessionCount }} 条</p>
+        <el-button size="small" type="primary" :icon="Plus" @click="$emit('new-session')">
+          新建
+        </el-button>
+      </div>
     </div>
 
     <div class="sidebar-toolbar">
