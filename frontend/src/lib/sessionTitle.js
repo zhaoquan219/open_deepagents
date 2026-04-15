@@ -1,8 +1,4 @@
-import { uiCopy } from './copy.js'
-
-const PLACEHOLDER_SESSION_TITLES = new Set(
-  ['', ...uiCopy.sessionTitles.placeholderAliases].map((title) => title.toLowerCase()),
-)
+import { messages, uiCopy } from './copy.js'
 
 function normalizeWhitespace(value) {
   return String(value ?? '')
@@ -12,7 +8,7 @@ function normalizeWhitespace(value) {
 
 export function isPlaceholderSessionTitle(value) {
   const title = normalizeWhitespace(value)
-  return !title || PLACEHOLDER_SESSION_TITLES.has(title.toLowerCase())
+  return !title || placeholderSessionTitles().has(title.toLowerCase())
 }
 
 export function normalizeSessionTitle(value) {
@@ -32,4 +28,9 @@ export function distillSessionTitle(value, maxLength = 32) {
     return title
   }
   return `${title.slice(0, maxLength - 3).trimEnd()}...`
+}
+
+function placeholderSessionTitles() {
+  const aliases = Object.values(messages).flatMap((copy) => copy.sessionTitles.placeholderAliases)
+  return new Set(['', ...aliases].map((title) => title.toLowerCase()))
 }

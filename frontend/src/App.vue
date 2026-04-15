@@ -6,7 +6,7 @@ import ChatWorkspace from './components/ChatWorkspace.vue'
 import ProgressTimeline from './components/ProgressTimeline.vue'
 import SessionSidebar from './components/SessionSidebar.vue'
 import { createApiClient } from './api/client.js'
-import { uiCopy } from './lib/copy.js'
+import { localeState, setLocale, uiCopy } from './lib/copy.js'
 import { normalizeStreamEnvelope } from './lib/sseContract.js'
 import { createRunStore } from './store/runStore.js'
 import { createSessionStore } from './store/sessionStore.js'
@@ -63,6 +63,7 @@ const connectionState = computed(
 const runtimeDiagnostics = computed(() => runStore.state.diagnostics)
 const runError = computed(() => runStore.state.error)
 const runStatus = computed(() => runStore.state.activeRun?.status || 'idle')
+const currentLocale = computed(() => localeState.current)
 const canStopRun = computed(
   () => ['queued', 'running'].includes(runStatus.value) && Boolean(activeRun.value?.runId),
 )
@@ -99,6 +100,10 @@ const showTimelinePanel = computed(() => isWideLayout.value || timelinePanelOpen
 const timelineToggleLabel = computed(() =>
   showTimelinePanel.value ? uiCopy.app.timelineToggle.close : uiCopy.app.timelineToggle.open,
 )
+
+function handleLocaleChange(locale) {
+  setLocale(locale)
+}
 
 function applyViewportLayout(matches) {
   isWideLayout.value = matches
@@ -492,6 +497,22 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="toolbar-actions">
+          <el-button-group :aria-label="uiCopy.app.locale.label">
+            <el-button
+              size="small"
+              :type="currentLocale === 'zh' ? 'primary' : 'default'"
+              @click="handleLocaleChange('zh')"
+            >
+              {{ uiCopy.app.locale.zh }}
+            </el-button>
+            <el-button
+              size="small"
+              :type="currentLocale === 'en' ? 'primary' : 'default'"
+              @click="handleLocaleChange('en')"
+            >
+              {{ uiCopy.app.locale.en }}
+            </el-button>
+          </el-button-group>
           <el-tag
             size="small"
             :type="
@@ -583,6 +604,25 @@ onBeforeUnmount(() => {
     <main v-else-if="authChecked" class="auth-layout">
       <el-card class="auth-panel card-shell" shadow="never">
         <div class="auth-card">
+          <div class="composer-actions auth-actions">
+            <span class="muted-copy">{{ uiCopy.app.locale.label }}</span>
+            <el-button-group :aria-label="uiCopy.app.locale.label">
+              <el-button
+                size="small"
+                :type="currentLocale === 'zh' ? 'primary' : 'default'"
+                @click="handleLocaleChange('zh')"
+              >
+                {{ uiCopy.app.locale.zh }}
+              </el-button>
+              <el-button
+                size="small"
+                :type="currentLocale === 'en' ? 'primary' : 'default'"
+                @click="handleLocaleChange('en')"
+              >
+                {{ uiCopy.app.locale.en }}
+              </el-button>
+            </el-button-group>
+          </div>
           <p class="eyebrow">{{ uiCopy.app.auth.eyebrow }}</p>
           <h2>{{ uiCopy.app.auth.title }}</h2>
           <p class="auth-copy">{{ uiCopy.app.auth.copy }}</p>
