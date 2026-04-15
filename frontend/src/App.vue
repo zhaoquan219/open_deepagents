@@ -68,9 +68,6 @@ const canStopRun = computed(
 const stoppingRun = computed(
   () => Boolean(stoppingRunId.value) && stoppingRunId.value === String(activeRun.value?.runId || ''),
 )
-const sessionCount = computed(() => sessions.value.length)
-const currentMessageCount = computed(() => currentMessages.value.length)
-const pendingUploadCount = computed(() => pendingUploads.value.length)
 const topbarStatusCopy = computed(() => {
   if (runStatus.value === 'running') {
     return uiCopy.app.topbarStatus.running
@@ -490,21 +487,6 @@ onBeforeUnmount(() => {
           <h1>{{ uiCopy.app.title }}</h1>
           <p class="topbar-copy">{{ topbarStatusCopy }}</p>
         </div>
-
-        <dl class="toolbar-metrics" :aria-label="uiCopy.app.overviewLabel">
-          <div>
-            <dt>{{ uiCopy.app.metrics.sessions }}</dt>
-            <dd>{{ sessionCount }}</dd>
-          </div>
-          <div>
-            <dt>{{ uiCopy.app.metrics.messages }}</dt>
-            <dd>{{ currentMessageCount }}</dd>
-          </div>
-          <div>
-            <dt>{{ uiCopy.app.metrics.attachments }}</dt>
-            <dd>{{ pendingUploadCount }}</dd>
-          </div>
-        </dl>
 
         <div class="toolbar-actions">
           <el-tag

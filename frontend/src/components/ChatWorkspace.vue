@@ -248,16 +248,6 @@ function removeUpload(file) {
             }}
           </span>
         </div>
-        <el-button
-          class="composer-submit-button"
-          size="default"
-          plain
-          :icon="UploadFilled"
-          :disabled="props.uploading || isRunLocked"
-          @click="triggerFilePicker"
-        >
-          {{ uiCopy.workspace.uploadButton }}
-        </el-button>
         <input ref="fileInput" class="hidden-input" type="file" multiple @change="handleFileSelection" />
       </div>
 
@@ -291,16 +281,28 @@ function removeUpload(file) {
 
       <div class="composer-actions">
         <span class="muted-copy">{{ composerHint }}</span>
-        <el-button
-          class="composer-submit-button"
-          size="default"
-          :type="primaryActionType"
-          :loading="usesStopAction ? props.stopping : props.submitting"
-          :disabled="primaryActionDisabled"
-          @click="handlePrimaryAction"
-        >
-          {{ primaryActionLabel }}
-        </el-button>
+        <div class="composer-action-group">
+          <el-button
+            class="composer-upload-button"
+            size="default"
+            plain
+            :icon="UploadFilled"
+            :disabled="props.uploading || isRunLocked"
+            @click="triggerFilePicker"
+          >
+            {{ uiCopy.workspace.uploadButton }}
+          </el-button>
+          <el-button
+            class="composer-primary-button"
+            size="default"
+            :type="primaryActionType"
+            :loading="usesStopAction ? props.stopping : props.submitting"
+            :disabled="primaryActionDisabled"
+            @click="handlePrimaryAction"
+          >
+            {{ primaryActionLabel }}
+          </el-button>
+        </div>
       </div>
     </div>
   </div>

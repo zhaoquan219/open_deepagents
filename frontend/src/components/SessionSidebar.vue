@@ -51,7 +51,12 @@ const props = defineProps({
           <span class="button-plus-sign" aria-hidden="true">+</span>
           <span>{{ uiCopy.sidebar.newSession }}</span>
         </el-button>
-        <el-button class="sidebar-toolbar-button" :icon="RefreshRight" plain @click="$emit('refresh')">
+        <el-button
+          class="sidebar-toolbar-button sidebar-refresh-button"
+          :icon="RefreshRight"
+          plain
+          @click="$emit('refresh')"
+        >
           {{ uiCopy.sidebar.refresh }}
         </el-button>
       </div>

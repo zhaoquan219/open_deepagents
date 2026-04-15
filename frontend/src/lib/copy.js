@@ -21,12 +21,6 @@ export const uiCopy = {
   app: {
     brand: 'DeepAgents',
     title: '对话工作台',
-    overviewLabel: '工作台概览',
-    metrics: {
-      sessions: '会话',
-      messages: '消息',
-      attachments: '附件',
-    },
     workspaceAriaLabel: '聊天工作区',
     timelineAriaLabel: '运行状态',
     timelineToggle: {
