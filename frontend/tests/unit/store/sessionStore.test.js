@@ -213,4 +213,31 @@ describe('sessionStore transcript helpers', () => {
       }),
     ])
   })
+
+  it('clears stale upload errors when session context changes or uploads are consumed', async () => {
+    const apiClient = {
+      createSession: vi.fn(async () => ({
+        id: 'session-new',
+        title: '新会话',
+        updatedAt: '2026-04-13T00:00:00Z',
+      })),
+      deleteSession: vi.fn(),
+      getSessionMessages: vi.fn(async () => []),
+      listSessions: vi.fn(),
+      uploadFiles: vi.fn(),
+    }
+    const store = createSessionStore(apiClient)
+
+    store.state.uploadError = 'File too large'
+    await store.createSession()
+    expect(store.state.uploadError).toBe('')
+
+    store.state.uploadError = 'File too large'
+    await store.selectSession('session-new')
+    expect(store.state.uploadError).toBe('')
+
+    store.state.uploadError = 'File too large'
+    store.clearPendingUploads('session-new')
+    expect(store.state.uploadError).toBe('')
+  })
 })

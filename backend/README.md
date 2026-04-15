@@ -10,6 +10,7 @@ FastAPI backend foundation for the DeepAgents agent platform scaffold.
 - upload metadata + local file persistence
 - SQLAlchemy models compatible with MySQL-backed deployments
 - project-managed extension templates under `backend/extensions/`
+- runtime hook templates for upload and run-input customization
 
 ### Local development
 
@@ -28,6 +29,8 @@ The default template already enables the unified tool and middleware entrypoints
 the default skills directory, and the sample sandbox settings.
 Tools are aggregated from `backend/extensions/tools/__init__.py:TOOLS`.
 Middleware is aggregated from `backend/extensions/middleware/__init__.py:MIDDLEWARE`.
+Runtime hooks can be enabled from `backend/extensions/runtime_hooks/__init__.py`
+with `DEEPAGENTS_RUN_INPUT_HOOK_SPECS` and `DEEPAGENTS_UPLOAD_HOOK_SPECS`.
 Skills are loaded from `DEEPAGENTS_SKILLS` by scanning subdirectories for
 `SKILL.md`, and the backend routes those skill paths to disk even when the main
 runtime backend is `state` or a sandbox rooted elsewhere.
@@ -42,3 +45,38 @@ the backend builds a `ChatOpenAI` client for that endpoint.
 `CUSTOM_API_TEMPERATURE` is optional and omitted entirely when unset.
 `CUSTOM_API_DEFAULT_HEADERS` accepts a JSON object string and also supports
 comma-separated `KEY=VALUE` pairs for compatibility.
+
+### Runtime hooks
+
+Hook entrypoints use the same `path/to/file.py:OBJECT_NAME` import-spec format
+as tools and middleware.
+
+Recommended starting config:
+
+```dotenv
+DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions/runtime_hooks/__init__.py:RUN_INPUT_HOOKS
+DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions/runtime_hooks/__init__.py:UPLOAD_HOOKS
+```
+
+Then edit `backend/extensions/runtime_hooks/attachment_hooks.py`.
+
+- Run-input hooks receive a context with `session_id`, `run_id`, `role`,
+  `content`, `attachments`, and `is_current_run`. Return a string or
+  `{"content": "..."}` to replace the content sent to DeepAgents.
+- Upload hooks receive file metadata and the raw payload after storage. Return a
+  mapping to merge into `UploadRecord.extra`.
+
+### Built-in tool filtering
+
+DeepAgents injects built-in tools such as `ls`, `read_file`, `write_file`,
+`edit_file`, `grep`, `glob`, `execute`, `task`, and `write_todos`. Operators can
+filter those without removing custom tools:
+
+```dotenv
+DEEPAGENTS_BUILTIN_TOOLS=ls,read_file,grep,task
+DEEPAGENTS_DISABLED_BUILTIN_TOOLS=execute,write_file,edit_file
+```
+
+If the allowlist is set, built-in tools outside it are hidden first. The
+blocklist then hides matching built-ins from the remaining tool set. Custom tools
+loaded from `DEEPAGENTS_TOOL_SPECS` pass through unchanged.

@@ -6,6 +6,7 @@ import ChatWorkspace from './components/ChatWorkspace.vue'
 import ProgressTimeline from './components/ProgressTimeline.vue'
 import SessionSidebar from './components/SessionSidebar.vue'
 import { createApiClient } from './api/client.js'
+import { uiCopy } from './lib/copy.js'
 import { normalizeStreamEnvelope } from './lib/sseContract.js'
 import { createRunStore } from './store/runStore.js'
 import { createSessionStore } from './store/sessionStore.js'
@@ -71,33 +72,33 @@ const currentMessageCount = computed(() => currentMessages.value.length)
 const pendingUploadCount = computed(() => pendingUploads.value.length)
 const topbarStatusCopy = computed(() => {
   if (runStatus.value === 'running') {
-    return '当前任务正在处理，回复、工具动作和连接状态会在侧边运行面板里持续更新。'
+    return uiCopy.app.topbarStatus.running
   }
   if (runStatus.value === 'completed') {
-    return '本轮任务已经完成，当前会话里可以直接继续追问或回溯上下文。'
+    return uiCopy.app.topbarStatus.completed
   }
   if (runStatus.value === 'cancelled') {
-    return '上一轮运行已手动停止，可以调整提示或附件后重新发起。'
+    return uiCopy.app.topbarStatus.cancelled
   }
   if (runStatus.value === 'failed') {
-    return '上一轮处理被中断，先查看运行面板里的错误，再决定是否重试。'
+    return uiCopy.app.topbarStatus.failed
   }
-  return '工作台已就绪，左侧管理会话，中间专注对话，运行细节按需查看。'
+  return uiCopy.app.topbarStatus.idle
 })
 const runStatusLabel = computed(() => {
   const status = runStatus.value
-  if (status === 'idle') return '待命'
-  if (status === 'queued') return '排队中'
-  if (status === 'running') return '处理中'
-  if (status === 'completed') return '已完成'
-  if (status === 'cancelling') return '停止中'
-  if (status === 'cancelled') return '已停止'
-  if (status === 'failed') return '失败'
-  return '处理中'
+  if (status === 'idle') return uiCopy.common.idle
+  if (status === 'queued') return uiCopy.common.queued
+  if (status === 'running') return uiCopy.common.running
+  if (status === 'completed') return uiCopy.common.completed
+  if (status === 'cancelling') return uiCopy.common.cancelling
+  if (status === 'cancelled') return uiCopy.common.cancelled
+  if (status === 'failed') return uiCopy.common.failed
+  return uiCopy.common.running
 })
 const showTimelinePanel = computed(() => isWideLayout.value || timelinePanelOpen.value)
 const timelineToggleLabel = computed(() =>
-  showTimelinePanel.value ? '收起运行面板' : '查看运行面板',
+  showTimelinePanel.value ? uiCopy.app.timelineToggle.close : uiCopy.app.timelineToggle.open,
 )
 
 function applyViewportLayout(matches) {
@@ -160,7 +161,7 @@ function closeStream({ markDisconnected = false, detail = '' } = {}) {
     activeStream.value = null
   }
   if (markDisconnected && runId) {
-    runStore.markDisconnected(runId, detail || '实时连接已关闭。')
+    runStore.markDisconnected(runId, detail || uiCopy.app.stream.disconnected)
   }
 }
 
@@ -195,7 +196,7 @@ async function handleLogin() {
   } catch (error) {
     apiClient.logout()
     isAuthenticated.value = false
-    authError.value = error instanceof Error ? error.message : '登录失败，请检查账号信息。'
+    authError.value = error instanceof Error ? error.message : uiCopy.app.auth.failure
   } finally {
     authLoading.value = false
   }
@@ -203,27 +204,27 @@ async function handleLogin() {
 
 function connectRunStream(runId, sessionId) {
   closeStream()
-  logRuntime('sse.connect', '正在连接实时事件流', { runId, sessionId })
+  logRuntime('sse.connect', uiCopy.app.logs.sseConnect, { runId, sessionId })
   const terminalDetail = (envelope) =>
     envelope.type === 'error'
-      ? '运行异常，实时连接已终止。'
+      ? uiCopy.app.stream.terminalError
       : envelope.status === 'cancelled'
-        ? '当前运行已手动停止，实时连接已关闭。'
-      : '本轮输出已结束，实时连接已关闭。'
+        ? uiCopy.app.stream.terminalCancelled
+      : uiCopy.app.stream.terminalCompleted
   activeStream.value = apiClient.openRunStream(runId, {
     lastEventId: runStore.getLastEventId(runId),
     onOpen() {
-      logRuntime('sse.open', '实时事件流已连接', { runId, sessionId })
+      logRuntime('sse.open', uiCopy.app.logs.sseOpen, { runId, sessionId })
       runStore.markConnected(runId)
     },
     onRetry() {
-      logRuntime('sse.retry', '实时事件流正在自动恢复', { runId, sessionId }, 'warn')
-      runStore.markConnecting(runId, '实时连接短暂中断，正在自动恢复。')
+      logRuntime('sse.retry', uiCopy.app.logs.sseRetry, { runId, sessionId }, 'warn')
+      runStore.markConnecting(runId, uiCopy.app.stream.retrying)
     },
     onEvent(payload) {
       const envelope = normalizeStreamEnvelope(payload)
       if (!envelope) {
-        logRuntime('sse.drop', '收到无法识别的 SSE 事件', payload, 'warn')
+        logRuntime('sse.drop', uiCopy.app.logs.sseDrop, payload, 'warn')
         return
       }
 
@@ -234,9 +235,9 @@ function connectRunStream(runId, sessionId) {
         if (isTerminalEnvelope(envelope)) {
           syncSessionTranscript(sessionId)
           if (envelope.type === 'status' && envelope.status === 'completed') {
-            runStore.markCompleted(runId, '检测到终态事件重放，已同步最终回复。')
+            runStore.markCompleted(runId, uiCopy.app.stream.replayCompleted)
           } else if (envelope.type === 'status' && envelope.status === 'cancelled') {
-            runStore.markCancelled(runId, '运行已被手动停止。')
+            runStore.markCancelled(runId, uiCopy.app.stream.replayCancelled)
           }
           closeStream({
             markDisconnected: true,
@@ -267,19 +268,19 @@ function connectRunStream(runId, sessionId) {
     },
     onError(error) {
       if (['completed', 'cancelled'].includes(runStore.state.activeRun?.status || '')) {
-        logRuntime('sse.closed', '实时事件流在完成后关闭', { runId, sessionId })
+        logRuntime('sse.closed', uiCopy.app.logs.sseClosed, { runId, sessionId })
         closeStream({
           markDisconnected: true,
           detail:
             runStore.state.activeRun?.status === 'cancelled'
-              ? '运行已手动停止，会话流已正常结束。'
-              : '最终回复已写入，会话流已正常结束。',
+              ? uiCopy.app.stream.cancelledClosed
+              : uiCopy.app.stream.completedClosed,
         })
         return
       }
       logRuntime('sse.error', error.message, { runId, sessionId }, 'error')
       runStore.markErrored(runId, error.message)
-      sessionStore.addSystemNotice(String(sessionId), `实时连接恢复失败：${error.message}`)
+      sessionStore.addSystemNotice(String(sessionId), uiCopy.app.stream.recoveryFailure(error.message))
     },
   })
 }
@@ -312,12 +313,12 @@ async function handleSelectSession(sessionId) {
 
 async function handleDeleteSession(sessionId) {
   const session = sessions.value.find((item) => item.id === sessionId)
-  const title = session?.title || '当前会话'
+  const title = session?.title || uiCopy.app.deleteSession.fallbackTitle
 
   try {
-    await ElMessageBox.confirm(`确定要删除“${title}”吗？此操作无法撤销。`, '删除会话', {
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
+    await ElMessageBox.confirm(uiCopy.app.deleteSession.message(title), uiCopy.app.deleteSession.title, {
+      confirmButtonText: uiCopy.app.deleteSession.confirm,
+      cancelButtonText: uiCopy.app.deleteSession.cancel,
       type: 'warning',
     })
   } catch {
@@ -335,24 +336,24 @@ async function handleUpload(files) {
   const session = await ensureSession()
   const result = await sessionStore.uploadFiles(String(session.id), files)
   if (!result?.ok) {
-    const message = result?.error?.message || '上传附件失败。'
+    const message = result?.error?.message || uiCopy.app.logs.uploadError
     logRuntime('upload.error', message, { sessionId: session.id, files }, 'error')
     runStore.recordClientIssue({
       sessionId: String(session.id),
-      label: '附件上传失败',
+      label: uiCopy.app.notices.uploadFailed,
       detail: message,
     })
     return
   }
 
-  logRuntime('upload.success', '附件上传完成', {
+  logRuntime('upload.success', uiCopy.app.logs.uploadSuccess, {
     sessionId: session.id,
     count: result.records.length,
   })
   runStore.recordClientNotice({
     sessionId: String(session.id),
-    label: '附件上传完成',
-    detail: `已上传 ${result.records.length} 个附件，将附加到下一次发送。`,
+    label: uiCopy.app.notices.uploadCompleted,
+    detail: uiCopy.app.notices.uploadCompletedDetail(result.records.length),
     status: 'completed',
   })
 }
@@ -370,7 +371,7 @@ async function handleSubmit({ prompt }) {
   const sessionId = String(session.id)
   sessionStore.addOptimisticUserMessage(sessionId, text)
   sessionStore.setSubmitting(true)
-  logRuntime('run.start', '正在创建运行', {
+  logRuntime('run.start', uiCopy.app.logs.runStart, {
     sessionId,
     attachmentCount: sessionStore.getPendingUploads(sessionId).length,
   })
@@ -387,18 +388,18 @@ async function handleSubmit({ prompt }) {
     runStore.recordClientNotice({
       sessionId,
       runId: run.runId,
-      label: '运行创建成功',
-      detail: '后端已接受请求，正在建立实时连接。',
+      label: uiCopy.app.notices.runCreated,
+      detail: uiCopy.app.notices.runCreatedDetail,
       status: 'completed',
     })
     connectRunStream(run.runId, sessionId)
   } catch (error) {
-    const message = error instanceof Error ? error.message : '发送失败，请稍后再试。'
+    const message = error instanceof Error ? error.message : uiCopy.app.logs.runStartError
     logRuntime('run.start.error', message, { sessionId }, 'error')
     runStore.markErrored('pending', message)
     runStore.recordClientIssue({
       sessionId,
-      label: '运行启动失败',
+      label: uiCopy.app.notices.runStartFailed,
       detail: message,
     })
     sessionStore.addSystemNotice(sessionId, message)
@@ -418,19 +419,19 @@ async function handleStopRun() {
   try {
     const result = await apiClient.cancelRun(runId)
     if (result.status === 'completed') {
-      runStore.markCompleted(runId, '停止请求到达前，本轮处理已经完成。')
+      runStore.markCompleted(runId, uiCopy.app.notices.stopAlreadyCompleted)
       syncSessionTranscript(sessionId)
     } else if (result.status === 'failed') {
-      runStore.markErrored(runId, '停止请求到达前，本轮处理已经失败。')
+      runStore.markErrored(runId, uiCopy.app.notices.stopAlreadyFailed)
     } else {
-      runStore.markCancelled(runId, '已手动停止当前运行。')
+      runStore.markCancelled(runId, uiCopy.app.notices.stopped)
     }
     closeStream()
   } catch (error) {
-    const message = error instanceof Error ? error.message : '停止运行失败，请稍后再试。'
+    const message = error instanceof Error ? error.message : uiCopy.app.logs.stopRunError
     runStore.recordClientIssue({
       sessionId,
-      label: '停止运行失败',
+      label: uiCopy.app.notices.stopRunFailed,
       detail: message,
     })
   } finally {
@@ -464,22 +465,22 @@ onBeforeUnmount(() => {
     <template v-if="isAuthenticated">
       <header class="app-toolbar">
         <div class="toolbar-brand">
-          <p class="eyebrow">DeepAgents</p>
-          <h1>对话工作台</h1>
+          <p class="eyebrow">{{ uiCopy.app.brand }}</p>
+          <h1>{{ uiCopy.app.title }}</h1>
           <p class="topbar-copy">{{ topbarStatusCopy }}</p>
         </div>
 
-        <dl class="toolbar-metrics" aria-label="工作台概览">
+        <dl class="toolbar-metrics" :aria-label="uiCopy.app.overviewLabel">
           <div>
-            <dt>会话</dt>
+            <dt>{{ uiCopy.app.metrics.sessions }}</dt>
             <dd>{{ sessionCount }}</dd>
           </div>
           <div>
-            <dt>消息</dt>
+            <dt>{{ uiCopy.app.metrics.messages }}</dt>
             <dd>{{ currentMessageCount }}</dd>
           </div>
           <div>
-            <dt>附件</dt>
+            <dt>{{ uiCopy.app.metrics.attachments }}</dt>
             <dd>{{ pendingUploadCount }}</dd>
           </div>
         </dl>
@@ -521,7 +522,11 @@ onBeforeUnmount(() => {
           />
         </aside>
 
-        <section class="workspace-shell" :class="{ 'workspace-shell--wide': isWideLayout }" aria-label="聊天工作区">
+        <section
+          class="workspace-shell"
+          :class="{ 'workspace-shell--wide': isWideLayout }"
+          :aria-label="uiCopy.app.workspaceAriaLabel"
+        >
           <ChatWorkspace
             :can-stop="canStopRun"
             :current-session="currentSession"
@@ -550,7 +555,7 @@ onBeforeUnmount(() => {
             v-if="showTimelinePanel"
             class="timeline-shell"
             :class="{ 'timeline-shell--overlay': !isWideLayout }"
-            aria-label="运行状态"
+            :aria-label="uiCopy.app.timelineAriaLabel"
           >
             <ProgressTimeline
               :active-run="activeRun"
@@ -570,34 +575,34 @@ onBeforeUnmount(() => {
     <main v-else class="auth-layout">
       <el-card class="auth-panel card-shell" shadow="never">
         <div class="auth-card">
-          <p class="eyebrow">安全登录</p>
-          <h2>进入智能工作台</h2>
-          <p class="auth-copy">使用管理员账号建立受保护连接，进入稳定的会话与运行工作区。</p>
+          <p class="eyebrow">{{ uiCopy.app.auth.eyebrow }}</p>
+          <h2>{{ uiCopy.app.auth.title }}</h2>
+          <p class="auth-copy">{{ uiCopy.app.auth.copy }}</p>
 
-          <label class="composer-label" for="admin-username">用户名</label>
+          <label class="composer-label" for="admin-username">{{ uiCopy.app.auth.username }}</label>
           <el-input
             id="admin-username"
             v-model="authUsername"
             autocomplete="username"
-            placeholder="请输入管理员用户名"
+            :placeholder="uiCopy.app.auth.usernamePlaceholder"
           />
 
-          <label class="composer-label" for="admin-password">密码</label>
+          <label class="composer-label" for="admin-password">{{ uiCopy.app.auth.password }}</label>
           <el-input
             id="admin-password"
             v-model="authPassword"
             type="password"
             show-password
             autocomplete="current-password"
-            placeholder="请输入密码"
+            :placeholder="uiCopy.app.auth.passwordPlaceholder"
           />
 
           <el-alert v-if="authError" :closable="false" type="error" show-icon :title="authError" />
 
           <div class="composer-actions auth-actions">
-            <span class="muted-copy">登录后会自动恢复最近会话。</span>
+            <span class="muted-copy">{{ uiCopy.app.auth.hint }}</span>
             <el-button type="primary" :loading="authLoading" @click="handleLogin">
-              {{ authLoading ? '登录中…' : '进入工作台' }}
+              {{ authLoading ? uiCopy.app.auth.loading : uiCopy.app.auth.login }}
             </el-button>
           </div>
         </div>

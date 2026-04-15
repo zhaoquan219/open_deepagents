@@ -2,6 +2,7 @@
 import { UploadFilled } from '@element-plus/icons-vue'
 import { computed, ref } from 'vue'
 
+import { uiCopy } from '../lib/copy.js'
 import MessageThread from './MessageThread.vue'
 
 const props = defineProps({
@@ -35,7 +36,7 @@ const props = defineProps({
   },
   runStatusLabel: {
     type: String,
-    default: '待命',
+    default: uiCopy.common.idle,
   },
   submitting: {
     type: Boolean,
@@ -69,18 +70,18 @@ const isRunLocked = computed(() => ['queued', 'running'].includes(props.runStatu
 const usesStopAction = computed(() => props.canStop && Boolean(props.activeRun))
 const runtimeCopy = computed(() => {
   if (props.runStatus === 'running') {
-    return '当前任务仍在处理中，新的内容会自动追加到下方消息流，完成前不能继续发送下一轮。'
+    return uiCopy.workspace.runtimeCopy.running
   }
   if (props.runStatus === 'completed') {
-    return '本轮处理已经完成，可以立刻继续追问。'
+    return uiCopy.workspace.runtimeCopy.completed
   }
   if (props.runStatus === 'cancelled') {
-    return '本轮处理已手动停止，可以调整上下文后重新发起。'
+    return uiCopy.workspace.runtimeCopy.cancelled
   }
   if (props.runStatus === 'failed') {
-    return '本轮处理失败，先查看运行面板再决定是否重试。'
+    return uiCopy.workspace.runtimeCopy.failed
   }
-  return '对话区已准备就绪，把目标和上下文一次说清就可以开始。'
+  return uiCopy.workspace.runtimeCopy.idle
 })
 
 function statusTagType(status) {
@@ -91,9 +92,9 @@ function statusTagType(status) {
 }
 
 function uploadStatusLabel(status) {
-  if (status === 'submitted') return '已提交'
-  if (status === 'uploaded') return '已上传'
-  return '待发送'
+  if (status === 'submitted') return uiCopy.workspace.uploadStatus.submitted
+  if (status === 'uploaded') return uiCopy.workspace.uploadStatus.uploaded
+  return uiCopy.workspace.uploadStatus.pending
 }
 
 function submitDraft() {
@@ -129,9 +130,9 @@ function handleComposerKeydown(event) {
 
 const primaryActionLabel = computed(() => {
   if (usesStopAction.value) {
-    return props.stopping ? '停止中…' : '停止'
+    return props.stopping ? uiCopy.workspace.actions.stopping : uiCopy.workspace.actions.stop
   }
-  return props.submitting ? '发送中…' : '发送'
+  return props.submitting ? uiCopy.workspace.actions.sending : uiCopy.workspace.actions.send
 })
 
 const primaryActionType = computed(() => (usesStopAction.value ? 'danger' : 'primary'))
@@ -142,7 +143,7 @@ const primaryActionDisabled = computed(() => {
   return props.submitting || isRunLocked.value || !draft.value.trim()
 })
 const composerHint = computed(() =>
-  usesStopAction.value ? '当前任务处理中，可直接使用同一按钮停止。' : '按 Ctrl 或 Command + Enter 可快速发送',
+  usesStopAction.value ? uiCopy.workspace.composerHint.stop : uiCopy.workspace.composerHint.send,
 )
 
 function handlePrimaryAction() {
@@ -161,23 +162,23 @@ function handlePrimaryAction() {
         <div class="workspace-header-top">
           <div class="workspace-heading-block">
             <div class="workspace-heading">
-              <p class="eyebrow">当前会话</p>
-              <h2>{{ props.currentSession?.title || '新会话' }}</h2>
+              <p class="eyebrow">{{ uiCopy.workspace.sessionEyebrow }}</p>
+              <h2>{{ props.currentSession?.title || uiCopy.workspace.newSessionTitle }}</h2>
             </div>
             <p class="workspace-runtime-copy">{{ runtimeCopy }}</p>
           </div>
 
           <dl class="workspace-summary-list">
             <div>
-              <dt>消息</dt>
+              <dt>{{ uiCopy.workspace.metrics.messages }}</dt>
               <dd>{{ messageCount }}</dd>
             </div>
             <div>
-              <dt>助手回复</dt>
+              <dt>{{ uiCopy.workspace.metrics.assistantMessages }}</dt>
               <dd>{{ assistantMessageCount }}</dd>
             </div>
             <div>
-              <dt>待发附件</dt>
+              <dt>{{ uiCopy.workspace.metrics.pendingAttachments }}</dt>
               <dd>{{ props.pendingUploads.length }}</dd>
             </div>
           </dl>
@@ -205,13 +206,13 @@ function handlePrimaryAction() {
           v-if="props.loading"
           class="empty-state"
           :image-size="72"
-          description="正在加载会话内容…"
+          :description="uiCopy.workspace.loadingDescription"
         />
 
         <section v-else-if="!hasMessages" class="empty-state">
-          <p class="empty-state-kicker">准备开始新的任务</p>
-          <h3>把目标、背景和限制条件一次交代清楚</h3>
-          <p>系统会把回复、工具动作和最终结果都收敛到这一条会话里，便于连续协作。</p>
+          <p class="empty-state-kicker">{{ uiCopy.workspace.emptyKicker }}</p>
+          <h3>{{ uiCopy.workspace.emptyTitle }}</h3>
+          <p>{{ uiCopy.workspace.emptyCopy }}</p>
         </section>
 
         <MessageThread v-else :messages="props.messages" />
@@ -221,14 +222,14 @@ function handlePrimaryAction() {
     <div class="composer-panel">
       <div class="upload-row">
         <div class="upload-row-main">
-          <p class="composer-label">输入内容</p>
+          <p class="composer-label">{{ uiCopy.workspace.composerLabel }}</p>
           <span class="muted-copy">
             {{
               isRunLocked
-                ? '当前任务处理中，完成后才能继续发送或追加附件。'
+                ? uiCopy.workspace.uploadHint.locked
                 : props.uploading
-                  ? '附件上传中…'
-                  : '附件会自动附加到下一次发送。'
+                  ? uiCopy.workspace.uploadHint.uploading
+                  : uiCopy.workspace.uploadHint.idle
             }}
           </span>
         </div>
@@ -239,7 +240,7 @@ function handlePrimaryAction() {
           :disabled="props.uploading || isRunLocked"
           @click="triggerFilePicker"
         >
-          上传附件
+          {{ uiCopy.workspace.uploadButton }}
         </el-button>
         <input ref="fileInput" class="hidden-input" type="file" multiple @change="handleFileSelection" />
       </div>
@@ -258,7 +259,7 @@ function handlePrimaryAction() {
         :autosize="{ minRows: 3, maxRows: 6 }"
         resize="none"
         :disabled="isRunLocked"
-        placeholder="请输入你的问题，或结合附件说明要处理的任务。"
+        :placeholder="uiCopy.workspace.placeholder"
         @keydown="handleComposerKeydown"
       />
 

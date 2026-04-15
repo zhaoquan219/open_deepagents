@@ -9,6 +9,7 @@ Vue 3 + JavaScript frontend scaffold for the DeepAgents agent platform.
 - markdown + mermaid rendering for transcript content
 - SSE runtime event consumption with runtime envelope validation and event dedupe
 - progress timeline for run, step, tool, skill, and sandbox events
+- centralized user-facing copy in `src/lib/copy.js`
 - lightweight docs for the backend contract this UI expects
 
 ## Commands
@@ -56,3 +57,4 @@ Supported event families: `status`, `message.delta`, `message.final`, `step`, `t
 - Event dedupe is keyed by `event_id` per run.
 - Mermaid blocks are rendered from fenced code blocks using `mermaid` with `securityLevel: 'strict'`.
 - HTML output is sanitized before insertion so backend-delivered markdown cannot inject scripts or inline event handlers.
+- Product wording is centralized in `src/lib/copy.js`; edit that module before changing component templates.

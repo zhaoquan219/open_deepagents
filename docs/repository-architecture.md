@@ -49,6 +49,7 @@ Rules:
 - `app/services` owns runtime coordination, not HTTP parsing.
 - `app/storage` owns file persistence implementations.
 - `deepagents_integration` is external-runtime glue, not generic app code.
+- `extensions/runtime_hooks` is the user-editable surface for upload and run-input hooks.
 
 Removed from the canonical path:
 
@@ -64,7 +65,7 @@ frontend/src/
 ├── App.vue         Root UI composition
 ├── api/            Backend HTTP client
 ├── components/     Reusable view components
-├── lib/            Pure rendering and normalization helpers
+├── lib/            Pure helpers and centralized UI copy
 ├── store/          Client-side state containers
 └── styles.css
 ```
@@ -74,7 +75,8 @@ Rules:
 - `App.vue` composes the screen and owns page-level behavior.
 - `api/` is the only place that should know fetch and endpoint details.
 - `components/` contains presentational and interaction units.
-- `lib/` contains pure helpers such as markdown rendering and SSE normalization.
+- `lib/` contains pure helpers such as markdown rendering, SSE normalization,
+  scrolling, time formatting, and `copy.js` for user-facing text.
 - `store/` contains state transitions and view-model logic.
 - `frontend/tests/unit/` contains Vitest coverage and stays separate from source files.
 

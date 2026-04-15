@@ -14,11 +14,13 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware.skills import _list_skills
 
 from deepagents_integration import (
+    BuiltinToolSelectionMiddleware,
     DeepAgentsRuntimeConfig,
     SandboxConfig,
     SkillSourceConfig,
     build_deep_agent,
     load_middleware_extensions,
+    load_object_from_spec,
     load_tool_extensions,
     normalize_runtime_event,
     resolve_backend,
@@ -155,6 +157,17 @@ class DeepAgentsConfigTests(unittest.TestCase):
             self.assertEqual(len(middleware), 1)
             self.assertEqual(type(middleware[0]).__name__, "DemoMiddleware")
 
+    def test_runtime_hook_template_entrypoints_are_loadable(self):
+        run_hooks = load_object_from_spec(
+            "extensions/runtime_hooks/__init__.py:RUN_INPUT_HOOKS"
+        )
+        upload_hooks = load_object_from_spec("extensions/runtime_hooks/__init__.py:UPLOAD_HOOKS")
+
+        self.assertTrue(run_hooks)
+        self.assertTrue(upload_hooks)
+        self.assertTrue(callable(run_hooks[0]))
+        self.assertTrue(callable(upload_hooks[0]))
+
     def test_route_skill_sources_loads_disk_skills_with_state_backend(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             skill_root = Path(tmpdir) / "skills"
@@ -284,6 +297,44 @@ class DeepAgentsConfigTests(unittest.TestCase):
             self.assertEqual(kwargs["memory"], ["/memory/AGENTS.md"])
             self.assertEqual(kwargs["permissions"][0].operations, ["read", "write"])
             self.assertIsInstance(kwargs["backend"], FilesystemBackend)
+
+    def test_builtin_tool_selection_middleware_filters_only_deepagents_builtin_tools(self):
+        middleware = BuiltinToolSelectionMiddleware(
+            allowlist=frozenset({"ls"}),
+            blocklist=frozenset({"execute"}),
+        )
+
+        filtered = middleware._filter_tools(
+            [
+                {"name": "ls"},
+                {"name": "read_file"},
+                {"name": "execute"},
+                {"name": "custom_tool"},
+            ]
+        )
+
+        self.assertEqual(filtered, [{"name": "ls"}, {"name": "custom_tool"}])
+
+    def test_build_deep_agent_adds_builtin_tool_selection_middleware(self):
+        config = DeepAgentsRuntimeConfig.from_mapping(
+            {
+                "model": "openai:gpt-5.4",
+                "builtin_tool_allowlist": ["ls", "read_file"],
+                "builtin_tool_blocklist": ["execute"],
+            }
+        )
+
+        with patch("deepagents_integration.agent_factory.create_deep_agent") as mocked_create:
+            mocked_create.return_value = object()
+            build_deep_agent(config)
+
+        _, kwargs = mocked_create.call_args
+        self.assertTrue(
+            any(
+                isinstance(middleware, BuiltinToolSelectionMiddleware)
+                for middleware in kwargs["middleware"]
+            )
+        )
 
     def test_sample_audit_middleware_supports_sync_and_async_tool_wrapping(self):
         [middleware] = load_middleware_extensions(

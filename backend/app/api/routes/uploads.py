@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 from app.api.deps import DatabaseSessionDep, SettingsDep, StorageDep, require_admin
 from app.db.models import MessageRecord, SessionRecord, UploadRecord
 from app.schemas.upload import UploadRead
+from deepagents_integration.run_hooks import apply_upload_hooks, build_upload_hook_context
 
 router = APIRouter(dependencies=[Depends(require_admin)])
 UploadFileDep = Annotated[UploadFile, File()]
@@ -68,6 +69,25 @@ async def upload_file(
         sha256=digest,
     )
     db.add(record)
+    db.flush()
+    hook_extra = apply_upload_hooks(
+        context=build_upload_hook_context(
+            upload_id=record.id,
+            session_id=session_id,
+            message_id=message_id,
+            filename=record.filename,
+            content_type=record.content_type,
+            size_bytes=record.size_bytes,
+            storage_key=record.storage_key,
+            sha256=record.sha256,
+            upload_root=settings.upload_storage_dir,
+            payload=payload,
+        ),
+        hook_specs=settings.upload_hook_specs(),
+    )
+    if hook_extra:
+        record.extra = {**(record.extra or {}), **hook_extra}
+        db.add(record)
     db.commit()
     db.refresh(record)
     return record

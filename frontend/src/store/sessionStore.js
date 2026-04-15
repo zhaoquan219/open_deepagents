@@ -5,6 +5,7 @@ import {
   isPlaceholderSessionTitle,
   normalizeSessionTitle,
 } from '../lib/sessionTitle.js'
+import { uiCopy } from '../lib/copy.js'
 
 function createClientId() {
   return globalThis.crypto?.randomUUID?.() || `session-${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -70,7 +71,7 @@ function normalizeAttachments(attachments) {
 
   return attachments.map((attachment, index) => ({
     id: String(attachment?.id ?? attachment?.attachment_id ?? attachment?.attachmentId ?? `attachment-${index}`),
-    name: String(attachment?.name ?? attachment?.filename ?? attachment?.title ?? '未命名附件'),
+    name: String(attachment?.name ?? attachment?.filename ?? attachment?.title ?? uiCopy.api.unnamedAttachment),
     size: Number(attachment?.size ?? attachment?.size_bytes ?? attachment?.sizeBytes ?? 0),
     status: String(attachment?.status ?? 'uploaded'),
   }))
@@ -206,7 +207,7 @@ export function createSessionStore(apiClient) {
     } else {
       state.sessions = sortSessions([
         ...state.sessions,
-        { id: sessionId, title: nextTitle || '新会话', updatedAt, status: 'idle' },
+        { id: sessionId, title: nextTitle || uiCopy.sessionTitles.defaultTitle, updatedAt, status: 'idle' },
       ])
     }
     state.sessions = sortSessions(state.sessions)
@@ -223,7 +224,7 @@ export function createSessionStore(apiClient) {
         state.currentSessionId = state.sessions[0]?.id || null
       }
     } catch (error) {
-      state.error = error instanceof Error ? error.message : '加载会话失败。'
+      state.error = error instanceof Error ? error.message : uiCopy.store.session.loadSessionsFailed
       state.sessions = []
       state.currentSessionId = null
     } finally {
@@ -232,6 +233,7 @@ export function createSessionStore(apiClient) {
   }
 
   async function createSession() {
+    clearErrors()
     const session = await apiClient.createSession()
     state.sessions = sortSessions([session, ...state.sessions.filter((entry) => entry.id !== session.id)])
     state.currentSessionId = session.id
@@ -256,7 +258,7 @@ export function createSessionStore(apiClient) {
         }
       }
     } catch (error) {
-      state.error = error instanceof Error ? error.message : '删除会话失败。'
+      state.error = error instanceof Error ? error.message : uiCopy.store.session.deleteSessionFailed
     } finally {
       state.deletingSessionId = ''
     }
@@ -267,12 +269,12 @@ export function createSessionStore(apiClient) {
     const localMessages = state.messagesBySession[normalizedId] || []
     state.currentSessionId = normalizedId
     state.loadingMessages = true
-    state.error = ''
+    clearErrors()
     try {
       const messages = await apiClient.getSessionMessages(normalizedId)
       state.messagesBySession[normalizedId] = reconcileMessages(localMessages, messages)
     } catch (error) {
-      state.error = error instanceof Error ? error.message : '加载消息失败。'
+      state.error = error instanceof Error ? error.message : uiCopy.store.session.loadMessagesFailed
       state.messagesBySession[normalizedId] = state.messagesBySession[normalizedId] || []
     } finally {
       state.loadingMessages = false
@@ -295,7 +297,7 @@ export function createSessionStore(apiClient) {
         records,
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : '上传附件失败。'
+      const message = error instanceof Error ? error.message : uiCopy.store.session.uploadFailed
       state.uploadError = message
       return {
         ok: false,
@@ -309,6 +311,12 @@ export function createSessionStore(apiClient) {
   function clearPendingUploads(sessionId) {
     const normalizedId = String(sessionId)
     delete state.pendingUploadsBySession[normalizedId]
+    state.uploadError = ''
+  }
+
+  function clearErrors() {
+    state.error = ''
+    state.uploadError = ''
   }
 
   function addOptimisticUserMessage(sessionId, prompt) {
@@ -374,7 +382,10 @@ export function createSessionStore(apiClient) {
     }
 
     if (envelope.type === 'error') {
-      state.messagesBySession[sessionId] = addSystemNotice(transcript, envelope.detail || '本轮处理失败。')
+      state.messagesBySession[sessionId] = addSystemNotice(
+        transcript,
+        envelope.detail || uiCopy.store.session.runFailed,
+      )
       touchSession(sessionId)
     }
   }
@@ -385,6 +396,7 @@ export function createSessionStore(apiClient) {
     addSystemNotice: addSystemNoticeToSession,
     consumeRunEvent,
     createSession,
+    clearErrors,
     clearPendingUploads,
     deleteSession,
     getCurrentMessages,

@@ -1,6 +1,7 @@
 <script setup>
 import { nextTick, ref, watch } from 'vue'
 
+import { uiCopy } from '../lib/copy.js'
 import { formatDateTime } from '../lib/time.js'
 import MarkdownContent from './MarkdownContent.vue'
 
@@ -39,12 +40,12 @@ function flattenMessageContent(value) {
 
 function roleLabel(role) {
   if (role === 'user') {
-    return '发起人'
+    return uiCopy.messageThread.roles.user
   }
   if (role === 'assistant') {
-    return '智能助理'
+    return uiCopy.messageThread.roles.assistant
   }
-  return '系统'
+  return uiCopy.messageThread.roles.system
 }
 
 function displayContent(message) {
@@ -55,9 +56,9 @@ function displayContent(message) {
     return content
   }
   if (message?.streaming) {
-    return '正在生成回复…'
+    return uiCopy.messageThread.streaming
   }
-  return '（空消息）'
+  return uiCopy.messageThread.empty
 }
 
 async function scrollToLatest() {
@@ -94,7 +95,7 @@ watch(
           </div>
         </div>
         <MarkdownContent :content="displayContent(message)" />
-        <p v-if="message.streaming" class="streaming-indicator">正在生成回复…</p>
+        <p v-if="message.streaming" class="streaming-indicator">{{ uiCopy.messageThread.streaming }}</p>
         <ul v-if="message.attachments && message.attachments.length" class="attachment-list">
           <li v-for="attachment in message.attachments" :key="attachment.id">{{ attachment.name }}</li>
         </ul>

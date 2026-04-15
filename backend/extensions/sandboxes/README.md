@@ -1,20 +1,76 @@
-# Sample Sandbox Configuration
+# Sandbox configuration
 
 Use `DEEPAGENTS_SANDBOX_KIND` and related `DEEPAGENTS_SANDBOX_*` settings to
-target official DeepAgents backends first.
+select the official DeepAgents backend that matches your deployment boundary.
 
-Upload-path guidance:
+## Backend kinds
+
+| Kind | What it means | Typical use |
+| --- | --- | --- |
+| `state` | DeepAgents keeps a virtual in-memory file state. | Safest default for chat and tool-only runs. |
+| `filesystem` | DeepAgents file tools operate under `DEEPAGENTS_SANDBOX_ROOT_DIR`. | Read/write a controlled backend directory. |
+| `local_shell` | File tools plus `execute` can run on the host through DeepAgents. | Trusted local/operator environments only. |
+| `custom` | A backend instance/factory loaded from `DEEPAGENTS_SANDBOX_BACKEND_SPEC`. | Bring your own isolation backend. |
+
+`local_shell` is not process isolation. If you expose it, pair it with careful
+permissions, tool filtering, and trusted users.
+
+## Path model
+
+Upload records may carry three path-like fields:
+
+- `storage_key`: relative to `UPLOAD_STORAGE_DIR`, for example
+  `session-id/uuid-notes.txt`.
+- `upload_path`: absolute host path, for example
+  `/repo/backend/data/uploads/session-id/uuid-notes.txt`.
+- `sandbox_path`: path to use from inside the configured sandbox root when the
+  upload file is under that root.
+
+When `DEEPAGENTS_SANDBOX_VIRTUAL_MODE=true`, `sandbox_path` is formatted as a
+virtual path with a leading slash, for example `/uploads/session-id/uuid-notes.txt`.
+When virtual mode is false, DeepAgents receives normal backend path semantics.
+
+## Upload visibility
 
 - User uploads are persisted before the agent run starts.
 - Each upload is stored at `UPLOAD_STORAGE_DIR/<session_id>/<uuid>-<filename>`.
-- `storage_key` is the path relative to `UPLOAD_STORAGE_DIR`; `upload_path` is the concrete absolute path handed to the runtime.
-- The default `UPLOAD_STORAGE_DIR` resolves to `backend/data/uploads`, and the default read-only sandbox permissions already include `backend/data`.
-- If you configure `UPLOAD_STORAGE_DIR` outside `backend/data`, the backend adds that directory to the runtime read permissions so uploaded files remain readable from the sandbox.
-- Prompt/runtime guidance should tell the agent to use the provided upload path directly instead of asking the user to supply one again.
+- The default `UPLOAD_STORAGE_DIR=./data/uploads` resolves to
+  `backend/data/uploads`, and default read-only runtime permissions include
+  `backend/data`.
+- If `UPLOAD_STORAGE_DIR` points outside `backend/data`, the backend
+  automatically adds that upload directory to read permissions.
+- The run-input hook receives the resolved attachment metadata, so you can change
+  how paths are described to the model without editing `app/services/runs.py`.
 
-Examples:
+## Examples
 
-- `state`
-- `filesystem`
-- `local_shell`
-- `custom` with `DEEPAGENTS_SANDBOX_BACKEND_SPEC=module_or_path:factory`
+Safe default:
+
+```dotenv
+DEEPAGENTS_SANDBOX_KIND=state
+DEEPAGENTS_SANDBOX_ROOT_DIR=./data/sandbox
+DEEPAGENTS_SANDBOX_VIRTUAL_MODE=false
+```
+
+Filesystem backend rooted under backend data:
+
+```dotenv
+DEEPAGENTS_SANDBOX_KIND=filesystem
+DEEPAGENTS_SANDBOX_ROOT_DIR=./data
+DEEPAGENTS_SANDBOX_VIRTUAL_MODE=true
+```
+
+Trusted local shell, usually with write/execute tools filtered unless needed:
+
+```dotenv
+DEEPAGENTS_SANDBOX_KIND=local_shell
+DEEPAGENTS_SANDBOX_ROOT_DIR=./data/sandbox
+DEEPAGENTS_DISABLED_BUILTIN_TOOLS=execute,write_file,edit_file
+```
+
+Custom backend:
+
+```dotenv
+DEEPAGENTS_SANDBOX_KIND=custom
+DEEPAGENTS_SANDBOX_BACKEND_SPEC=extensions/sandboxes/custom_backend.py:build_backend
+```

@@ -32,11 +32,15 @@ English version: [README.md](README.md)
 ├── backend/
 │   ├── app/                          FastAPI 应用代码
 │   ├── deepagents_integration/       DeepAgents 运行时桥接层
-│   ├── extensions/                   工具 / 中间件 / 技能 / 沙箱模板
+│   ├── extensions/                   工具 / 中间件 / 运行时钩子 / 技能 / 沙箱模板
 │   ├── prompts/                      项目内维护的运行时提示词
 │   └── tests/                        后端测试
 ├── frontend/
-│   └── src/                          前端源码
+│   └── src/
+│       ├── components/               Vue UI 组件
+│       ├── lib/copy.js               前端用户可见文案集中配置
+│       ├── store/                    客户端状态容器
+│       └── api/                      后端 HTTP/SSE 客户端
 ├── packages/
 │   ├── contracts/                    共享契约
 │   └── extension-manifest.template.json
@@ -54,7 +58,8 @@ English version: [README.md](README.md)
 - 会话、消息、上传的 CRUD
 - DeepAgents run 创建、运行时事件桥接与 SSE 流输出
 - 本地文件上传存储
-- 可配置的工具、中间件、技能、记忆和沙箱后端
+- 可配置的工具、中间件、运行时钩子、技能、记忆和沙箱后端
+- 通过环境变量控制 DeepAgents 内置工具 allowlist / blocklist
 - 以 SQLite 为默认本地方案，并兼容 MySQL 部署模型
 
 ### 前端
@@ -65,6 +70,7 @@ English version: [README.md](README.md)
 - Markdown 与 Mermaid 渲染
 - 基于 SSE 的运行状态流
 - 运行步骤、工具、技能、沙箱事件时间线
+- `frontend/src/lib/copy.js` 集中管理常用 UI 文案，便于轻量定制
 
 ### 工程支持
 
@@ -167,6 +173,10 @@ npm run dev
 | `DEEPAGENTS_DEBUG` | 是否开启 DeepAgents 调试 |
 | `DEEPAGENTS_TOOL_SPECS` | 工具扩展入口 |
 | `DEEPAGENTS_MIDDLEWARE_SPECS` | 中间件扩展入口 |
+| `DEEPAGENTS_RUN_INPUT_HOOK_SPECS` | 可选的运行输入钩子入口 |
+| `DEEPAGENTS_UPLOAD_HOOK_SPECS` | 可选的上传后处理钩子入口 |
+| `DEEPAGENTS_BUILTIN_TOOLS` | 可选的 DeepAgents 内置工具 allowlist |
+| `DEEPAGENTS_DISABLED_BUILTIN_TOOLS` | 可选的 DeepAgents 内置工具 blocklist |
 | `DEEPAGENTS_SKILLS` | 技能目录 |
 | `DEEPAGENTS_MEMORY` | 额外记忆 / 指导文件 |
 | `DEEPAGENTS_SANDBOX_*` | 沙箱后端配置 |
@@ -217,6 +227,30 @@ CUSTOM_API_DEFAULT_HEADERS=HTTP-Referer=https://app.example.com,X-Title=open_dee
 `/extensions/skills/`，并把这个 source 路由到磁盘上的项目目录，因此即使主运行时
 后端是 `state`，或者沙箱根目录位于 `backend/data/sandbox` 下，技能仍然可以被发现。
 
+运行时钩子默认不强制启用。推荐从这个配置开始：
+
+```dotenv
+DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions/runtime_hooks/__init__.py:RUN_INPUT_HOOKS
+DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions/runtime_hooks/__init__.py:UPLOAD_HOOKS
+```
+
+然后编辑 [backend/extensions/runtime_hooks](backend/extensions/runtime_hooks) 下的模板。
+Run input hook 会拿到当前消息和已解析的附件元数据，可以替换传给 DeepAgents 的
+content；upload hook 会在文件落盘后运行，可以把自定义元数据写入 `UploadRecord.extra`。
+
+DeepAgents 内置工具也可以直接通过环境变量控制，不需要改源码：
+
+```dotenv
+# 只让这些内置工具对模型可见；自定义工具仍会透传。
+DEEPAGENTS_BUILTIN_TOOLS=ls,read_file,grep,task
+
+# 或者只隐藏少量内置工具。
+DEEPAGENTS_DISABLED_BUILTIN_TOOLS=execute,write_file,edit_file
+```
+
+当前已知内置工具名包括 `write_todos`、`ls`、`read_file`、`write_file`、
+`edit_file`、`glob`、`grep`、`execute` 和 `task`。
+
 ### 默认沙箱权限
 
 默认沙箱权限不是只写在文档里，而是由代码强制注入：
@@ -227,6 +261,26 @@ CUSTOM_API_DEFAULT_HEADERS=HTTP-Referer=https://app.example.com,X-Title=open_dee
   - `backend/extensions/skills`
 
 这些权限路径会被标准化为 DeepAgents 可接受的绝对路径字符串，其中也包含对 Windows 盘符路径的斜杠规范化处理。
+
+### 沙箱类型与路径模型
+
+沙箱后端决定 DeepAgents 的文件类工具和 shell 类工具在哪里运行：
+
+| 类型 | 适合场景 | 边界 |
+| --- | --- | --- |
+| `state` | 希望使用内存态 DeepAgents 工作区，不开放宿主机 shell。 | 不暴露真实项目目录，只通过路由后的技能/上传元数据提供访问线索。 |
+| `filesystem` | 希望文件工具访问某个真实目录树。 | `DEEPAGENTS_SANDBOX_ROOT_DIR` 是文件系统根目录。 |
+| `local_shell` | 明确需要 `execute` 在宿主机运行命令。 | 命令会在宿主机执行，只建议可信部署使用。 |
+| `custom` | 需要自己实现 DeepAgents backend。 | 通过 `DEEPAGENTS_SANDBOX_BACKEND_SPEC=module_or_path:factory` 接入。 |
+
+上传元数据里的路径字段：
+
+- `storage_key`：数据库中记录的、相对于 `UPLOAD_STORAGE_DIR` 的路径。
+- `upload_path`：宿主机绝对路径，适合后端有读权限时使用。
+- `sandbox_path`：当上传文件位于 sandbox root 内时，给 DeepAgents 工具使用的路径。
+
+如果 `DEEPAGENTS_SANDBOX_VIRTUAL_MODE=true`，sandbox 路径会带前导斜杠，例如
+`/uploads/<session>/<file>`。如果关闭 virtual mode，则更接近普通文件系统路径。
 
 ## 后端 API 概览
 
@@ -289,6 +343,26 @@ path/to/file.py:OBJECT_NAME
 - 在 `backend/extensions/middleware/` 下新增中间件模块
 - 在 `backend/extensions/middleware/__init__.py` 中统一导出 `MIDDLEWARE`
 
+### 运行时钩子
+
+- 模板目录：[backend/extensions/runtime_hooks](backend/extensions/runtime_hooks)
+- 统一入口：[backend/extensions/runtime_hooks/__init__.py](backend/extensions/runtime_hooks/__init__.py)
+- 示例实现：[backend/extensions/runtime_hooks/attachment_hooks.py](backend/extensions/runtime_hooks/attachment_hooks.py)
+
+配置方式：
+
+```dotenv
+DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions/runtime_hooks/__init__.py:RUN_INPUT_HOOKS
+DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions/runtime_hooks/__init__.py:UPLOAD_HOOKS
+```
+
+`RUN_INPUT_HOOKS` 函数会收到 `session_id`、`run_id`、`role`、`content`、
+`attachments`、`is_current_run`。返回字符串或 `{"content": "..."}` 即可替换
+消息内容；返回 `None` 表示不修改。
+
+`UPLOAD_HOOKS` 函数会在文件保存后收到上传元数据和原始 payload。返回 dict 会合并到
+上传记录的 `extra` 字段；返回 `None` 表示不修改。
+
 ### 技能
 
 - 技能模板目录：[backend/extensions/skills](backend/extensions/skills)
@@ -316,6 +390,14 @@ backend/extensions/skills/
 - `filesystem`
 - `local_shell`
 - `custom`
+
+更多路径示例、上传文件可见性和安全说明见
+[backend/extensions/sandboxes/README.md](backend/extensions/sandboxes/README.md)。
+
+### 前端文案定制
+
+常用用户可见文案集中在 [frontend/src/lib/copy.js](frontend/src/lib/copy.js)。
+简单产品文案调整优先改这个文件；主要组件和 store 会从这里读取文案，避免到模板里逐个搜索。
 
 ## 开发与验证
 

@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     deepagents_debug: bool = False
     deepagents_tool_specs: str | None = None
     deepagents_middleware_specs: str | None = None
+    deepagents_run_input_hook_specs: str | None = None
+    deepagents_upload_hook_specs: str | None = None
+    deepagents_builtin_tools: str | None = None
+    deepagents_disabled_builtin_tools: str | None = None
     deepagents_skills: str | None = None
     deepagents_memory: str | None = None
     deepagents_recursion_limit: int = 60
@@ -178,6 +182,10 @@ class Settings(BaseSettings):
             debug=self.deepagents_debug,
             tool_specs=self._split_csv(self.deepagents_tool_specs),
             middleware_specs=self._split_csv(self.deepagents_middleware_specs),
+            run_input_hook_specs=self.run_input_hook_specs(),
+            upload_hook_specs=self.upload_hook_specs(),
+            builtin_tool_allowlist=self._optional_csv(self.deepagents_builtin_tools),
+            builtin_tool_blocklist=self._split_csv(self.deepagents_disabled_builtin_tools),
             skills=tuple(source.source_path for source in resolved_skill_sources),
             skill_sources=resolved_skill_sources,
             memory=self._split_csv(self.deepagents_memory),
@@ -280,9 +288,17 @@ class Settings(BaseSettings):
             ),
             "deepagents_agent_name": self.deepagents_agent_name,
             "deepagents_model_configured": bool(self.deepagents_model or self.custom_api_model),
+            "run_input_hook_count": len(self.run_input_hook_specs()),
             "sandbox_kind": self.deepagents_sandbox_kind,
+            "upload_hook_count": len(self.upload_hook_specs()),
             "upload_storage_dir": str(self.upload_storage_dir),
         }
+
+    def run_input_hook_specs(self) -> tuple[str, ...]:
+        return self._split_csv(self.deepagents_run_input_hook_specs)
+
+    def upload_hook_specs(self) -> tuple[str, ...]:
+        return self._split_csv(self.deepagents_upload_hook_specs)
 
     def runtime_model_logging_summary(self) -> dict[str, object]:
         model_source = "unset"
@@ -337,6 +353,12 @@ class Settings(BaseSettings):
         if not value:
             return ()
         return tuple(item.strip() for item in value.split(",") if item.strip())
+
+    @staticmethod
+    def _optional_csv(value: str | None) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        return Settings._split_csv(value)
 
 
 @lru_cache(maxsize=1)

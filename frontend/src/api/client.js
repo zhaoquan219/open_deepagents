@@ -1,3 +1,4 @@
+import { uiCopy } from '../lib/copy.js'
 import { normalizeSessionTitle } from '../lib/sessionTitle.js'
 
 function resolveApiBaseUrl() {
@@ -60,7 +61,9 @@ function normalizeAttachments(attachments) {
 
   return attachments.map((attachment, index) => ({
     id: String(attachment?.id ?? attachment?.attachment_id ?? attachment?.attachmentId ?? `attachment-${index}`),
-    name: String(attachment?.name ?? attachment?.filename ?? attachment?.title ?? '未命名附件'),
+    name: String(
+      attachment?.name ?? attachment?.filename ?? attachment?.title ?? uiCopy.api.unnamedAttachment,
+    ),
     size: Number(attachment?.size ?? attachment?.size_bytes ?? attachment?.sizeBytes ?? 0),
     status: String(attachment?.status ?? 'uploaded'),
   }))
@@ -102,7 +105,7 @@ async function fetchJson(url, options = {}) {
 
   if (!response.ok) {
     const message = await response.text()
-    throw new Error(message || `请求失败（状态码 ${response.status}）`)
+    throw new Error(message || uiCopy.api.requestFailedStatus(response.status))
   }
 
   if (response.status === 204) {
@@ -175,7 +178,7 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
 
         if (!response.ok) {
           const message = await response.text()
-          throw new Error(message || `上传附件失败：${file.name}`)
+          throw new Error(message || uiCopy.api.uploadFailedForFile(file.name))
         }
 
         const payload = await response.json()
@@ -265,7 +268,7 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
           }
           closed = true
           eventSource.close()
-          onError?.(new Error('实时连接恢复失败，请稍后重试。'))
+          onError?.(new Error(uiCopy.api.streamRecoveryFailed))
         }, reconnectGraceMs)
       }
 
@@ -282,7 +285,7 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
         try {
           onEvent?.(JSON.parse(event.data))
         } catch (error) {
-          onError?.(error instanceof Error ? error : new Error('实时事件格式无效。'))
+          onError?.(error instanceof Error ? error : new Error(uiCopy.api.invalidStreamEvent))
         }
       }
       eventSource.onerror = () => {

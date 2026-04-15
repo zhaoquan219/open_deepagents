@@ -144,6 +144,27 @@ def test_runtime_config_logging_summary_is_safe_and_concise() -> None:
     assert "example.com" not in summary_text
 
 
+def test_runtime_config_includes_hook_specs_and_builtin_tool_filters() -> None:
+    settings = Settings(
+        deepagents_run_input_hook_specs="extensions.hooks:RUN_INPUT",
+        deepagents_upload_hook_specs="extensions.hooks:UPLOAD",
+        deepagents_builtin_tools="ls,read_file",
+        deepagents_disabled_builtin_tools="execute",
+    )
+
+    runtime_config = settings.to_runtime_config()
+    summary = runtime_config.logging_summary()
+
+    assert runtime_config.run_input_hook_specs == ("extensions.hooks:RUN_INPUT",)
+    assert runtime_config.upload_hook_specs == ("extensions.hooks:UPLOAD",)
+    assert runtime_config.builtin_tool_allowlist == ("ls", "read_file")
+    assert runtime_config.builtin_tool_blocklist == ("execute",)
+    assert summary["run_input_hook_count"] == 1
+    assert summary["upload_hook_count"] == 1
+    assert summary["builtin_tool_allowlist_count"] == 2
+    assert summary["builtin_tool_blocklist_count"] == 1
+
+
 def test_runtime_config_normalizes_skill_sources_for_deepagents() -> None:
     settings = Settings(
         deepagents_model="openai:gpt-5.4",

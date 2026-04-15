@@ -79,6 +79,10 @@ class DeepAgentsRuntimeConfig:
     debug: bool = False
     tool_specs: tuple[str, ...] = ()
     middleware_specs: tuple[str, ...] = ()
+    run_input_hook_specs: tuple[str, ...] = ()
+    upload_hook_specs: tuple[str, ...] = ()
+    builtin_tool_allowlist: tuple[str, ...] | None = None
+    builtin_tool_blocklist: tuple[str, ...] = ()
     skills: tuple[str, ...] = ()
     skill_sources: tuple[SkillSourceConfig, ...] = ()
     memory: tuple[str, ...] = ()
@@ -95,6 +99,7 @@ class DeepAgentsRuntimeConfig:
             "model_kind": model_kind,
             "model_name": model_name,
             "permission_count": len(self.permissions),
+            "run_input_hook_count": len(self.run_input_hook_specs),
             "sandbox_backend_spec_configured": bool(self.sandbox.backend_spec),
             "sandbox_kind": self.sandbox.kind,
             "sandbox_root_dir_configured": bool(self.sandbox.root_dir),
@@ -102,7 +107,14 @@ class DeepAgentsRuntimeConfig:
             "sandbox_virtual_mode": self.sandbox.virtual_mode,
             "skill_count": len(self.skills),
             "skill_source_count": len(self.skill_sources),
+            "builtin_tool_allowlist_count": (
+                len(self.builtin_tool_allowlist)
+                if self.builtin_tool_allowlist is not None
+                else None
+            ),
+            "builtin_tool_blocklist_count": len(self.builtin_tool_blocklist),
             "tool_count": len(self.tool_specs),
+            "upload_hook_count": len(self.upload_hook_specs),
         }
 
     @classmethod
@@ -114,6 +126,10 @@ class DeepAgentsRuntimeConfig:
             debug=bool(raw.get("debug", False)),
             tool_specs=_string_tuple(raw.get("tool_specs")),
             middleware_specs=_string_tuple(raw.get("middleware_specs")),
+            run_input_hook_specs=_string_tuple(raw.get("run_input_hook_specs")),
+            upload_hook_specs=_string_tuple(raw.get("upload_hook_specs")),
+            builtin_tool_allowlist=_optional_string_tuple(raw.get("builtin_tool_allowlist")),
+            builtin_tool_blocklist=_string_tuple(raw.get("builtin_tool_blocklist")),
             skills=_string_tuple(raw.get("skills")),
             skill_sources=_skill_source_tuple(raw.get("skill_sources")),
             memory=_string_tuple(raw.get("memory")),
@@ -138,6 +154,12 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
     if not isinstance(value, list | tuple) or not all(isinstance(item, str) for item in value):
         raise ValueError("Expected a list of strings")
     return tuple(value)
+
+
+def _optional_string_tuple(value: Any) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    return _string_tuple(value)
 
 
 def _mapping_tuple(value: Any) -> tuple[Mapping[str, Any], ...]:

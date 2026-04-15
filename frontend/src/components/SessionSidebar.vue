@@ -1,6 +1,8 @@
 <script setup>
 import { RefreshRight } from '@element-plus/icons-vue'
 
+import { uiCopy } from '../lib/copy.js'
+
 defineEmits(['new-session', 'refresh', 'select-session', 'delete-session'])
 
 const props = defineProps({
@@ -31,10 +33,10 @@ const props = defineProps({
   <div class="sidebar">
     <div class="sidebar-header">
       <div class="sidebar-heading">
-        <p class="eyebrow">会话</p>
-        <h2>历史会话</h2>
+        <p class="eyebrow">{{ uiCopy.sidebar.eyebrow }}</p>
+        <h2>{{ uiCopy.sidebar.title }}</h2>
         <p class="muted-copy sidebar-header-copy">
-          {{ props.currentSessionId ? '切换会话后可继续当前上下文。' : '新建会话后即可开始对话。' }}
+          {{ props.currentSessionId ? uiCopy.sidebar.currentHint : uiCopy.sidebar.emptyHint }}
         </p>
       </div>
     </div>
@@ -47,10 +49,10 @@ const props = defineProps({
           @click="$emit('new-session')"
         >
           <span class="button-plus-sign" aria-hidden="true">+</span>
-          <span>新建</span>
+          <span>{{ uiCopy.sidebar.newSession }}</span>
         </el-button>
         <el-button class="sidebar-toolbar-button" :icon="RefreshRight" plain @click="$emit('refresh')">
-          刷新
+          {{ uiCopy.sidebar.refresh }}
         </el-button>
       </div>
     </div>
@@ -61,13 +63,13 @@ const props = defineProps({
       v-if="props.loading"
       class="sidebar-empty"
       :image-size="72"
-      description="正在加载会话…"
+      :description="uiCopy.sidebar.loading"
     />
     <el-empty
       v-else-if="props.sessions.length === 0"
       class="sidebar-empty"
       :image-size="72"
-      description="还没有历史会话，开始一段新对话吧。"
+      :description="uiCopy.sidebar.empty"
     />
 
     <el-scrollbar v-else class="session-list-scrollbar">
@@ -77,9 +79,9 @@ const props = defineProps({
             <button class="session-button" type="button" @click="$emit('select-session', session.id)">
               <span class="session-state-dot" :class="{ active: session.id === props.currentSessionId }"></span>
               <span class="session-copy">
-                <span class="session-title">{{ session.title || '未命名会话' }}</span>
+                <span class="session-title">{{ session.title || uiCopy.sidebar.unnamed }}</span>
                 <span class="session-meta">
-                  {{ session.id === props.currentSessionId ? '当前会话' : '点击继续对话' }}
+                  {{ session.id === props.currentSessionId ? uiCopy.sidebar.currentSession : uiCopy.sidebar.continueSession }}
                 </span>
               </span>
             </button>
@@ -91,7 +93,7 @@ const props = defineProps({
               :loading="props.deletingSessionId === session.id"
               @click="$emit('delete-session', session.id)"
             >
-              {{ props.deletingSessionId === session.id ? '删除中' : '移除' }}
+              {{ props.deletingSessionId === session.id ? uiCopy.sidebar.deleting : uiCopy.sidebar.remove }}
             </el-button>
           </div>
         </li>

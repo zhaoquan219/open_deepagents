@@ -163,4 +163,22 @@ describe('runStore reducer', () => {
       }),
     ])
   })
+
+  it('clears stale client error when recording a successful notice', () => {
+    const store = createRunStore()
+    store.recordClientIssue({
+      sessionId: 'session-9',
+      label: '附件上传失败',
+      detail: 'File too large',
+    })
+
+    store.recordClientNotice({
+      sessionId: 'session-9',
+      label: '附件上传完成',
+      detail: '已上传 1 个附件。',
+      status: 'completed',
+    })
+
+    expect(store.state.error).toBe('')
+  })
 })

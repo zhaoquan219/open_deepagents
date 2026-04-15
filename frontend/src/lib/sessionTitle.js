@@ -1,13 +1,8 @@
-const PLACEHOLDER_SESSION_TITLES = new Set([
-  '',
-  'new session',
-  'new chat',
-  'untitled',
-  'untitled session',
-  '新会话',
-  '新聊天',
-  '未命名会话',
-])
+import { uiCopy } from './copy.js'
+
+const PLACEHOLDER_SESSION_TITLES = new Set(
+  ['', ...uiCopy.sessionTitles.placeholderAliases].map((title) => title.toLowerCase()),
+)
 
 function normalizeWhitespace(value) {
   return String(value ?? '')
@@ -22,7 +17,7 @@ export function isPlaceholderSessionTitle(value) {
 
 export function normalizeSessionTitle(value) {
   const title = normalizeWhitespace(value)
-  return isPlaceholderSessionTitle(title) ? '新会话' : title
+  return isPlaceholderSessionTitle(title) ? uiCopy.sessionTitles.defaultTitle : title
 }
 
 export function distillSessionTitle(value, maxLength = 32) {
@@ -31,7 +26,7 @@ export function distillSessionTitle(value, maxLength = 32) {
   const title = lines.find(Boolean) || normalizeWhitespace(raw)
 
   if (!title) {
-    return '新会话'
+    return uiCopy.sessionTitles.defaultTitle
   }
   if (title.length <= maxLength) {
     return title

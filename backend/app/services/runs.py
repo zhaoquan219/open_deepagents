@@ -29,6 +29,7 @@ from app.db.models import (
 )
 from app.services.session_titles import sync_session_title_from_source
 from deepagents_integration import DeepAgentsRuntimeConfig, SseEventEnvelope, stream_sse_envelopes
+from deepagents_integration.run_hooks import RunInputHookContext, apply_run_input_hooks
 
 RunBuilder = Callable[[DeepAgentsRuntimeConfig], Any]
 logger = logging.getLogger(__name__)
@@ -403,6 +404,7 @@ class RunService:
                 run_id=run_id,
                 prompt=prompt,
                 attachments=attachments,
+                hook_specs=runtime_config.run_input_hook_specs,
             )
             phase = "streaming"
             _log_run(
@@ -889,6 +891,7 @@ class RunService:
         run_id: str,
         prompt: str,
         attachments: list[dict[str, Any]],
+        hook_specs: tuple[str, ...] = (),
     ) -> dict[str, list[dict[str, str]]]:
         with self.database.session_factory() as db:
             records = (
@@ -909,7 +912,17 @@ class RunService:
                     if record.run_id == run_id
                     else _message_attachments(record=record)
                 )
-                content = _append_attachment_context(content, record_attachments)
+                content = apply_run_input_hooks(
+                    context=RunInputHookContext(
+                        session_id=session_id,
+                        run_id=run_id,
+                        role=record.role,
+                        content=content,
+                        attachments=tuple(record_attachments),
+                        is_current_run=record.run_id == run_id,
+                    ),
+                    hook_specs=hook_specs,
+                )
             if not content.strip():
                 continue
             messages.append({"role": record.role, "content": content})
@@ -921,7 +934,17 @@ class RunService:
             "messages": [
                 {
                     "role": "user",
-                    "content": _append_attachment_context(prompt, attachments),
+                    "content": apply_run_input_hooks(
+                        context=RunInputHookContext(
+                            session_id=session_id,
+                            run_id=run_id,
+                            role="user",
+                            content=prompt,
+                            attachments=tuple(attachments),
+                            is_current_run=True,
+                        ),
+                        hook_specs=hook_specs,
+                    ),
                 }
             ]
         }
@@ -1356,156 +1379,7 @@ def _message_attachments(*, record: MessageRecord) -> list[dict[str, Any]]:
     return []
 
 
-def _append_attachment_context(prompt: str, attachments: list[dict[str, Any]]) -> str:
-    if not attachments:
-        return prompt
-
-    lines = ["Attached files:"]
-    for item in attachments:
-        name = str(item.get("name") or item.get("id") or "attachment")
-        details = [name]
-
-        sandbox_path = str(item.get("sandbox_path") or "").strip()
-        upload_path = str(item.get("upload_path") or "").strip()
-        storage_key = str(item.get("storage_key") or "").strip()
-        content_type = str(item.get("content_type") or "").strip()
-        size_bytes = int(item.get("size_bytes") or item.get("size") or 0)
-
-        if sandbox_path:
-            details.append(f"sandbox_path={sandbox_path}")
-        if upload_path:
-            details.append(f"upload_path={upload_path}")
-        if storage_key:
-            details.append(f"storage_key={storage_key}")
-        if content_type:
-            details.append(f"type={content_type}")
-        if size_bytes > 0:
-            details.append(f"size={size_bytes} bytes")
-
-        lines.append(f"- {' | '.join(details)}")
-
-    lines.append(
-        "These files are already uploaded and available to the runtime. "
-        "Prefer sandbox_path for filesystem tools when it is provided; otherwise use upload_path. "
-        "Do not ask the user for the path again unless the provided file is missing or unreadable."
-    )
-    direct_read_hint = _single_attachment_direct_read_hint(prompt=prompt, attachments=attachments)
-    if direct_read_hint:
-        lines.append(direct_read_hint)
-    return f"{prompt}\n\n" + "\n".join(lines)
-
-
-def _single_attachment_direct_read_hint(
-    *,
-    prompt: str,
-    attachments: list[dict[str, Any]],
-) -> str:
-    if len(attachments) != 1:
-        return ""
-
-    normalized_prompt = prompt.casefold()
-    if any(token in normalized_prompt for token in _DIRECT_FILE_MULTI_STEP_KEYWORDS_EN):
-        return ""
-    if any(token in prompt for token in _DIRECT_FILE_MULTI_STEP_KEYWORDS_ZH):
-        return ""
-
-    direct_read_requested = any(
-        token in normalized_prompt for token in _DIRECT_FILE_READ_KEYWORDS_EN
-    )
-    direct_read_requested = direct_read_requested or any(
-        token in prompt for token in _DIRECT_FILE_READ_KEYWORDS_ZH
-    )
-    if not direct_read_requested:
-        return ""
-
-    attachment = attachments[0]
-    preferred_path = (
-        str(attachment.get("sandbox_path") or "").strip()
-        or str(attachment.get("upload_path") or "").strip()
-        or str(attachment.get("storage_key") or "").strip()
-        or str(attachment.get("name") or attachment.get("id") or "the attached file")
-    )
-    return (
-        "Single-file execution hint: "
-        f"Read {preferred_path} directly once. "
-        "After one successful read, answer from that file content and stop. "
-        "Do not make additional tool calls unless the read fails "
-        "or the user explicitly asks for extra processing."
-    )
-
-
-_DIRECT_FILE_READ_KEYWORDS_EN = (
-    "what is in",
-    "what's in",
-    "read",
-    "summarize",
-    "summarise",
-    "describe",
-    "explain",
-    "review",
-    "analyze",
-    "analyse",
-    "content",
-    "contents",
-    "tell me about",
-    "look at",
-    "check",
-)
-
-_DIRECT_FILE_READ_KEYWORDS_ZH = (
-    "看下",
-    "看看",
-    "看一看",
-    "读取",
-    "读一下",
-    "文件里",
-    "内容",
-    "里面",
-    "是什么",
-    "总结",
-    "概述",
-    "解释",
-    "分析",
-    "介绍",
-)
-
-_DIRECT_FILE_MULTI_STEP_KEYWORDS_EN = (
-    "compare",
-    "diff",
-    "merge",
-    "rewrite",
-    "edit",
-    "modify",
-    "convert",
-    "transform",
-    "generate",
-    "create",
-    "across files",
-)
-
-_DIRECT_FILE_MULTI_STEP_KEYWORDS_ZH = (
-    "比较",
-    "对比",
-    "合并",
-    "改写",
-    "修改",
-    "编辑",
-    "转换",
-    "生成",
-    "创建",
-)
-
-
-def _build_recursion_fallback(prompt: str, messages: list[dict[str, str]]) -> str:
-    if "目录" in prompt:
-        if any("没有文件" in str(message.get("content", "")) for message in messages):
-            return (
-                "我多次尝试用现有工具确认目录，但当前可访问文件视图仍然为空，"
-                "暂时无法给出更具体的目录路径。"
-            )
-        return "我多次尝试用现有工具确认目录，但当前工具结果还不足以给出稳定的目录路径。"
-    if "文件" in prompt:
-        return "我多次尝试列出可访问文件，但当前工具返回的文件视图仍然为空。"
+def _build_recursion_fallback(_prompt: str, _messages: list[dict[str, str]]) -> str:
     return (
         "我已经尝试使用可用工具处理这个问题，但执行过程没有在预期步数内收敛。"
         "请换一个更具体的问法，或稍后重试。"

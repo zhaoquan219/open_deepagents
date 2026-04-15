@@ -725,13 +725,13 @@ def test_graph_recursion_error_returns_fallback_assistant_message(tmp_path) -> N
 
         assert any(
             payload["type"] == "message.final"
-            and "暂时无法给出更具体的目录路径" in payload["message"]["content"]
+            and "执行过程没有在预期步数内收敛" in payload["message"]["content"]
             for payload in payloads
         )
 
         transcript = client.get(f"/api/sessions/{session_id}/messages", headers=headers)
         contents = [item["content"] for item in transcript.json()]
-        assert any("暂时无法给出更具体的目录路径" in content for content in contents)
+        assert any("执行过程没有在预期步数内收敛" in content for content in contents)
 
 
 def test_run_logging_captures_lifecycle_without_prompt_or_attachment_content(
@@ -909,7 +909,7 @@ def test_run_builds_attachment_context_with_storage_key_and_upload_path(tmp_path
     assert "notes.txt" in content
     assert upload_payload["storage_key"] in content
     assert str(expected_upload_path) in content
-    assert "Do not ask the user for the path again" in content
+    assert "Prefer sandbox_path for filesystem tools when it is provided" in content
 
 
 def test_run_builds_attachment_context_with_sandbox_path_for_virtual_filesystem(tmp_path) -> None:
@@ -978,7 +978,9 @@ def test_run_builds_attachment_context_with_sandbox_path_for_virtual_filesystem(
     assert "Prefer sandbox_path for filesystem tools when it is provided" in content
 
 
-def test_single_uploaded_file_direct_read_tasks_include_stop_after_one_read_hint(tmp_path) -> None:
+def test_single_uploaded_file_tasks_use_generic_attachment_context_without_keyword_hint(
+    tmp_path,
+) -> None:
     runtime = CapturingConversationRuntime()
     settings = Settings(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'single-file.db'}",
@@ -1033,6 +1035,76 @@ def test_single_uploaded_file_direct_read_tasks_include_stop_after_one_read_hint
     assert runtime.inputs
     content = runtime.inputs[0]["messages"][0]["content"]
 
-    assert "Single-file execution hint:" in content
-    assert "Read" in content
-    assert "answer from that file content and stop" in content
+    assert "Attached files:" in content
+    assert "Single-file execution hint:" not in content
+    assert "directly as the first tool action" not in content
+
+
+def test_run_input_hook_can_customize_attachment_prompt_injection(tmp_path) -> None:
+    runtime = CapturingConversationRuntime()
+    hook_module = tmp_path / "run_hooks.py"
+    hook_module.write_text(
+        "\n".join(
+            [
+                "def inject(context):",
+                "    names = ','.join(item['name'] for item in context.attachments)",
+                "    return {'content': context.content + '\\n\\nCUSTOM_ATTACHMENTS=' + names}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'custom-hook.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+        deepagents_run_input_hook_specs=f"{hook_module}:inject",
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post("/api/sessions", headers=headers, json={"title": "Custom hook"})
+        session_id = session.json()["id"]
+
+        upload = client.post(
+            f"/api/sessions/{session_id}/uploads",
+            headers=headers,
+            files={"file": ("notes.txt", b"hello upload", "text/plain")},
+        )
+        upload_payload = upload.json()
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "Use the upload",
+                "attachments": [
+                    {
+                        "id": upload_payload["id"],
+                        "name": upload_payload["filename"],
+                        "status": "uploaded",
+                    }
+                ],
+            },
+        )
+        run_id = run.json()["run_id"]
+
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and '"status": "completed"' in line:
+                    break
+
+    assert runtime.inputs
+    content = runtime.inputs[0]["messages"][0]["content"]
+    assert "CUSTOM_ATTACHMENTS=notes.txt" in content
+    assert "Attached files:" not in content

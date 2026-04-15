@@ -5,7 +5,7 @@ import importlib
 import importlib.util
 import inspect
 import logging
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -25,10 +25,24 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
+from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 
 from .config import SandboxConfig, SkillSourceConfig
 
 logger = logging.getLogger(__name__)
+DEEPAGENTS_BUILTIN_TOOLS = frozenset(
+    {
+        "write_todos",
+        "ls",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "glob",
+        "grep",
+        "execute",
+        "task",
+    }
+)
 
 
 def load_object_from_spec(spec: str) -> Any:
@@ -51,6 +65,19 @@ def load_tool_extensions(tool_specs: list[str] | tuple[str, ...]) -> list[Any]:
 
 def load_middleware_extensions(middleware_specs: list[str] | tuple[str, ...]) -> list[Any]:
     return _flatten_loaded_specs(middleware_specs)
+
+
+def build_builtin_tool_selection_middleware(
+    *,
+    allowlist: tuple[str, ...] | None,
+    blocklist: tuple[str, ...],
+) -> AgentMiddleware[Any, Any, Any] | None:
+    if allowlist is None and not blocklist:
+        return None
+    return BuiltinToolSelectionMiddleware(
+        allowlist=frozenset(allowlist) if allowlist is not None else None,
+        blocklist=frozenset(blocklist),
+    )
 
 
 def build_permissions(
@@ -172,6 +199,48 @@ def _flatten_loaded_specs(specs: list[str] | tuple[str, ...]) -> list[Any]:
         else:
             loaded.append(value)
     return loaded
+
+
+class BuiltinToolSelectionMiddleware(AgentMiddleware[Any, Any, Any]):
+    def __init__(
+        self,
+        *,
+        allowlist: frozenset[str] | None,
+        blocklist: frozenset[str],
+    ) -> None:
+        self._allowlist = allowlist
+        self._blocklist = blocklist
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
+    ) -> ModelResponse[Any]:
+        return handler(request.override(tools=self._filter_tools(request.tools)))
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
+    ) -> ModelResponse[Any]:
+        return await handler(request.override(tools=self._filter_tools(request.tools)))
+
+    def _filter_tools(self, tools: list[Any]) -> list[Any]:
+        return [tool for tool in tools if self._keeps_tool(tool)]
+
+    def _keeps_tool(self, tool: Any) -> bool:
+        name = _tool_name(tool)
+        if name not in DEEPAGENTS_BUILTIN_TOOLS:
+            return True
+        if self._allowlist is not None and name not in self._allowlist:
+            return False
+        return name not in self._blocklist
+
+
+def _tool_name(tool: Any) -> str:
+    if isinstance(tool, dict):
+        return str(tool.get("name") or "")
+    return str(getattr(tool, "name", "") or getattr(tool, "__name__", "") or "")
 
 
 class SkillRoutingBackend(BackendProtocol):

@@ -1,5 +1,8 @@
 from fastapi.testclient import TestClient
 
+from app.core.config import Settings
+from app.main import create_app
+
 
 def test_session_message_and_upload_crud(client: TestClient, auth_headers: dict[str, str]) -> None:
     create_session = client.post("/api/sessions", headers=auth_headers, json={"title": "Demo"})
@@ -97,3 +100,49 @@ def test_list_sessions_backfills_placeholder_title_from_first_user_message(
     session_detail = client.get(f"/api/sessions/{session_id}", headers=auth_headers)
     assert session_detail.status_code == 200
     assert session_detail.json()["title"] == "整理本周发布前需要确认的接口回归项"
+
+
+def test_upload_hook_can_enrich_upload_metadata(tmp_path) -> None:
+    hook_module = tmp_path / "upload_hooks.py"
+    hook_module.write_text(
+        "\n".join(
+            [
+                "def enrich(context):",
+                "    return {",
+                "        'hooked': True,",
+                "        'payload_size': len(context.payload),",
+                "        'upload_path': context.upload_path,",
+                "    }",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'upload-hook.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret-key-with-32-bytes-minimum",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_upload_hook_specs=f"{hook_module}:enrich",
+    )
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        create_session = client.post("/api/sessions", headers=headers, json={"title": "Demo"})
+        session_id = create_session.json()["id"]
+
+        upload_response = client.post(
+            f"/api/sessions/{session_id}/uploads",
+            headers=headers,
+            files={"file": ("note.txt", b"backend attachment", "text/plain")},
+        )
+
+    assert upload_response.status_code == 201
+    extra = upload_response.json()["extra"]
+    assert extra["hooked"] is True
+    assert extra["payload_size"] == len(b"backend attachment")
+    assert extra["upload_path"].endswith(upload_response.json()["storage_key"])

@@ -1,5 +1,7 @@
 import { reactive } from 'vue'
 
+import { uiCopy } from '../lib/copy.js'
+
 function createClientId() {
   return globalThis.crypto?.randomUUID?.() || `run-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
@@ -30,24 +32,24 @@ export function createInitialRun(runId, sessionId) {
 
 function statusTimelineLabel(status) {
   if (status === 'queued') {
-    return '排队中'
+    return uiCopy.common.queued
   }
   if (status === 'cancelling') {
-    return '停止中'
+    return uiCopy.common.cancelling
   }
   if (status === 'cancelled') {
-    return '已手动停止'
+    return uiCopy.store.run.cancelled
   }
   if (status === 'running') {
-    return '处理中'
+    return uiCopy.common.running
   }
   if (status === 'completed') {
-    return '处理完成'
+    return uiCopy.store.run.completed
   }
   if (status === 'failed') {
-    return '处理失败'
+    return uiCopy.store.run.processFailed
   }
-  return '状态更新'
+  return uiCopy.store.run.statusUpdate
 }
 
 function shouldCollapseDuplicate(previous, entry) {
@@ -77,7 +79,7 @@ function appendTimeline(activeRun, envelope, fallbackLabel) {
     previous.aggregateCount = aggregateCount
     previous.timestamp = entry.timestamp
     previous.status = entry.status
-    previous.detail = `已连续接收 ${aggregateCount} 段回复内容。`
+    previous.detail = uiCopy.store.run.deltaAggregate(aggregateCount)
     return
   }
 
@@ -103,7 +105,7 @@ export function reduceRunState(activeRun, envelope) {
   if (envelope.type === 'connection') {
     next.connectionState = envelope.connectionState || next.connectionState
     next.connected = next.connectionState === 'open'
-    appendTimeline(next, envelope, envelope.label || '连接状态更新')
+    appendTimeline(next, envelope, envelope.label || uiCopy.store.run.connectionUpdate)
     return next
   }
 
@@ -122,12 +124,12 @@ export function reduceRunState(activeRun, envelope) {
     next.connected = false
     next.finishedAt = envelope.timestamp || next.finishedAt
     next.lastError = envelope.detail || next.lastError
-    appendTimeline(next, envelope, '处理失败')
+    appendTimeline(next, envelope, uiCopy.store.run.processFailed)
     return next
   }
 
   if (envelope.type === 'message.final') {
-    appendTimeline(next, envelope, '最终回复已写入会话')
+    appendTimeline(next, envelope, uiCopy.store.run.finalSaved)
     return next
   }
 
@@ -169,8 +171,8 @@ export function createRunStore() {
     state.connectionState = 'connecting'
     appendTimeline(state.activeRun, {
       type: 'status',
-      label: '运行已启动',
-      detail: '已提交请求，正在建立实时连接。',
+      label: uiCopy.store.run.runStarted,
+      detail: uiCopy.store.run.runStartedDetail,
       status: 'running',
       timestamp: state.activeRun.startedAt,
     })
@@ -204,8 +206,8 @@ export function createRunStore() {
       state.connectionState = 'open'
       appendTimeline(state.activeRun, {
         type: 'connection',
-        label: '实时连接已建立',
-        detail: '已连接到实时事件流，正在接收运行状态。',
+        label: uiCopy.store.run.connectionOpened,
+        detail: uiCopy.store.run.connectionOpenedDetail,
         status: 'completed',
         timestamp: new Date().toISOString(),
         connectionState: 'open',
@@ -213,7 +215,7 @@ export function createRunStore() {
     }
   }
 
-  function markConnecting(runId, detail = '实时连接恢复中。') {
+  function markConnecting(runId, detail = uiCopy.store.run.reconnectingDetail) {
     if (!state.activeRun || state.activeRun.runId !== runId) {
       return
     }
@@ -225,7 +227,7 @@ export function createRunStore() {
     state.connectionState = 'connecting'
     appendTimeline(state.activeRun, {
       type: 'connection',
-      label: '实时连接恢复中',
+      label: uiCopy.store.run.reconnecting,
       detail,
       status: 'running',
       timestamp: new Date().toISOString(),
@@ -233,7 +235,7 @@ export function createRunStore() {
     })
   }
 
-  function markDisconnected(runId, detail = '实时连接已关闭。') {
+  function markDisconnected(runId, detail = uiCopy.store.run.disconnectedDetail) {
     if (!state.activeRun || state.activeRun.runId !== runId) {
       return
     }
@@ -245,7 +247,7 @@ export function createRunStore() {
     state.connectionState = 'closed'
       appendTimeline(state.activeRun, {
         type: 'connection',
-        label: '实时连接已关闭',
+        label: uiCopy.store.run.disconnected,
         detail,
         status:
           state.activeRun.status === 'failed'
@@ -258,7 +260,7 @@ export function createRunStore() {
       })
   }
 
-  function markCompleted(runId, detail = '本轮处理已完成。') {
+  function markCompleted(runId, detail = uiCopy.store.run.completedDetail) {
     if (!state.activeRun || state.activeRun.runId !== runId) {
       return
     }
@@ -270,14 +272,14 @@ export function createRunStore() {
     state.connectionState = 'closed'
     appendTimeline(state.activeRun, {
       type: 'status',
-      label: '处理完成',
+      label: uiCopy.store.run.completed,
       detail,
       status: 'completed',
       timestamp: state.activeRun.finishedAt,
     })
   }
 
-  function markCancelled(runId, detail = '当前运行已手动停止。') {
+  function markCancelled(runId, detail = uiCopy.store.run.cancelledDetail) {
     if (!state.activeRun || state.activeRun.runId !== runId) {
       return
     }
@@ -290,7 +292,7 @@ export function createRunStore() {
     state.connectionState = 'closed'
     appendTimeline(state.activeRun, {
       type: 'status',
-      label: '运行已手动停止',
+      label: uiCopy.store.run.cancelled,
       detail,
       status: 'cancelled',
       timestamp: state.activeRun.finishedAt,
@@ -311,7 +313,7 @@ export function createRunStore() {
     state.activeRun.timeline.push({
       id: createClientId(),
       kind: 'error',
-      label: '运行失败',
+      label: uiCopy.store.run.runFailed,
       detail: message,
       status: 'failed',
       timestamp: new Date().toISOString(),
@@ -328,7 +330,10 @@ export function createRunStore() {
     })
   }
 
-  function recordClientNotice({ sessionId = '', runId = '', label, detail, status = 'info' }) {
+  function recordClientNotice({ sessionId = '', runId = '', label, detail, status = 'info', clearError = true }) {
+    if (clearError) {
+      state.error = ''
+    }
     appendDiagnostic({
       label,
       detail,

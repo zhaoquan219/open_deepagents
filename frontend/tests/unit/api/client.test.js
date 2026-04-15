@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createApiClient } from '../../../src/api/client.js'
+import { uiCopy } from '../../../src/lib/copy.js'
 
 
 class FakeEventSource {
@@ -88,7 +89,7 @@ describe('createApiClient.openRunStream', () => {
     expect(onError).not.toHaveBeenCalled()
 
     vi.advanceTimersByTime(1)
-    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: '实时连接恢复失败，请稍后重试。' }))
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: uiCopy.api.streamRecoveryFailed }))
   })
 
   it('clears the recovery window when the stream reconnects in time', () => {
@@ -153,8 +154,93 @@ describe('createApiClient session normalization', () => {
     expect(sessions).toEqual([
       expect.objectContaining({
         id: 'session-1',
-        title: '新会话',
+        title: uiCopy.sessionTitles.defaultTitle,
       }),
     ])
+  })
+
+  it('uses centralized attachment fallback copy when attachment names are missing', async () => {
+    const storage = {
+      getItem: vi.fn(() => 'token-123'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    }
+
+    vi.stubGlobal('window', {
+      location: { origin: 'http://localhost:5173' },
+      localStorage: storage,
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          messages: [{ id: 'msg-1', attachments: [{}] }],
+        }),
+      })),
+    )
+
+    const messages = await createApiClient('/api').getSessionMessages('session-1')
+
+    expect(messages[0].attachments).toEqual([
+      expect.objectContaining({
+        name: uiCopy.api.unnamedAttachment,
+      }),
+    ])
+  })
+})
+
+describe('createApiClient fallback errors', () => {
+  it('uses centralized request failure copy when the backend returns an empty error body', async () => {
+    const storage = {
+      getItem: vi.fn(() => 'token-123'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    }
+
+    vi.stubGlobal('window', {
+      location: { origin: 'http://localhost:5173' },
+      localStorage: storage,
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 503,
+        text: async () => '',
+      })),
+    )
+
+    await expect(createApiClient('/api').listSessions()).rejects.toThrow(uiCopy.api.requestFailedStatus(503))
+  })
+
+  it('uses centralized upload failure copy when upload endpoints return an empty error body', async () => {
+    const storage = {
+      getItem: vi.fn(() => 'token-123'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    }
+
+    vi.stubGlobal('window', {
+      location: { origin: 'http://localhost:5173' },
+      localStorage: storage,
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 400,
+        text: async () => '',
+      })),
+    )
+
+    const file = Object.assign(new globalThis.Blob(['hello'], { type: 'text/plain' }), {
+      name: 'notes.txt',
+    })
+
+    await expect(createApiClient('/api').uploadFiles('session-1', [file])).rejects.toThrow(
+      uiCopy.api.uploadFailedForFile('notes.txt'),
+    )
   })
 })

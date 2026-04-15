@@ -17,7 +17,9 @@ class ScaffoldAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             report = audit_repo(Path(tmpdir))
             self.assertFalse(report.ok)
-            self.assertTrue(any(check.name == "backend-scaffold" and not check.ok for check in report.checks))
+            self.assertTrue(
+                any(check.name == "backend-scaffold" and not check.ok for check in report.checks)
+            )
 
     def test_audit_passes_when_expected_layout_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -29,7 +31,22 @@ class ScaffoldAuditTests(unittest.TestCase):
             self._write(root, "backend/extensions/tools/__init__.py", "TOOLS = []")
             self._write(root, "backend/extensions/tools/echo_tool.py", "TOOLS = []")
             self._write(root, "backend/extensions/middleware/__init__.py", "MIDDLEWARE = []")
-            self._write(root, "backend/extensions/middleware/audit_middleware.py", "MIDDLEWARE = []")
+            self._write(
+                root,
+                "backend/extensions/middleware/audit_middleware.py",
+                "MIDDLEWARE = []",
+            )
+            self._write(
+                root,
+                "backend/extensions/runtime_hooks/__init__.py",
+                "RUN_INPUT_HOOKS = []\nUPLOAD_HOOKS = []",
+            )
+            self._write(
+                root,
+                "backend/extensions/runtime_hooks/attachment_hooks.py",
+                "RUN_INPUT_HOOKS = []\nUPLOAD_HOOKS = []",
+            )
+            self._write(root, "backend/extensions/runtime_hooks/README.md", "runtime hooks")
             self._write(root, "backend/extensions/skills/README.md", "skills")
             self._write(root, "backend/extensions/sandboxes/README.md", "sandboxes")
             self._write(root, "backend/app/storage/minio.py", "class MinioStoragePlaceholder: ...")

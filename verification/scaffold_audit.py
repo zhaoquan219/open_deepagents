@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
 
 REQUIRED_PLAN_FILES = (
     ".omx/plans/prd-deepagents-agent-platform.md",
@@ -33,6 +33,9 @@ REQUIRED_EXTENSION_TEMPLATES = (
     "backend/extensions/tools/echo_tool.py",
     "backend/extensions/middleware/__init__.py",
     "backend/extensions/middleware/audit_middleware.py",
+    "backend/extensions/runtime_hooks/__init__.py",
+    "backend/extensions/runtime_hooks/attachment_hooks.py",
+    "backend/extensions/runtime_hooks/README.md",
     "backend/extensions/skills/README.md",
     "backend/extensions/sandboxes/README.md",
     "backend/app/storage/minio.py",
@@ -50,7 +53,10 @@ class AuditReport:
     checks: tuple[AuditCheck, ...]
 
     def to_json(self) -> str:
-        return json.dumps({"ok": self.ok, "checks": [asdict(check) for check in self.checks]}, indent=2)
+        return json.dumps(
+            {"ok": self.ok, "checks": [asdict(check) for check in self.checks]},
+            indent=2,
+        )
 
 
 def _missing_paths(root: Path, relative_paths: Iterable[str]) -> list[str]:

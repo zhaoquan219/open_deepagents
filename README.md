@@ -32,11 +32,15 @@ For a deeper repository map, see [docs/repository-architecture.md](docs/reposito
 ├── backend/
 │   ├── app/                          FastAPI application code
 │   ├── deepagents_integration/       Thin DeepAgents runtime bridge
-│   ├── extensions/                   Tool / middleware / skill / sandbox templates
+│   ├── extensions/                   Tool / middleware / runtime hook / skill / sandbox templates
 │   ├── prompts/                      Project-managed runtime prompt
 │   └── tests/                        Backend tests
 ├── frontend/
-│   └── src/                          Frontend source
+│   └── src/
+│       ├── components/               Vue UI components
+│       ├── lib/copy.js               Centralized user-facing UI copy
+│       ├── store/                    Client state containers
+│       └── api/                      Backend HTTP/SSE client
 ├── packages/
 │   ├── contracts/                    Shared contracts
 │   └── extension-manifest.template.json
@@ -54,7 +58,8 @@ For a deeper repository map, see [docs/repository-architecture.md](docs/reposito
 - CRUD for sessions, messages, and uploads
 - DeepAgents run creation, runtime event bridging, and SSE streaming
 - Local file upload storage
-- Configurable tools, middleware, skills, memory, and sandbox backends
+- Configurable tools, middleware, runtime hooks, skills, memory, and sandbox backends
+- Environment-controlled DeepAgents built-in tool allow/block filtering
 - SQLite-first local development with MySQL-compatible models
 
 ### Frontend
@@ -65,6 +70,7 @@ For a deeper repository map, see [docs/repository-architecture.md](docs/reposito
 - Markdown and Mermaid rendering
 - SSE-driven run status streaming
 - Timeline views for run steps, tools, skills, and sandbox events
+- Centralized UI copy in `frontend/src/lib/copy.js` for lightweight wording customization
 
 ### Engineering support
 
@@ -167,6 +173,10 @@ Common settings in `backend/.env`:
 | `DEEPAGENTS_DEBUG` | Enable DeepAgents debug mode |
 | `DEEPAGENTS_TOOL_SPECS` | Tool extension entrypoints |
 | `DEEPAGENTS_MIDDLEWARE_SPECS` | Middleware extension entrypoints |
+| `DEEPAGENTS_RUN_INPUT_HOOK_SPECS` | Optional run-input hook entrypoints |
+| `DEEPAGENTS_UPLOAD_HOOK_SPECS` | Optional upload hook entrypoints |
+| `DEEPAGENTS_BUILTIN_TOOLS` | Optional allowlist for DeepAgents built-in tools |
+| `DEEPAGENTS_DISABLED_BUILTIN_TOOLS` | Optional blocklist for DeepAgents built-in tools |
 | `DEEPAGENTS_SKILLS` | Skill directories |
 | `DEEPAGENTS_MEMORY` | Extra memory / guidance files |
 | `DEEPAGENTS_SANDBOX_*` | Sandbox backend configuration |
@@ -218,6 +228,31 @@ source path `/extensions/skills/` and routes that source to the on-disk project
 directory, so skills remain discoverable even when the main runtime backend is
 `state` or a sandbox rooted under `backend/data/sandbox`.
 
+Runtime hooks are optional. The easiest starting point is:
+
+```dotenv
+DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions/runtime_hooks/__init__.py:RUN_INPUT_HOOKS
+DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions/runtime_hooks/__init__.py:UPLOAD_HOOKS
+```
+
+Then edit files under [backend/extensions/runtime_hooks](backend/extensions/runtime_hooks). Run-input
+hooks receive the current message plus resolved attachment metadata and can replace
+the content handed to DeepAgents. Upload hooks run after storage and can add
+metadata to `UploadRecord.extra`.
+
+Built-in DeepAgents tools can be filtered without editing source:
+
+```dotenv
+# Keep only these built-in tools visible; custom tools are still passed through.
+DEEPAGENTS_BUILTIN_TOOLS=ls,read_file,grep,task
+
+# Or hide a smaller set from the built-in suite.
+DEEPAGENTS_DISABLED_BUILTIN_TOOLS=execute,write_file,edit_file
+```
+
+Known built-in names are `write_todos`, `ls`, `read_file`, `write_file`,
+`edit_file`, `glob`, `grep`, `execute`, and `task`.
+
 ### Default sandbox permissions
 
 Default sandbox permissions are enforced in code rather than left to documentation alone:
@@ -228,6 +263,27 @@ Default sandbox permissions are enforced in code rather than left to documentati
   - `backend/extensions/skills`
 
 These permission paths are normalized to DeepAgents-safe absolute strings, including Windows-safe slash normalization for drive-letter paths.
+
+### Sandbox kinds and path model
+
+The sandbox backend controls where DeepAgents filesystem and shell-like tools run:
+
+| Kind | Use when | Boundary |
+| --- | --- | --- |
+| `state` | You want an in-memory DeepAgents workspace and no host shell execution. | No real project directory is exposed except routed skill/upload metadata paths. |
+| `filesystem` | You want file tools against a real directory tree. | `DEEPAGENTS_SANDBOX_ROOT_DIR` is the filesystem root. |
+| `local_shell` | You explicitly want `execute` to run host commands. | Commands run on the host; use only in trusted deployments. |
+| `custom` | You provide your own backend factory. | Implemented by `DEEPAGENTS_SANDBOX_BACKEND_SPEC=module_or_path:factory`. |
+
+Path fields in upload metadata:
+
+- `storage_key`: relative path below `UPLOAD_STORAGE_DIR`, persisted in the DB.
+- `upload_path`: absolute host path, useful when the backend has read permission to that location.
+- `sandbox_path`: path relative to the configured sandbox root when the upload lives inside it.
+
+If `DEEPAGENTS_SANDBOX_VIRTUAL_MODE=true`, sandbox paths are presented with a leading
+slash, for example `/uploads/<session>/<file>`. If virtual mode is false, paths are
+normal filesystem paths relative to the backend/sandbox root where the backend allows it.
 
 ### Uploaded file paths and sandbox visibility
 
@@ -305,6 +361,26 @@ Recommended pattern:
 - add middleware modules under `backend/extensions/middleware/`
 - export the aggregated `MIDDLEWARE` list from `backend/extensions/middleware/__init__.py`
 
+### Runtime hooks
+
+- Hook template directory: [backend/extensions/runtime_hooks](backend/extensions/runtime_hooks)
+- Unified entrypoint: [backend/extensions/runtime_hooks/__init__.py](backend/extensions/runtime_hooks/__init__.py)
+- Example implementation: [backend/extensions/runtime_hooks/attachment_hooks.py](backend/extensions/runtime_hooks/attachment_hooks.py)
+
+Configure hooks with:
+
+```dotenv
+DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions/runtime_hooks/__init__.py:RUN_INPUT_HOOKS
+DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions/runtime_hooks/__init__.py:UPLOAD_HOOKS
+```
+
+`RUN_INPUT_HOOKS` functions receive a context with `session_id`, `run_id`, `role`,
+`content`, `attachments`, and `is_current_run`. Return a string or
+`{"content": "..."}` to replace the message content; return `None` to leave it as-is.
+
+`UPLOAD_HOOKS` functions receive file metadata and the raw payload after storage.
+Return a mapping to merge into upload `extra`; return `None` to leave it unchanged.
+
 ### Skills
 
 - Skill template directory: [backend/extensions/skills](backend/extensions/skills)
@@ -332,6 +408,15 @@ Supported sandbox kinds:
 - `filesystem`
 - `local_shell`
 - `custom`
+
+See [backend/extensions/sandboxes/README.md](backend/extensions/sandboxes/README.md)
+for path examples, upload visibility rules, and safety notes.
+
+### Frontend copy customization
+
+Most user-facing UI strings are collected in [frontend/src/lib/copy.js](frontend/src/lib/copy.js).
+For simple product wording changes, edit that file first. Stores and major
+components import from this module so copy changes do not require template spelunking.
 
 ## Development and verification
 
