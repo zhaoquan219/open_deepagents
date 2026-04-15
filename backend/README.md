@@ -11,6 +11,7 @@ FastAPI backend foundation for the DeepAgents agent platform scaffold.
 - SQLAlchemy models compatible with MySQL-backed deployments
 - project-managed extension templates under `backend/extensions/`
 - runtime hook templates for upload and run-input customization
+- session-scoped custom state storage with atomic consume semantics
 
 ### Local development
 
@@ -61,10 +62,17 @@ DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions/runtime_hooks/__init__.py:UPLOAD_HOOKS
 Then edit `backend/extensions/runtime_hooks/attachment_hooks.py`.
 
 - Run-input hooks receive a context with `session_id`, `run_id`, `role`,
-  `content`, `attachments`, and `is_current_run`. Return a string or
+  `content`, `attachments`, `is_current_run`, and `session_state_helper`.
+  Return a string or
   `{"content": "..."}` to replace the content sent to DeepAgents.
 - Upload hooks receive file metadata and the raw payload after storage. Return a
   mapping to merge into `UploadRecord.extra`.
+- Session state lives under `/api/sessions/{session_id}/state/...` and supports
+  `PUT`, `PATCH`, `GET`, `DELETE`, and `POST .../consume`. `consume` is atomic
+  for `ready` items and leaves `pending` items untouched.
+- `backend/extensions/runtime_hooks/session_state_hooks.py` shows how a run hook
+  can safely consume `ready` state from a namespace such as `log_ingestion` and
+  inject a compact prompt block.
 
 ### Built-in tool filtering
 

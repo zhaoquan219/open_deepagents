@@ -19,9 +19,15 @@ Run input hooks receive a `RunInputHookContext` and return:
 - `{"content": "..."}` for the same replacement
 - `None` to leave content unchanged
 
+The context also includes `session_state_helper` for deterministic access to the
+session-scoped custom state service inside hook code.
+
 Upload hooks receive an `UploadHookContext` after the file is stored and return:
 
 - a mapping to merge into the upload record `extra`
 - `None` to leave `extra` unchanged
 
 Keep hooks deterministic and fast. They run in the request/run path.
+`session_state_hooks.py` shows a safe pattern: consume a bounded set of
+`ready` items from one namespace, render a compact prompt block, and let the
+service record the consume metadata.
