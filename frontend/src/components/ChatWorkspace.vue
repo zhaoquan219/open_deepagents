@@ -249,6 +249,7 @@ function removeUpload(file) {
           </span>
         </div>
         <el-button
+          class="composer-submit-button"
           size="default"
           plain
           :icon="UploadFilled"
