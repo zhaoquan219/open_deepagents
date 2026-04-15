@@ -6,6 +6,8 @@
 
 English version: [README.md](README.md)
 
+![DeepAgents Web 工作台截图](docs/images/workspace-zh.png)
+
 ## 架构概览
 
 仓库目前分成两条主线：

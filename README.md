@@ -6,6 +6,8 @@ It is designed as a practical foundation rather than a finished product. The rep
 
 Chinese documentation: [README_CH.md](README_CH.md)
 
+![DeepAgents web workspace screenshot](docs/images/workspace-en.png)
+
 ## Architecture
 
 The repository is split into two main application lanes:
