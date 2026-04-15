@@ -1,14 +1,14 @@
+.omx/
+.DS_Store
 .venv/
 .env
 __pycache__/
+*.py[cod]
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
 .uv-cache/
-.omx/state/
-.omx/logs/
-.omx/metrics.json
-.omx/tmux-hook.json
-.omx/reports/
-.omx/team-launch.sh
-.omx/
+
+# Local/generated documentation drafts should not become project docs.
+docs/repo-cleanup-plan.md
+docs/repository-architecture.md

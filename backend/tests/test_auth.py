@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
 
+from app.core.config import Settings
 from app.db.models import AdminUserRecord
+from app.main import create_app
 
 
 def test_admin_login_and_identity(client: TestClient) -> None:
@@ -28,3 +30,24 @@ def test_protected_routes_require_authentication(client: TestClient) -> None:
     response = client.get("/api/sessions")
 
     assert response.status_code == 401
+
+
+def test_admin_auth_can_be_disabled_for_local_chat_access(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'no-auth.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret-key-with-32-bytes-minimum",
+        upload_storage_dir=tmp_path / "uploads",
+        admin_auth_enabled=False,
+    )
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        me_response = client.get("/api/admin/me")
+        sessions_response = client.get("/api/sessions")
+
+    assert me_response.status_code == 200
+    assert me_response.json() == {"username": "admin"}
+    assert sessions_response.status_code == 200

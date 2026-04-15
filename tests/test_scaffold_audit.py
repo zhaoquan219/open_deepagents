@@ -24,13 +24,14 @@ class ScaffoldAuditTests(unittest.TestCase):
     def test_audit_passes_when_expected_layout_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            self._write(root, ".omx/plans/prd-deepagents-agent-platform.md", "prd")
-            self._write(root, ".omx/plans/test-spec-deepagents-agent-platform.md", "spec")
+            self._write(root, "docs/sandbox.md", "sandbox")
             self._write(root, "packages/contracts/deepagents-sse-event-v1.json", "{}")
             self._write(root, "packages/extension-manifest.template.json", "{}")
             self._write(root, "backend/extensions/tools/__init__.py", "TOOLS = []")
+            self._write(root, "backend/extensions/tools/README.md", "tools")
             self._write(root, "backend/extensions/tools/echo_tool.py", "TOOLS = []")
             self._write(root, "backend/extensions/middleware/__init__.py", "MIDDLEWARE = []")
+            self._write(root, "backend/extensions/middleware/README.md", "middleware")
             self._write(
                 root,
                 "backend/extensions/middleware/audit_middleware.py",
@@ -48,7 +49,7 @@ class ScaffoldAuditTests(unittest.TestCase):
             )
             self._write(root, "backend/extensions/runtime_hooks/README.md", "runtime hooks")
             self._write(root, "backend/extensions/skills/README.md", "skills")
-            self._write(root, "backend/extensions/sandboxes/README.md", "sandboxes")
+            self._write(root, "backend/extensions/skills/skill-creator/SKILL.md", "skill")
             self._write(root, "backend/app/storage/minio.py", "class MinioStoragePlaceholder: ...")
             for relative_dir in (
                 "backend/app/api",

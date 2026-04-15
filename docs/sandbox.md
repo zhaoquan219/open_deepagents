@@ -1,21 +1,22 @@
-# Sandbox configuration
+# Sandbox Configuration
 
-Use `DEEPAGENTS_SANDBOX_KIND` and related `DEEPAGENTS_SANDBOX_*` settings to
-select the official DeepAgents backend that matches your deployment boundary.
+Use `DEEPAGENTS_SANDBOX_KIND` and the related `DEEPAGENTS_SANDBOX_*`
+settings to select the DeepAgents backend that matches your deployment
+boundary.
 
-## Backend kinds
+## Backend Kinds
 
 | Kind | What it means | Typical use |
 | --- | --- | --- |
 | `state` | DeepAgents keeps a virtual in-memory file state. | Safest default for chat and tool-only runs. |
 | `filesystem` | DeepAgents file tools operate under `DEEPAGENTS_SANDBOX_ROOT_DIR`. | Read/write a controlled backend directory. |
 | `local_shell` | File tools plus `execute` can run on the host through DeepAgents. | Trusted local/operator environments only. |
-| `custom` | A backend instance/factory loaded from `DEEPAGENTS_SANDBOX_BACKEND_SPEC`. | Bring your own isolation backend. |
+| `custom` | A backend instance or factory loaded from `DEEPAGENTS_SANDBOX_BACKEND_SPEC`. | Bring your own isolation backend. |
 
 `local_shell` is not process isolation. If you expose it, pair it with careful
 permissions, tool filtering, and trusted users.
 
-## Path model
+## Path Model
 
 Upload records may carry three path-like fields:
 
@@ -30,7 +31,7 @@ When `DEEPAGENTS_SANDBOX_VIRTUAL_MODE=true`, `sandbox_path` is formatted as a
 virtual path with a leading slash, for example `/uploads/session-id/uuid-notes.txt`.
 When virtual mode is false, DeepAgents receives normal backend path semantics.
 
-## Upload visibility
+## Upload Visibility
 
 - User uploads are persisted before the agent run starts.
 - Each upload is stored at `UPLOAD_STORAGE_DIR/<session_id>/<uuid>-<filename>`.
@@ -48,7 +49,7 @@ Safe default:
 
 ```dotenv
 DEEPAGENTS_SANDBOX_KIND=state
-DEEPAGENTS_SANDBOX_ROOT_DIR=./data/sandbox
+DEEPAGENTS_SANDBOX_ROOT_DIR=./data
 DEEPAGENTS_SANDBOX_VIRTUAL_MODE=false
 ```
 
@@ -64,7 +65,7 @@ Trusted local shell, usually with write/execute tools filtered unless needed:
 
 ```dotenv
 DEEPAGENTS_SANDBOX_KIND=local_shell
-DEEPAGENTS_SANDBOX_ROOT_DIR=./data/sandbox
+DEEPAGENTS_SANDBOX_ROOT_DIR=./data
 DEEPAGENTS_DISABLED_BUILTIN_TOOLS=execute,write_file,edit_file
 ```
 
@@ -72,5 +73,5 @@ Custom backend:
 
 ```dotenv
 DEEPAGENTS_SANDBOX_KIND=custom
-DEEPAGENTS_SANDBOX_BACKEND_SPEC=extensions/sandboxes/custom_backend.py:build_backend
+DEEPAGENTS_SANDBOX_BACKEND_SPEC=extensions.custom_sandbox:build_backend
 ```

@@ -25,8 +25,6 @@ The current request flow is:
 6. Runtime events are bridged into the frontend SSE envelope format.
 7. The frontend updates the chat transcript and run timeline from the streamed events.
 
-For a deeper repository map, see [docs/repository-architecture.md](docs/repository-architecture.md).
-
 ## Repository layout
 
 ```text
@@ -34,7 +32,7 @@ For a deeper repository map, see [docs/repository-architecture.md](docs/reposito
 ├── backend/
 │   ├── app/                          FastAPI application code
 │   ├── deepagents_integration/       Thin DeepAgents runtime bridge
-│   ├── extensions/                   Tool / middleware / runtime hook / skill / sandbox templates
+│   ├── extensions/                   Tool / middleware / runtime hook / skill templates
 │   ├── prompts/                      Project-managed runtime prompt
 │   └── tests/                        Backend tests
 ├── frontend/
@@ -46,7 +44,7 @@ For a deeper repository map, see [docs/repository-architecture.md](docs/reposito
 ├── packages/
 │   ├── contracts/                    Shared contracts
 │   └── extension-manifest.template.json
-├── docs/                             Architecture and maintenance docs
+├── docs/                             Project documentation and screenshots
 ├── tests/                            Repository-level tests
 └── verification/                     Audit and contract checks
 ```
@@ -167,6 +165,7 @@ Common settings in `backend/.env`:
 | `ADMIN_PASSWORD` | Admin password |
 | `ADMIN_TOKEN_SECRET` | JWT signing secret |
 | `ADMIN_TOKEN_EXPIRE_MINUTES` | Token expiry in minutes |
+| `ADMIN_AUTH_ENABLED` | Set `false` to disable the login gate for local deployments |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated frontend origins |
 | `UPLOAD_STORAGE_DIR` | Upload directory |
 | `MAX_UPLOAD_SIZE_BYTES` | Per-file upload limit |
@@ -175,8 +174,8 @@ Common settings in `backend/.env`:
 | `DEEPAGENTS_DEBUG` | Enable DeepAgents debug mode |
 | `DEEPAGENTS_TOOL_SPECS` | Tool extension entrypoints |
 | `DEEPAGENTS_MIDDLEWARE_SPECS` | Middleware extension entrypoints |
-| `DEEPAGENTS_RUN_INPUT_HOOK_SPECS` | Optional run-input hook entrypoints |
-| `DEEPAGENTS_UPLOAD_HOOK_SPECS` | Optional upload hook entrypoints |
+| `DEEPAGENTS_RUN_INPUT_HOOK_SPECS` | Run-input hook entrypoints; leave empty for no prompt injection |
+| `DEEPAGENTS_UPLOAD_HOOK_SPECS` | Upload hook entrypoints; leave empty for no upload enrichment |
 | `DEEPAGENTS_BUILTIN_TOOLS` | Optional allowlist for DeepAgents built-in tools |
 | `DEEPAGENTS_DISABLED_BUILTIN_TOOLS` | Optional blocklist for DeepAgents built-in tools |
 | `DEEPAGENTS_SKILLS` | Skill directories |
@@ -219,22 +218,26 @@ CUSTOM_API_DEFAULT_HEADERS=HTTP-Referer=https://app.example.com,X-Title=open_dee
 
 `backend/.env.example` enables these sample extensions by default:
 
-- `DEEPAGENTS_TOOL_SPECS=extensions/tools/__init__.py:TOOLS`
-- `DEEPAGENTS_MIDDLEWARE_SPECS=extensions/middleware/__init__.py:MIDDLEWARE`
+- `DEEPAGENTS_TOOL_SPECS=extensions.tools:TOOLS`
+- `DEEPAGENTS_MIDDLEWARE_SPECS=extensions.middleware:MIDDLEWARE`
+- `DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions.runtime_hooks:RUN_INPUT_HOOKS`
+- `DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions.runtime_hooks:UPLOAD_HOOKS`
 - `DEEPAGENTS_SKILLS=extensions/skills`
 - `DEEPAGENTS_SANDBOX_KIND=state`
-- `DEEPAGENTS_SANDBOX_ROOT_DIR=./data/sandbox`
+- `DEEPAGENTS_SANDBOX_ROOT_DIR=./data`
 
 The backend normalizes `DEEPAGENTS_SKILLS=extensions/skills` to the DeepAgents
 source path `/extensions/skills/` and routes that source to the on-disk project
 directory, so skills remain discoverable even when the main runtime backend is
-`state` or a sandbox rooted under `backend/data/sandbox`.
+`state` or a sandbox rooted under `backend/data`.
 
-Runtime hooks are optional. The easiest starting point is:
+Runtime hooks are configured from extension entrypoints. If the hook specs are
+blank, uploaded files are still stored and bound to messages, but no attachment
+prompt text or upload metadata enrichment is applied. The default starting point is:
 
 ```dotenv
-DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions/runtime_hooks/__init__.py:RUN_INPUT_HOOKS
-DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions/runtime_hooks/__init__.py:UPLOAD_HOOKS
+DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions.runtime_hooks:RUN_INPUT_HOOKS
+DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions.runtime_hooks:UPLOAD_HOOKS
 ```
 
 Then edit files under [backend/extensions/runtime_hooks](backend/extensions/runtime_hooks). Run-input
@@ -246,9 +249,9 @@ Built-in DeepAgents tools can be filtered without editing source:
 
 ```dotenv
 # Keep only these built-in tools visible; custom tools are still passed through.
-DEEPAGENTS_BUILTIN_TOOLS=ls,read_file,grep,task
+DEEPAGENTS_BUILTIN_TOOLS=write_todos,ls,read_file,glob,grep,task
 
-# Or hide a smaller set from the built-in suite.
+# Hide host execution and write tools from the built-in suite.
 DEEPAGENTS_DISABLED_BUILTIN_TOOLS=execute,write_file,edit_file
 ```
 
@@ -346,8 +349,10 @@ The backend resolves extensions from configuration rather than hardcoding them.
 ### Tools and middleware
 
 - Unified tool entrypoint: [backend/extensions/tools/__init__.py](backend/extensions/tools/__init__.py)
+- Tool guide: [backend/extensions/tools/README.md](backend/extensions/tools/README.md)
 - Tool template: [backend/extensions/tools/echo_tool.py](backend/extensions/tools/echo_tool.py)
 - Unified middleware entrypoint: [backend/extensions/middleware/__init__.py](backend/extensions/middleware/__init__.py)
+- Middleware guide: [backend/extensions/middleware/README.md](backend/extensions/middleware/README.md)
 - Middleware template: [backend/extensions/middleware/audit_middleware.py](backend/extensions/middleware/audit_middleware.py)
 
 Entrypoint format:
@@ -362,6 +367,9 @@ Recommended pattern:
 - export the aggregated `TOOLS` list from `backend/extensions/tools/__init__.py`
 - add middleware modules under `backend/extensions/middleware/`
 - export the aggregated `MIDDLEWARE` list from `backend/extensions/middleware/__init__.py`
+- middleware can read run context with `runtime.context` in hooks such as
+  `@before_agent`, or `request.runtime.context` in wrappers such as
+  `@wrap_tool_call`
 
 ### Runtime hooks
 
@@ -372,8 +380,8 @@ Recommended pattern:
 Configure hooks with:
 
 ```dotenv
-DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions/runtime_hooks/__init__.py:RUN_INPUT_HOOKS
-DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions/runtime_hooks/__init__.py:UPLOAD_HOOKS
+DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions.runtime_hooks:RUN_INPUT_HOOKS
+DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions.runtime_hooks:UPLOAD_HOOKS
 ```
 
 `RUN_INPUT_HOOKS` functions receive a context with `session_id`, `run_id`, `role`,
@@ -411,7 +419,7 @@ Supported sandbox kinds:
 - `local_shell`
 - `custom`
 
-See [backend/extensions/sandboxes/README.md](backend/extensions/sandboxes/README.md)
+See [docs/sandbox.md](docs/sandbox.md)
 for path examples, upload visibility rules, and safety notes.
 
 ### Frontend copy customization

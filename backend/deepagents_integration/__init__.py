@@ -2,6 +2,7 @@
 
 from .agent_factory import build_deep_agent
 from .config import DeepAgentsRuntimeConfig, SandboxConfig, SkillSourceConfig
+from .context import DeepAgentsRunContext
 from .extensions import (
     BuiltinToolSelectionMiddleware,
     build_builtin_tool_selection_middleware,
@@ -17,7 +18,6 @@ from .run_hooks import (
     apply_run_input_hooks,
     apply_upload_hooks,
     build_upload_hook_context,
-    default_attachment_context_hook,
 )
 from .sse_bridge import (
     SSE_SCHEMA_VERSION,
@@ -29,6 +29,7 @@ from .sse_bridge import (
 
 __all__ = [
     "DeepAgentsRuntimeConfig",
+    "DeepAgentsRunContext",
     "SSE_SCHEMA_VERSION",
     "SandboxConfig",
     "SkillSourceConfig",
@@ -41,7 +42,6 @@ __all__ = [
     "apply_run_input_hooks",
     "apply_upload_hooks",
     "build_upload_hook_context",
-    "default_attachment_context_hook",
     "load_middleware_extensions",
     "load_object_from_spec",
     "load_tool_extensions",

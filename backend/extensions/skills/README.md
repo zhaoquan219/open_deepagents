@@ -15,3 +15,8 @@ extensions/skills/
 `DEEPAGENTS_SKILLS=extensions/skills` is resolved by the backend to the
 DeepAgents-visible source path `/extensions/skills/`, and that source is routed
 to this on-disk directory regardless of which sandbox backend is active.
+
+## Included Skill
+
+- `skill-creator/`: default local skill for creating, improving, and packaging
+  project skills.

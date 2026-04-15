@@ -35,6 +35,13 @@ RunBuilder = Callable[[DeepAgentsRuntimeConfig], Any]
 logger = logging.getLogger(__name__)
 
 
+class InvalidRunAttachmentError(ValueError):
+    def __init__(self, detail: str, *, status_code: int = 400) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.status_code = status_code
+
+
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -207,9 +214,21 @@ class RunService:
                 attachments=attachments,
                 settings=settings,
             )
+            attachment_records = _pending_upload_records_for_attachments(
+                db=db,
+                session_id=session_id,
+                attachments=resolved_attachments,
+            )
             state = self.manager.create(session_id)
             session.last_run_id = state.run_id
             sync_session_title_from_source(session, prompt)
+            user_message = MessageRecord(
+                session_id=session_id,
+                role="user",
+                content=prompt,
+                run_id=state.run_id,
+                extra={"attachments": resolved_attachments},
+            )
             db.add(
                 AgentRunRecord(
                     id=state.run_id,
@@ -219,15 +238,11 @@ class RunService:
                     extra={"attachments": resolved_attachments},
                 )
             )
-            db.add(
-                MessageRecord(
-                    session_id=session_id,
-                    role="user",
-                    content=prompt,
-                    run_id=state.run_id,
-                    extra={"attachments": resolved_attachments},
-                )
-            )
+            db.add(user_message)
+            db.flush()
+            for record in attachment_records:
+                record.message_id = user_message.id
+                db.add(record)
             db.add(session)
             db.commit()
 
@@ -432,6 +447,12 @@ class RunService:
                 agent_input,
                 bridge_run_id=run_id,
                 config={"recursion_limit": settings.deepagents_recursion_limit},
+                context={
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "current_attachments": tuple(attachments),
+                    "attachments": tuple(attachments),
+                },
             ):
                 if state.status == "cancelled" or state.completed:
                     return
@@ -1296,12 +1317,38 @@ def _resolve_run_attachments(
             .all()
         )
         records_by_id = {record.id: record for record in records}
+    requested_storage_keys = [
+        str(item.get("storage_key") or "").strip()
+        for item in attachments
+        if not item.get("id") and item.get("storage_key")
+    ]
+    records_by_storage_key = {}
+    if requested_storage_keys:
+        records = (
+            db.query(UploadRecord)
+            .filter(
+                UploadRecord.session_id == session_id,
+                UploadRecord.storage_key.in_(requested_storage_keys),
+            )
+            .all()
+        )
+        records_by_storage_key = {record.storage_key: record for record in records}
 
     resolved: list[dict[str, Any]] = []
     for item in attachments:
         attachment_id = str(item.get("id") or "").strip()
         record = records_by_id.get(attachment_id)
+        if attachment_id and record is None:
+            raise InvalidRunAttachmentError("Invalid attachment")
+        storage_key = str(item.get("storage_key") or "").strip()
+        if record is None and storage_key:
+            record = records_by_storage_key.get(storage_key)
         if record is not None:
+            if record.message_id is not None:
+                raise InvalidRunAttachmentError(
+                    "Upload is already attached to a message",
+                    status_code=409,
+                )
             upload_path = _resolve_attachment_disk_path(
                 upload_root=settings.upload_storage_dir,
                 storage_key=record.storage_key,
@@ -1324,7 +1371,6 @@ def _resolve_run_attachments(
             )
             continue
 
-        storage_key = str(item.get("storage_key") or "").strip()
         upload_path = _resolve_attachment_disk_path(
             upload_root=settings.upload_storage_dir,
             storage_key=storage_key,
@@ -1347,6 +1393,40 @@ def _resolve_run_attachments(
         )
 
     return resolved
+
+
+def _pending_upload_records_for_attachments(
+    *,
+    db: Session,
+    session_id: str,
+    attachments: list[dict[str, Any]],
+) -> list[UploadRecord]:
+    upload_ids = [str(item.get("id") or "").strip() for item in attachments if item.get("id")]
+    if not upload_ids:
+        return []
+
+    records = (
+        db.query(UploadRecord)
+        .filter(
+            UploadRecord.session_id == session_id,
+            UploadRecord.id.in_(upload_ids),
+        )
+        .all()
+    )
+    records_by_id = {record.id: record for record in records}
+
+    ordered_records: list[UploadRecord] = []
+    for upload_id in upload_ids:
+        record = records_by_id.get(upload_id)
+        if record is None:
+            raise InvalidRunAttachmentError("Invalid attachment")
+        if record.message_id is not None:
+            raise InvalidRunAttachmentError(
+                "Upload is already attached to a message",
+                status_code=409,
+            )
+        ordered_records.append(record)
+    return ordered_records
 
 
 def _resolve_attachment_disk_path(*, upload_root: Path, storage_key: str) -> Path | None:

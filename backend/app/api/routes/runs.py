@@ -10,7 +10,7 @@ from app.core.auth import decode_access_token
 from app.core.config import Settings
 from app.db.models import SessionRecord
 from app.schemas.run import RunCreate, RunRead
-from app.services.runs import RunManager, RunService
+from app.services.runs import InvalidRunAttachmentError, RunManager, RunService
 
 router = APIRouter()
 
@@ -34,12 +34,15 @@ async def create_run(
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
-    run_state = get_run_service(request).start_run(
-        settings=cast(Settings, request.app.state.settings),
-        session_id=payload.session_id,
-        prompt=payload.prompt,
-        attachments=payload.attachments,
-    )
+    try:
+        run_state = get_run_service(request).start_run(
+            settings=cast(Settings, request.app.state.settings),
+            session_id=payload.session_id,
+            prompt=payload.prompt,
+            attachments=payload.attachments,
+        )
+    except InvalidRunAttachmentError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     return RunRead(
         run_id=run_state.run_id,
         session_id=run_state.session_id,
@@ -84,12 +87,13 @@ async def stream_run(
     last_event_id_header: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
     settings = cast(Settings, request.app.state.settings)
-    if access_token is None:
+    if settings.admin_auth_enabled and access_token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Admin authentication required",
         )
-    decode_access_token(settings, access_token)
+    if settings.admin_auth_enabled:
+        decode_access_token(settings, access_token or "")
 
     run_state = get_run_manager(request).get(run_id)
     if run_state is None:

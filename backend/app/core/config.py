@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     admin_password: str = "change-me"
     admin_token_secret: str = "change-me-too"
     admin_token_expire_minutes: int = 720
+    admin_auth_enabled: bool = True
     cors_allowed_origins: str | None = "http://127.0.0.1:5173,http://localhost:5173"
     upload_storage_dir: Path = Field(default=Path("./data/uploads"))
     max_upload_size_bytes: int = 10 * 1024 * 1024
@@ -288,6 +289,7 @@ class Settings(BaseSettings):
             ),
             "deepagents_agent_name": self.deepagents_agent_name,
             "deepagents_model_configured": bool(self.deepagents_model or self.custom_api_model),
+            "admin_auth_enabled": self.admin_auth_enabled,
             "run_input_hook_count": len(self.run_input_hook_specs()),
             "sandbox_kind": self.deepagents_sandbox_kind,
             "upload_hook_count": len(self.upload_hook_specs()),

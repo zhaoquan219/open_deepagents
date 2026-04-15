@@ -5,6 +5,7 @@ from typing import Any
 from deepagents import create_deep_agent
 
 from .config import DeepAgentsRuntimeConfig
+from .context import DeepAgentsRunContext
 from .extensions import (
     build_builtin_tool_selection_middleware,
     build_permissions,
@@ -37,6 +38,7 @@ def build_deep_agent(config: DeepAgentsRuntimeConfig) -> Any:
         memory=list(config.memory) or None,
         permissions=build_permissions(config.permissions),
         system_prompt=config.system_prompt,
+        context_schema=DeepAgentsRunContext,
         backend=backend,
         debug=config.debug,
         name=config.agent_name,

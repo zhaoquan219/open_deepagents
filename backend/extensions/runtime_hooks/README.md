@@ -3,15 +3,19 @@
 Use this folder for project-specific runtime behavior that should not live in
 `app/services/runs.py`.
 
-Enable the bundled examples from `backend/.env`:
+Enable the bundled defaults from `backend/.env`:
 
 ```dotenv
-DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions/runtime_hooks/__init__.py:RUN_INPUT_HOOKS
-DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions/runtime_hooks/__init__.py:UPLOAD_HOOKS
+DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions.runtime_hooks:RUN_INPUT_HOOKS
+DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions.runtime_hooks:UPLOAD_HOOKS
 ```
 
 Hook entrypoints use the same `path/to/file.py:OBJECT_NAME` format as tools and
 middleware. You can export one function or a list/tuple of functions.
+
+If either env var is blank, that hook lane is intentionally disabled. Uploads
+will still be persisted and bound to messages, but blank `RUN_INPUT_HOOKS` means
+no attachment text is injected into the message sent to DeepAgents.
 
 Run input hooks receive a `RunInputHookContext` and return:
 

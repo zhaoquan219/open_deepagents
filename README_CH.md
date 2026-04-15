@@ -25,8 +25,6 @@ English version: [README.md](README.md)
 6. 运行时事件被桥接为前端可消费的 SSE 信封格式。
 7. 前端根据流式事件更新聊天区和运行时间线。
 
-更完整的目录边界说明见 [docs/repository-architecture.md](docs/repository-architecture.md)。
-
 ## 仓库结构
 
 ```text
@@ -34,7 +32,7 @@ English version: [README.md](README.md)
 ├── backend/
 │   ├── app/                          FastAPI 应用代码
 │   ├── deepagents_integration/       DeepAgents 运行时桥接层
-│   ├── extensions/                   工具 / 中间件 / 运行时钩子 / 技能 / 沙箱模板
+│   ├── extensions/                   工具 / 中间件 / 运行时钩子 / 技能模板
 │   ├── prompts/                      项目内维护的运行时提示词
 │   └── tests/                        后端测试
 ├── frontend/
@@ -46,7 +44,7 @@ English version: [README.md](README.md)
 ├── packages/
 │   ├── contracts/                    共享契约
 │   └── extension-manifest.template.json
-├── docs/                             架构与维护文档
+├── docs/                             项目文档和截图
 ├── tests/                            仓库级测试
 └── verification/                     审计与契约校验
 ```
@@ -167,6 +165,7 @@ npm run dev
 | `ADMIN_PASSWORD` | 管理员密码 |
 | `ADMIN_TOKEN_SECRET` | JWT 签名密钥 |
 | `ADMIN_TOKEN_EXPIRE_MINUTES` | Token 过期时间（分钟） |
+| `ADMIN_AUTH_ENABLED` | 设置为 `false` 时，本地部署可跳过登录直接进入对话 |
 | `CORS_ALLOWED_ORIGINS` | 允许的前端来源，逗号分隔 |
 | `UPLOAD_STORAGE_DIR` | 上传目录 |
 | `MAX_UPLOAD_SIZE_BYTES` | 单文件上传大小限制 |
@@ -175,8 +174,8 @@ npm run dev
 | `DEEPAGENTS_DEBUG` | 是否开启 DeepAgents 调试 |
 | `DEEPAGENTS_TOOL_SPECS` | 工具扩展入口 |
 | `DEEPAGENTS_MIDDLEWARE_SPECS` | 中间件扩展入口 |
-| `DEEPAGENTS_RUN_INPUT_HOOK_SPECS` | 可选的运行输入钩子入口 |
-| `DEEPAGENTS_UPLOAD_HOOK_SPECS` | 可选的上传后处理钩子入口 |
+| `DEEPAGENTS_RUN_INPUT_HOOK_SPECS` | 运行输入钩子入口；留空则不做 prompt 注入 |
+| `DEEPAGENTS_UPLOAD_HOOK_SPECS` | 上传后处理钩子入口；留空则不做上传元数据增强 |
 | `DEEPAGENTS_BUILTIN_TOOLS` | 可选的 DeepAgents 内置工具 allowlist |
 | `DEEPAGENTS_DISABLED_BUILTIN_TOOLS` | 可选的 DeepAgents 内置工具 blocklist |
 | `DEEPAGENTS_SKILLS` | 技能目录 |
@@ -219,21 +218,24 @@ CUSTOM_API_DEFAULT_HEADERS=HTTP-Referer=https://app.example.com,X-Title=open_dee
 
 `backend/.env.example` 默认启用了以下示例扩展：
 
-- `DEEPAGENTS_TOOL_SPECS=extensions/tools/__init__.py:TOOLS`
-- `DEEPAGENTS_MIDDLEWARE_SPECS=extensions/middleware/__init__.py:MIDDLEWARE`
+- `DEEPAGENTS_TOOL_SPECS=extensions.tools:TOOLS`
+- `DEEPAGENTS_MIDDLEWARE_SPECS=extensions.middleware:MIDDLEWARE`
+- `DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions.runtime_hooks:RUN_INPUT_HOOKS`
+- `DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions.runtime_hooks:UPLOAD_HOOKS`
 - `DEEPAGENTS_SKILLS=extensions/skills`
 - `DEEPAGENTS_SANDBOX_KIND=state`
-- `DEEPAGENTS_SANDBOX_ROOT_DIR=./data/sandbox`
+- `DEEPAGENTS_SANDBOX_ROOT_DIR=./data`
 
 后端会把 `DEEPAGENTS_SKILLS=extensions/skills` 规范化为 DeepAgents 可见的
 `/extensions/skills/`，并把这个 source 路由到磁盘上的项目目录，因此即使主运行时
-后端是 `state`，或者沙箱根目录位于 `backend/data/sandbox` 下，技能仍然可以被发现。
+后端是 `state`，或者沙箱根目录位于 `backend/data` 下，技能仍然可以被发现。
 
-运行时钩子默认不强制启用。推荐从这个配置开始：
+运行时钩子通过扩展入口配置。如果 hook specs 留空，上传文件仍会落盘并绑定到消息，
+但不会注入附件 prompt，也不会做上传元数据增强。默认起点是：
 
 ```dotenv
-DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions/runtime_hooks/__init__.py:RUN_INPUT_HOOKS
-DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions/runtime_hooks/__init__.py:UPLOAD_HOOKS
+DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions.runtime_hooks:RUN_INPUT_HOOKS
+DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions.runtime_hooks:UPLOAD_HOOKS
 ```
 
 然后编辑 [backend/extensions/runtime_hooks](backend/extensions/runtime_hooks) 下的模板。
@@ -244,9 +246,9 @@ DeepAgents 内置工具也可以直接通过环境变量控制，不需要改源
 
 ```dotenv
 # 只让这些内置工具对模型可见；自定义工具仍会透传。
-DEEPAGENTS_BUILTIN_TOOLS=ls,read_file,grep,task
+DEEPAGENTS_BUILTIN_TOOLS=write_todos,ls,read_file,glob,grep,task
 
-# 或者只隐藏少量内置工具。
+# 隐藏宿主机执行和写入类内置工具。
 DEEPAGENTS_DISABLED_BUILTIN_TOOLS=execute,write_file,edit_file
 ```
 
@@ -328,8 +330,10 @@ DEEPAGENTS_DISABLED_BUILTIN_TOOLS=execute,write_file,edit_file
 ### 工具与中间件
 
 - 统一工具入口：[backend/extensions/tools/__init__.py](backend/extensions/tools/__init__.py)
+- 工具指南：[backend/extensions/tools/README.md](backend/extensions/tools/README.md)
 - 工具模板：[backend/extensions/tools/echo_tool.py](backend/extensions/tools/echo_tool.py)
 - 统一中间件入口：[backend/extensions/middleware/__init__.py](backend/extensions/middleware/__init__.py)
+- 中间件指南：[backend/extensions/middleware/README.md](backend/extensions/middleware/README.md)
 - 中间件模板：[backend/extensions/middleware/audit_middleware.py](backend/extensions/middleware/audit_middleware.py)
 
 入口格式：
@@ -344,6 +348,9 @@ path/to/file.py:OBJECT_NAME
 - 在 `backend/extensions/tools/__init__.py` 中统一导出 `TOOLS`
 - 在 `backend/extensions/middleware/` 下新增中间件模块
 - 在 `backend/extensions/middleware/__init__.py` 中统一导出 `MIDDLEWARE`
+- 函数式中间件可以在 `@before_agent` 等 hook 中通过 `runtime.context`
+  读取运行上下文，也可以在 `@wrap_tool_call` 等 wrapper 中通过
+  `request.runtime.context` 读取
 
 ### 运行时钩子
 
@@ -354,8 +361,8 @@ path/to/file.py:OBJECT_NAME
 配置方式：
 
 ```dotenv
-DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions/runtime_hooks/__init__.py:RUN_INPUT_HOOKS
-DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions/runtime_hooks/__init__.py:UPLOAD_HOOKS
+DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions.runtime_hooks:RUN_INPUT_HOOKS
+DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions.runtime_hooks:UPLOAD_HOOKS
 ```
 
 `RUN_INPUT_HOOKS` 函数会收到 `session_id`、`run_id`、`role`、`content`、
@@ -394,7 +401,7 @@ backend/extensions/skills/
 - `custom`
 
 更多路径示例、上传文件可见性和安全说明见
-[backend/extensions/sandboxes/README.md](backend/extensions/sandboxes/README.md)。
+[docs/sandbox.md](docs/sandbox.md)。
 
 ### 前端文案定制
 

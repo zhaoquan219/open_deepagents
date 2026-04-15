@@ -15,6 +15,7 @@ class SupportsAstreamEvents(Protocol):
         *,
         version: str = "v2",
         config: Any = None,
+        context: Any = None,
     ) -> AsyncIterator[Mapping[str, Any]]:
         ...
 
@@ -39,6 +40,7 @@ async def stream_sse_envelopes(
     *,
     bridge_run_id: str,
     config: Any = None,
+    context: Any = None,
 ) -> AsyncIterator[SseEventEnvelope]:
     sequence = 1
     yield _make_envelope(
@@ -52,7 +54,16 @@ async def stream_sse_envelopes(
         },
     )
 
-    async for raw_event in runtime.astream_events(agent_input, version="v2", config=config):
+    if context is None:
+        event_stream = runtime.astream_events(agent_input, version="v2", config=config)
+    else:
+        event_stream = runtime.astream_events(
+            agent_input,
+            version="v2",
+            config=config,
+            context=context,
+        )
+    async for raw_event in event_stream:
         sequence += 1
         normalized = normalize_runtime_event(
             raw_event,

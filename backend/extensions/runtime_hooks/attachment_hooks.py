@@ -1,30 +1,56 @@
 from __future__ import annotations
 
-from typing import Any
+from deepagents_integration.run_hooks import RunInputHookContext, UploadHookContext
 
 
-def inject_attachment_brief(context: Any) -> str | None:
-    """Example run-input hook for attachment prompt shaping.
-
-    Customize this function when your product wants a different upload
-    instruction style than the built-in default. Returning None leaves the
-    current content unchanged.
-    """
+def inject_attachment_brief(context: RunInputHookContext) -> str | None:
+    """Default run-input hook for attachment prompt shaping."""
 
     if context.role != "user" or not context.attachments:
         return None
 
-    lines = [context.content, "", "Project attachment context:"]
+    if context.is_current_run:
+        lines = [context.content, "", "Current user attachments:"]
+        guidance = (
+            "These files are already uploaded and available to the runtime. "
+            "Prefer sandbox_path for filesystem tools when it is provided; "
+            "otherwise use upload_path."
+        )
+    else:
+        lines = [context.content, "", "Historical attachments for this earlier user message:"]
+        guidance = (
+            "These files were attached to an earlier user message. "
+            "Reuse them only when the current request explicitly refers back to them."
+        )
+
     for attachment in context.attachments:
-        preferred_path = attachment.get("sandbox_path") or attachment.get("upload_path")
         name = attachment.get("name") or attachment.get("id") or "attachment"
-        path_hint = preferred_path or attachment.get("storage_key") or "path unavailable"
-        lines.append(f"- {name}: {path_hint}")
-    lines.append("Use the provided path when the task needs file access.")
+        details = [str(name)]
+
+        sandbox_path = str(attachment.get("sandbox_path") or "").strip()
+        upload_path = str(attachment.get("upload_path") or "").strip()
+        storage_key = str(attachment.get("storage_key") or "").strip()
+        content_type = str(attachment.get("content_type") or "").strip()
+        size_bytes = int(attachment.get("size_bytes") or attachment.get("size") or 0)
+
+        if sandbox_path:
+            details.append(f"sandbox_path={sandbox_path}")
+        if upload_path:
+            details.append(f"upload_path={upload_path}")
+        if storage_key:
+            details.append(f"storage_key={storage_key}")
+        if content_type:
+            details.append(f"type={content_type}")
+        if size_bytes > 0:
+            details.append(f"size={size_bytes} bytes")
+
+        lines.append(f"- {' | '.join(details)}")
+
+    lines.append(guidance)
     return "\n".join(lines)
 
 
-def tag_uploaded_file(context: Any) -> dict[str, Any]:
+def tag_uploaded_file(context: UploadHookContext) -> dict[str, object]:
     """Example upload hook for adding searchable metadata to UploadRecord.extra."""
 
     return {

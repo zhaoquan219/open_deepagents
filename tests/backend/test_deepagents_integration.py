@@ -7,6 +7,7 @@ import textwrap
 import unittest
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from deepagents.backends import FilesystemBackend, LocalShellBackend, StateBackend
@@ -16,8 +17,11 @@ from deepagents.middleware.skills import _list_skills
 from deepagents_integration import (
     BuiltinToolSelectionMiddleware,
     DeepAgentsRuntimeConfig,
+    DeepAgentsRunContext,
+    RunInputHookContext,
     SandboxConfig,
     SkillSourceConfig,
+    apply_run_input_hooks,
     build_deep_agent,
     load_middleware_extensions,
     load_object_from_spec,
@@ -28,7 +32,6 @@ from deepagents_integration import (
     stream_sse_envelopes,
     validate_sse_event,
 )
-from extensions.middleware.audit_middleware import SampleAuditMiddleware
 
 
 class DummyBackend(BackendProtocol):
@@ -159,9 +162,9 @@ class DeepAgentsConfigTests(unittest.TestCase):
 
     def test_runtime_hook_template_entrypoints_are_loadable(self):
         run_hooks = load_object_from_spec(
-            "extensions/runtime_hooks/__init__.py:RUN_INPUT_HOOKS"
+            "extensions.runtime_hooks:RUN_INPUT_HOOKS"
         )
-        upload_hooks = load_object_from_spec("extensions/runtime_hooks/__init__.py:UPLOAD_HOOKS")
+        upload_hooks = load_object_from_spec("extensions.runtime_hooks:UPLOAD_HOOKS")
 
         self.assertTrue(run_hooks)
         self.assertTrue(upload_hooks)
@@ -297,6 +300,7 @@ class DeepAgentsConfigTests(unittest.TestCase):
             self.assertEqual(kwargs["memory"], ["/memory/AGENTS.md"])
             self.assertEqual(kwargs["permissions"][0].operations, ["read", "write"])
             self.assertIsInstance(kwargs["backend"], FilesystemBackend)
+            self.assertIs(kwargs["context_schema"], DeepAgentsRunContext)
 
     def test_builtin_tool_selection_middleware_filters_only_deepagents_builtin_tools(self):
         middleware = BuiltinToolSelectionMiddleware(
@@ -336,26 +340,43 @@ class DeepAgentsConfigTests(unittest.TestCase):
             )
         )
 
-    def test_sample_audit_middleware_supports_sync_and_async_tool_wrapping(self):
-        [middleware] = load_middleware_extensions(
-            ("extensions/middleware/audit_middleware.py:MIDDLEWARE",)
+    def test_functional_audit_middleware_can_access_runtime_context(self):
+        before_agent_middleware, tool_middleware = load_middleware_extensions(
+            ("extensions.middleware.audit_middleware:MIDDLEWARE",)
         )
-        self.assertEqual(type(middleware).__name__, SampleAuditMiddleware.__name__)
-        request = object()
+        runtime = SimpleNamespace(
+            context={
+                "session_id": "session-1",
+                "run_id": "run-1",
+                "current_attachments": ({"id": "upload-1"},),
+            }
+        )
+        request = SimpleNamespace(
+            runtime=runtime,
+            tool_call={"name": "read_file"},
+        )
 
         def sync_handler(received_request):
             self.assertIs(received_request, request)
             return "sync-result"
 
-        async def async_handler(received_request):
-            self.assertIs(received_request, request)
-            return "async-result"
+        self.assertEqual(before_agent_middleware.before_agent({}, runtime), None)
+        self.assertEqual(tool_middleware.wrap_tool_call(request, sync_handler), "sync-result")
 
-        self.assertEqual(middleware.wrap_tool_call(request, sync_handler), "sync-result")
-        self.assertEqual(
-            asyncio.run(middleware.awrap_tool_call(request, async_handler)),
-            "async-result",
+    def test_blank_run_input_hook_specs_leave_upload_prompt_unchanged(self):
+        content = apply_run_input_hooks(
+            context=RunInputHookContext(
+                session_id="session-1",
+                run_id="run-1",
+                role="user",
+                content="Read the file",
+                attachments=({"name": "notes.txt", "upload_path": "/tmp/notes.txt"},),
+                is_current_run=True,
+            ),
+            hook_specs=(),
         )
+
+        self.assertEqual(content, "Read the file")
 
 
 class DeepAgentsSseBridgeTests(unittest.IsolatedAsyncioTestCase):

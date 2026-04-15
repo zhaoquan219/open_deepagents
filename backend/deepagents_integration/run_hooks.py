@@ -37,7 +37,7 @@ def apply_run_input_hooks(
     context: RunInputHookContext,
     hook_specs: tuple[str, ...] = (),
 ) -> str:
-    hooks = _load_hooks(hook_specs) if hook_specs else (default_attachment_context_hook,)
+    hooks = _load_hooks(hook_specs) if hook_specs else ()
     content = context.content
     for hook in hooks:
         result = hook(replace(context, content=content))
@@ -45,41 +45,6 @@ def apply_run_input_hooks(
             continue
         content = _coerce_hook_content(result)
     return content
-
-
-def default_attachment_context_hook(context: RunInputHookContext) -> str:
-    if context.role != "user" or not context.attachments:
-        return context.content
-
-    lines = ["Attached files:"]
-    for item in context.attachments:
-        name = str(item.get("name") or item.get("id") or "attachment")
-        details = [name]
-
-        sandbox_path = str(item.get("sandbox_path") or "").strip()
-        upload_path = str(item.get("upload_path") or "").strip()
-        storage_key = str(item.get("storage_key") or "").strip()
-        content_type = str(item.get("content_type") or "").strip()
-        size_bytes = int(item.get("size_bytes") or item.get("size") or 0)
-
-        if sandbox_path:
-            details.append(f"sandbox_path={sandbox_path}")
-        if upload_path:
-            details.append(f"upload_path={upload_path}")
-        if storage_key:
-            details.append(f"storage_key={storage_key}")
-        if content_type:
-            details.append(f"type={content_type}")
-        if size_bytes > 0:
-            details.append(f"size={size_bytes} bytes")
-
-        lines.append(f"- {' | '.join(details)}")
-
-    lines.append(
-        "These files are already uploaded and available to the runtime. "
-        "Prefer sandbox_path for filesystem tools when it is provided; otherwise use upload_path."
-    )
-    return f"{context.content}\n\n" + "\n".join(lines)
 
 
 def apply_upload_hooks(

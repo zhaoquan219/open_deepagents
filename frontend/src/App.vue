@@ -34,6 +34,7 @@ const authUsername = ref('admin')
 const authPassword = ref('')
 const authError = ref('')
 const authLoading = ref(false)
+const authChecked = ref(false)
 const isAuthenticated = ref(false)
 const isWideLayout = ref(true)
 const stoppingRunId = ref('')
@@ -469,6 +470,8 @@ onMounted(async () => {
   } catch {
     apiClient.logout()
     isAuthenticated.value = false
+  } finally {
+    authChecked.value = true
   }
 })
 
@@ -577,7 +580,7 @@ onBeforeUnmount(() => {
       </main>
     </template>
 
-    <main v-else class="auth-layout">
+    <main v-else-if="authChecked" class="auth-layout">
       <el-card class="auth-panel card-shell" shadow="never">
         <div class="auth-card">
           <p class="eyebrow">{{ uiCopy.app.auth.eyebrow }}</p>

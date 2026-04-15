@@ -5,10 +5,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-REQUIRED_PLAN_FILES = (
-    ".omx/plans/prd-deepagents-agent-platform.md",
-    ".omx/plans/test-spec-deepagents-agent-platform.md",
-)
+REQUIRED_DOC_FILES = ("docs/sandbox.md",)
 REQUIRED_BACKEND_DIRS = (
     "backend/app/api",
     "backend/app/core",
@@ -30,14 +27,16 @@ REQUIRED_CONTRACT_FILES = (
 )
 REQUIRED_EXTENSION_TEMPLATES = (
     "backend/extensions/tools/__init__.py",
+    "backend/extensions/tools/README.md",
     "backend/extensions/tools/echo_tool.py",
     "backend/extensions/middleware/__init__.py",
+    "backend/extensions/middleware/README.md",
     "backend/extensions/middleware/audit_middleware.py",
     "backend/extensions/runtime_hooks/__init__.py",
     "backend/extensions/runtime_hooks/attachment_hooks.py",
     "backend/extensions/runtime_hooks/README.md",
     "backend/extensions/skills/README.md",
-    "backend/extensions/sandboxes/README.md",
+    "backend/extensions/skills/skill-creator/SKILL.md",
     "backend/app/storage/minio.py",
 )
 @dataclass(frozen=True)
@@ -72,7 +71,7 @@ def _check_paths(root: Path, name: str, relative_paths: Iterable[str]) -> AuditC
 
 def audit_repo(root: Path) -> AuditReport:
     checks = (
-        _check_paths(root, "plan-artifacts", REQUIRED_PLAN_FILES),
+        _check_paths(root, "project-docs", REQUIRED_DOC_FILES),
         _check_paths(root, "backend-scaffold", REQUIRED_BACKEND_DIRS),
         _check_paths(root, "frontend-scaffold", REQUIRED_FRONTEND_DIRS),
         _check_paths(root, "contract-files", REQUIRED_CONTRACT_FILES),

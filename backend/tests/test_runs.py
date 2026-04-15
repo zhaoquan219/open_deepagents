@@ -18,8 +18,11 @@ from app.db.models import (
     RunEventViewRecord,
     SessionRecord,
     SessionRuntimeLinkRecord,
+    UploadRecord,
 )
 from app.main import create_app
+
+DEFAULT_RUN_INPUT_HOOK_SPEC = "extensions.runtime_hooks:RUN_INPUT_HOOKS"
 
 
 class FakeRuntime:
@@ -29,6 +32,7 @@ class FakeRuntime:
         *,
         version: str = "v2",
         config: Any = None,
+        context: Any = None,
     ) -> AsyncIterator[dict[str, Any]]:
         yield {
             "event": "on_chain_start",
@@ -71,6 +75,7 @@ class BlockingToolRuntime:
         *,
         version: str = "v2",
         config: Any = None,
+        context: Any = None,
     ) -> AsyncIterator[dict[str, Any]]:
         yield {
             "event": "on_chain_start",
@@ -123,6 +128,7 @@ class CancellableRuntime:
         *,
         version: str = "v2",
         config: Any = None,
+        context: Any = None,
     ) -> AsyncIterator[dict[str, Any]]:
         self.started.set()
         yield {
@@ -147,6 +153,7 @@ def build_failing_runtime(_config: Any) -> Any:
 class CapturingConversationRuntime:
     def __init__(self) -> None:
         self.inputs: list[Any] = []
+        self.contexts: list[Any] = []
 
     async def astream_events(
         self,
@@ -154,8 +161,10 @@ class CapturingConversationRuntime:
         *,
         version: str = "v2",
         config: Any = None,
+        context: Any = None,
     ) -> AsyncIterator[dict[str, Any]]:
         self.inputs.append(agent_input)
+        self.contexts.append(context)
         reply = f"seen:{len(agent_input.get('messages', []))}"
         yield {
             "event": "on_chain_start",
@@ -187,6 +196,7 @@ class RecursingRuntime:
         *,
         version: str = "v2",
         config: Any = None,
+        context: Any = None,
     ) -> AsyncIterator[dict[str, Any]]:
         yield {
             "event": "on_chain_start",
@@ -205,6 +215,7 @@ class MultiMessageRuntime:
         *,
         version: str = "v2",
         config: Any = None,
+        context: Any = None,
     ) -> AsyncIterator[dict[str, Any]]:
         yield {
             "event": "on_chain_start",
@@ -257,6 +268,7 @@ def test_run_lifecycle_and_stream(tmp_path) -> None:
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
         deepagents_model="openai:gpt-5.4",
+        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
     app.state.run_service.builder = build_fake_runtime
@@ -323,6 +335,46 @@ def test_run_lifecycle_and_stream(tmp_path) -> None:
             assert runtime_link.runtime_run_id == "runtime-1"
 
 
+def test_run_stream_allows_missing_access_token_when_admin_auth_disabled(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'no-auth-run.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+        admin_auth_enabled=False,
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = build_fake_runtime
+
+    with TestClient(app) as client:
+        session = client.post("/api/sessions", json={"title": "No auth run"})
+        session_id = session.json()["id"]
+
+        run = client.post(
+            "/api/runs",
+            json={"session_id": session_id, "prompt": "Say hello", "attachments": []},
+        )
+        assert run.status_code == 201
+        run_id = run.json()["run_id"]
+
+        with client.stream("GET", f"/api/runs/{run_id}/stream") as response:
+            assert response.status_code == 200
+            payloads = []
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if not line or not line.startswith("data: "):
+                    continue
+                payloads.append(line[6:])
+                if '"status": "completed"' in line:
+                    break
+
+    assert any('"status": "completed"' in line for line in payloads)
+
+
 def test_stream_emits_keepalive_while_tool_execution_blocks(tmp_path) -> None:
     settings = Settings(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'keepalive.db'}",
@@ -332,6 +384,7 @@ def test_stream_emits_keepalive_while_tool_execution_blocks(tmp_path) -> None:
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
         deepagents_model="openai:gpt-5.4",
+        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
     app.state.database.create_all()
@@ -859,6 +912,7 @@ def test_run_builds_attachment_context_with_storage_key_and_upload_path(tmp_path
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
         deepagents_model="openai:gpt-5.4",
+        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime
@@ -902,14 +956,221 @@ def test_run_builds_attachment_context_with_storage_key_and_upload_path(tmp_path
                     break
 
     assert runtime.inputs
+    assert runtime.contexts
     content = runtime.inputs[0]["messages"][0]["content"]
+    context = runtime.contexts[0]
     expected_upload_path = (settings.upload_storage_dir / upload_payload["storage_key"]).resolve()
 
-    assert "Attached files:" in content
+    assert context["session_id"] == session_id
+    assert context["run_id"] == run_id
+    assert context["current_attachments"][0]["id"] == upload_payload["id"]
+    assert "Current user attachments:" in content
     assert "notes.txt" in content
     assert upload_payload["storage_key"] in content
     assert str(expected_upload_path) in content
     assert "Prefer sandbox_path for filesystem tools when it is provided" in content
+
+
+def test_run_consumes_pending_upload_by_binding_it_to_user_message(tmp_path) -> None:
+    runtime = CapturingConversationRuntime()
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'consume-upload.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post("/api/sessions", headers=headers, json={"title": "Consume upload"})
+        session_id = session.json()["id"]
+
+        upload = client.post(
+            f"/api/sessions/{session_id}/uploads",
+            headers=headers,
+            files={"file": ("notes.txt", b"hello upload", "text/plain")},
+        )
+        upload_payload = upload.json()
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "Use this upload",
+                "attachments": [
+                    {
+                        "id": upload_payload["id"],
+                        "name": upload_payload["filename"],
+                        "status": "uploaded",
+                    }
+                ],
+            },
+        )
+
+    assert run.status_code == 201
+    with app.state.database.session_factory() as db:
+        user_message = (
+            db.query(MessageRecord)
+            .filter(
+                MessageRecord.session_id == session_id,
+                MessageRecord.role == "user",
+                MessageRecord.run_id == run.json()["run_id"],
+            )
+            .one()
+        )
+        upload_record = db.query(UploadRecord).filter(UploadRecord.id == upload_payload["id"]).one()
+
+        assert upload_record.message_id == user_message.id
+        assert user_message.extra["attachments"][0]["id"] == upload_payload["id"]
+
+
+def test_consumed_upload_cannot_be_reused_for_later_run(tmp_path) -> None:
+    runtime = CapturingConversationRuntime()
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'reuse-upload.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post("/api/sessions", headers=headers, json={"title": "Reuse upload"})
+        session_id = session.json()["id"]
+
+        upload = client.post(
+            f"/api/sessions/{session_id}/uploads",
+            headers=headers,
+            files={"file": ("notes.txt", b"hello upload", "text/plain")},
+        )
+        upload_payload = upload.json()
+        attachment = {
+            "id": upload_payload["id"],
+            "name": upload_payload["filename"],
+            "status": "uploaded",
+        }
+
+        first_run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "Use this upload",
+                "attachments": [attachment],
+            },
+        )
+        second_run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "Use it again as a new upload",
+                "attachments": [attachment],
+            },
+        )
+
+    assert first_run.status_code == 201
+    assert second_run.status_code == 409
+    assert second_run.json()["detail"] == "Upload is already attached to a message"
+
+
+def test_later_run_without_uploads_does_not_mark_history_as_current_attachment(tmp_path) -> None:
+    runtime = CapturingConversationRuntime()
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'attachment-history.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post("/api/sessions", headers=headers, json={"title": "History upload"})
+        session_id = session.json()["id"]
+
+        upload = client.post(
+            f"/api/sessions/{session_id}/uploads",
+            headers=headers,
+            files={"file": ("notes.txt", b"hello upload", "text/plain")},
+        )
+        upload_payload = upload.json()
+
+        first_run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "Summarize this file",
+                "attachments": [
+                    {
+                        "id": upload_payload["id"],
+                        "name": upload_payload["filename"],
+                        "status": "uploaded",
+                    }
+                ],
+            },
+        )
+        first_run_id = first_run.json()["run_id"]
+        with client.stream(
+            "GET",
+            f"/api/runs/{first_run_id}/stream?access_token={token}",
+        ) as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and '"status": "completed"' in line:
+                    break
+
+        second_run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "Continue without a new file",
+                "attachments": [],
+            },
+        )
+        second_run_id = second_run.json()["run_id"]
+        with client.stream(
+            "GET",
+            f"/api/runs/{second_run_id}/stream?access_token={token}",
+        ) as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and '"status": "completed"' in line:
+                    break
+
+    assert len(runtime.inputs) >= 2
+    second_messages = runtime.inputs[1]["messages"]
+
+    assert "Historical attachments for this earlier user message:" in second_messages[0]["content"]
+    assert "Current user attachments:" not in second_messages[0]["content"]
+    assert second_messages[-1]["content"] == "Continue without a new file"
 
 
 def test_run_builds_attachment_context_with_sandbox_path_for_virtual_filesystem(tmp_path) -> None:
@@ -926,6 +1187,7 @@ def test_run_builds_attachment_context_with_sandbox_path_for_virtual_filesystem(
         deepagents_sandbox_kind="filesystem",
         deepagents_sandbox_root_dir=str(sandbox_root),
         deepagents_sandbox_virtual_mode=True,
+        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime
@@ -990,6 +1252,7 @@ def test_single_uploaded_file_tasks_use_generic_attachment_context_without_keywo
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
         deepagents_model="openai:gpt-5.4",
+        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime
@@ -1035,7 +1298,7 @@ def test_single_uploaded_file_tasks_use_generic_attachment_context_without_keywo
     assert runtime.inputs
     content = runtime.inputs[0]["messages"][0]["content"]
 
-    assert "Attached files:" in content
+    assert "Current user attachments:" in content
     assert "Single-file execution hint:" not in content
     assert "directly as the first tool action" not in content
 
@@ -1107,4 +1370,4 @@ def test_run_input_hook_can_customize_attachment_prompt_injection(tmp_path) -> N
     assert runtime.inputs
     content = runtime.inputs[0]["messages"][0]["content"]
     assert "CUSTOM_ATTACHMENTS=notes.txt" in content
-    assert "Attached files:" not in content
+    assert "Current user attachments:" not in content

@@ -35,13 +35,16 @@ def require_admin(
     request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> str:
+    settings = get_settings(request)
+    if not settings.admin_auth_enabled:
+        return settings.admin_username
+
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Admin authentication required",
         )
 
-    settings = get_settings(request)
     return decode_access_token(settings, credentials.credentials)
 
 

@@ -25,12 +25,15 @@ uv run uvicorn app.main:app --reload
 Copy `backend/.env.example` to `.env` and adjust as needed.
 The runtime system prompt is managed in `backend/prompts/deepagents-system-prompt.md`.
 `backend/.env` is the only env file used by the backend runtime.
-The default template already enables the unified tool and middleware entrypoints,
-the default skills directory, and the sample sandbox settings.
-Tools are aggregated from `backend/extensions/tools/__init__.py:TOOLS`.
-Middleware is aggregated from `backend/extensions/middleware/__init__.py:MIDDLEWARE`.
-Runtime hooks can be enabled from `backend/extensions/runtime_hooks/__init__.py`
+The default template already enables the unified tool, middleware, runtime hook
+entrypoints, the default skills directory, and the sample sandbox settings.
+Tools are aggregated from `extensions.tools:TOOLS`.
+Middleware is aggregated from `extensions.middleware:MIDDLEWARE`.
+See `backend/extensions/tools/README.md` and
+`backend/extensions/middleware/README.md` for extension authoring examples.
+Runtime hooks are loaded from `backend/extensions/runtime_hooks/__init__.py`
 with `DEEPAGENTS_RUN_INPUT_HOOK_SPECS` and `DEEPAGENTS_UPLOAD_HOOK_SPECS`.
+If either spec is blank, that hook lane has no effect.
 Skills are loaded from `DEEPAGENTS_SKILLS` by scanning subdirectories for
 `SKILL.md`, and the backend routes those skill paths to disk even when the main
 runtime backend is `state` or a sandbox rooted elsewhere.
@@ -54,8 +57,8 @@ as tools and middleware.
 Recommended starting config:
 
 ```dotenv
-DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions/runtime_hooks/__init__.py:RUN_INPUT_HOOKS
-DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions/runtime_hooks/__init__.py:UPLOAD_HOOKS
+DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions.runtime_hooks:RUN_INPUT_HOOKS
+DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions.runtime_hooks:UPLOAD_HOOKS
 ```
 
 Then edit `backend/extensions/runtime_hooks/attachment_hooks.py`.
@@ -66,6 +69,13 @@ Then edit `backend/extensions/runtime_hooks/attachment_hooks.py`.
 - Upload hooks receive file metadata and the raw payload after storage. Return a
   mapping to merge into `UploadRecord.extra`.
 
+### Middleware context
+
+DeepAgents runs receive a typed runtime context with `session_id`, `run_id`, and
+`current_attachments`. Function-style middleware can read it from
+`runtime.context` in decorators such as `@before_agent`, or from
+`request.runtime.context` in wrappers such as `@wrap_tool_call`.
+
 ### Built-in tool filtering
 
 DeepAgents injects built-in tools such as `ls`, `read_file`, `write_file`,
@@ -73,7 +83,7 @@ DeepAgents injects built-in tools such as `ls`, `read_file`, `write_file`,
 filter those without removing custom tools:
 
 ```dotenv
-DEEPAGENTS_BUILTIN_TOOLS=ls,read_file,grep,task
+DEEPAGENTS_BUILTIN_TOOLS=write_todos,ls,read_file,glob,grep,task
 DEEPAGENTS_DISABLED_BUILTIN_TOOLS=execute,write_file,edit_file
 ```
 
