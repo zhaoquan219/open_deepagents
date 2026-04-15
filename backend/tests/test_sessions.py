@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
+from app.db.models import UploadRecord
 from app.main import create_app
 
 
@@ -146,3 +147,85 @@ def test_upload_hook_can_enrich_upload_metadata(tmp_path) -> None:
     assert extra["hooked"] is True
     assert extra["payload_size"] == len(b"backend attachment")
     assert extra["upload_path"].endswith(upload_response.json()["storage_key"])
+
+
+def test_unsent_upload_can_be_deleted_and_cleans_record_and_file(
+    client: TestClient,
+    auth_headers: dict[str, str],
+) -> None:
+    create_session = client.post(
+        "/api/sessions",
+        headers=auth_headers,
+        json={"title": "Pending upload"},
+    )
+    session_id = create_session.json()["id"]
+
+    upload_response = client.post(
+        f"/api/sessions/{session_id}/uploads",
+        headers=auth_headers,
+        files={"file": ("draft.txt", b"delete me", "text/plain")},
+    )
+    assert upload_response.status_code == 201
+    upload_payload = upload_response.json()
+    upload_id = upload_payload["id"]
+    upload_path = client.app.state.settings.upload_storage_dir / upload_payload["storage_key"]
+    assert upload_path.exists()
+
+    delete_response = client.delete(f"/api/uploads/{upload_id}", headers=auth_headers)
+    assert delete_response.status_code == 204
+
+    get_upload = client.get(f"/api/uploads/{upload_id}", headers=auth_headers)
+    assert get_upload.status_code == 404
+    assert not upload_path.exists()
+
+    session_detail = client.get(f"/api/sessions/{session_id}", headers=auth_headers)
+    assert session_detail.status_code == 200
+    assert session_detail.json()["uploads"] == []
+
+    with client.app.state.database.session_factory() as db:
+        record = db.query(UploadRecord).filter(UploadRecord.id == upload_id).first()
+        assert record is None
+
+
+def test_sent_upload_cannot_be_deleted(
+    client: TestClient,
+    auth_headers: dict[str, str],
+) -> None:
+    create_session = client.post(
+        "/api/sessions",
+        headers=auth_headers,
+        json={"title": "Sent upload"},
+    )
+    session_id = create_session.json()["id"]
+    create_message = client.post(
+        f"/api/sessions/{session_id}/messages",
+        headers=auth_headers,
+        json={"role": "user", "content": "bound upload"},
+    )
+    message_id = create_message.json()["id"]
+
+    upload_response = client.post(
+        f"/api/sessions/{session_id}/uploads",
+        headers=auth_headers,
+        data={"message_id": message_id},
+        files={"file": ("final.txt", b"keep me", "text/plain")},
+    )
+    assert upload_response.status_code == 201
+    upload_payload = upload_response.json()
+    upload_id = upload_payload["id"]
+    upload_path = client.app.state.settings.upload_storage_dir / upload_payload["storage_key"]
+    assert upload_path.exists()
+
+    delete_response = client.delete(f"/api/uploads/{upload_id}", headers=auth_headers)
+    assert delete_response.status_code == 409
+    assert delete_response.json()["detail"] == "Sent uploads cannot be deleted"
+    assert upload_path.exists()
+
+    get_upload = client.get(f"/api/uploads/{upload_id}", headers=auth_headers)
+    assert get_upload.status_code == 200
+    assert get_upload.json()["message_id"] == message_id
+
+    with client.app.state.database.session_factory() as db:
+        record = db.query(UploadRecord).filter(UploadRecord.id == upload_id).first()
+        assert record is not None
+        assert record.message_id == message_id

@@ -214,6 +214,32 @@ describe('sessionStore transcript helpers', () => {
     ])
   })
 
+  it('removes a pending upload from local state after the backend delete succeeds', async () => {
+    const apiClient = {
+      createSession: vi.fn(),
+      deleteSession: vi.fn(),
+      deleteUpload: vi.fn(async () => null),
+      getSessionMessages: vi.fn(async () => []),
+      listSessions: vi.fn(),
+      uploadFiles: vi.fn(),
+    }
+    const store = createSessionStore(apiClient)
+
+    store.state.pendingUploadsBySession['session-1'] = [
+      { id: 'upload-1', name: 'notes.txt', size: 12, status: 'uploaded' },
+      { id: 'upload-2', name: 'spec.pdf', size: 24, status: 'uploaded' },
+    ]
+
+    const result = await store.deletePendingUpload('session-1', 'upload-1')
+
+    expect(result).toEqual({ ok: true })
+    expect(apiClient.deleteUpload).toHaveBeenCalledWith('upload-1')
+    expect(store.getPendingUploads('session-1')).toEqual([
+      { id: 'upload-2', name: 'spec.pdf', size: 24, status: 'uploaded' },
+    ])
+    expect(store.state.uploadError).toBe('')
+  })
+
   it('clears stale upload errors when session context changes or uploads are consumed', async () => {
     const apiClient = {
       createSession: vi.fn(async () => ({

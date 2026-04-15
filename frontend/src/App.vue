@@ -45,6 +45,7 @@ const currentSessionId = computed(() => sessionStore.state.currentSessionId)
 const currentSession = computed(() => sessionStore.getCurrentSession())
 const currentMessages = computed(() => sessionStore.getCurrentMessages())
 const pendingUploads = computed(() => sessionStore.getPendingUploads())
+const deletingUploads = computed(() => sessionStore.state.deletingUploadIds)
 const loadingSessions = computed(() => sessionStore.state.loadingSessions)
 const loadingMessages = computed(() => sessionStore.state.loadingMessages)
 const uploading = computed(() => sessionStore.state.uploading)
@@ -358,6 +359,26 @@ async function handleUpload(files) {
   })
 }
 
+async function handleDeletePendingUpload(upload) {
+  const sessionId = String(currentSessionId.value || '')
+  const uploadId = String(upload?.id || '')
+  const uploadName = String(upload?.name || uiCopy.api.unnamedAttachment)
+  if (!sessionId || !uploadId) {
+    return
+  }
+
+  const result = await sessionStore.deletePendingUpload(sessionId, uploadId)
+  if (!result?.ok) {
+    const message = result?.error?.message || uiCopy.api.deleteUploadFailedForFile(uploadName)
+    logRuntime('upload.delete.error', message, { sessionId, uploadId }, 'error')
+    runStore.recordClientIssue({
+      sessionId,
+      label: uiCopy.app.notices.deleteUploadFailed,
+      detail: message,
+    })
+  }
+}
+
 async function handleSubmit({ prompt }) {
   if (['queued', 'running'].includes(runStatus.value)) {
     return
@@ -532,6 +553,7 @@ onBeforeUnmount(() => {
             :current-session="currentSession"
             :messages="currentMessages"
             :pending-uploads="pendingUploads"
+            :deleting-uploads="deletingUploads"
             :loading="loadingMessages"
             :uploading="uploading"
             :submitting="submitting"
@@ -543,6 +565,7 @@ onBeforeUnmount(() => {
             @submit="handleSubmit"
             @stop-run="handleStopRun"
             @upload="handleUpload"
+            @delete-upload="handleDeletePendingUpload"
           />
 
           <div

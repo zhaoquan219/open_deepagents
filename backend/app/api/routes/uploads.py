@@ -1,8 +1,10 @@
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
+from sqlalchemy.orm import Session
 
 from app.api.deps import DatabaseSessionDep, SettingsDep, StorageDep, require_admin
 from app.db.models import MessageRecord, SessionRecord, UploadRecord
@@ -12,6 +14,8 @@ from deepagents_integration.run_hooks import apply_upload_hooks, build_upload_ho
 router = APIRouter(dependencies=[Depends(require_admin)])
 UploadFileDep = Annotated[UploadFile, File()]
 MessageIdForm = Annotated[str | None, Form()]
+PendingUploadCleanup = Callable[[Session, UploadRecord], None]
+PENDING_UPLOAD_CLEANUPS: tuple[PendingUploadCleanup, ...] = ()
 
 
 @router.get("/sessions/{session_id}/uploads", response_model=list[UploadRead])
@@ -137,8 +141,32 @@ def download_upload(
     )
 
 
+@router.delete("/uploads/{upload_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_upload(
+    upload_id: str,
+    db: DatabaseSessionDep,
+    storage: StorageDep,
+) -> None:
+    record = get_upload(upload_id, db)
+    if record.message_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Sent uploads cannot be deleted",
+        )
+
+    cleanup_pending_upload_state(db=db, record=record)
+    storage.delete(record.storage_key)
+    db.delete(record)
+    db.commit()
+
+
 def ensure_session_exists(db: DatabaseSessionDep, session_id: str) -> SessionRecord:
     record = db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     return record
+
+
+def cleanup_pending_upload_state(*, db: Session, record: UploadRecord) -> None:
+    for cleanup in PENDING_UPLOAD_CLEANUPS:
+        cleanup(db, record)

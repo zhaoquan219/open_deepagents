@@ -1,5 +1,5 @@
 <script setup>
-import { UploadFilled } from '@element-plus/icons-vue'
+import { CloseBold, UploadFilled } from '@element-plus/icons-vue'
 import { computed, ref } from 'vue'
 
 import { uiCopy } from '../lib/copy.js'
@@ -30,6 +30,10 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  deletingUploads: {
+    type: Object,
+    default: () => ({}),
+  },
   runStatus: {
     type: String,
     default: 'idle',
@@ -56,7 +60,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['submit', 'upload', 'stop-run'])
+const emit = defineEmits(['submit', 'upload', 'delete-upload', 'stop-run'])
 
 const draft = ref('')
 const fileInput = ref(null)
@@ -153,6 +157,17 @@ function handlePrimaryAction() {
   }
   submitDraft()
 }
+
+function isDeletingUpload(uploadId) {
+  return Boolean(props.deletingUploads?.[String(uploadId)])
+}
+
+function removeUpload(file) {
+  if (isRunLocked.value || isDeletingUpload(file?.id)) {
+    return
+  }
+  emit('delete-upload', file)
+}
 </script>
 
 <template>
@@ -234,7 +249,7 @@ function handlePrimaryAction() {
           </span>
         </div>
         <el-button
-          size="small"
+          size="default"
           plain
           :icon="UploadFilled"
           :disabled="props.uploading || isRunLocked"
@@ -247,8 +262,18 @@ function handlePrimaryAction() {
 
       <ul v-if="props.pendingUploads.length" class="upload-list">
         <li v-for="file in props.pendingUploads" :key="file.id">
-          <span>{{ file.name }}</span>
+          <span class="upload-list-filename">{{ file.name }}</span>
           <el-tag size="small" effect="plain">{{ uploadStatusLabel(file.status) }}</el-tag>
+          <el-button
+            text
+            size="small"
+            class="upload-remove-button"
+            :icon="CloseBold"
+            :loading="isDeletingUpload(file.id)"
+            :disabled="isRunLocked || isDeletingUpload(file.id)"
+            :aria-label="uiCopy.workspace.removeUpload"
+            @click="removeUpload(file)"
+          />
         </li>
       </ul>
 
@@ -267,7 +292,7 @@ function handlePrimaryAction() {
         <span class="muted-copy">{{ composerHint }}</span>
         <el-button
           class="composer-submit-button"
-          size="small"
+          size="default"
           :type="primaryActionType"
           :loading="usesStopAction ? props.stopping : props.submitting"
           :disabled="primaryActionDisabled"

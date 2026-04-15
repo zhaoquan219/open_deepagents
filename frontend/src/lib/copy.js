@@ -14,6 +14,7 @@ export const uiCopy = {
     unnamedAttachment: '未命名附件',
     requestFailedStatus: (status) => `请求失败（状态码 ${status}）`,
     uploadFailedForFile: (filename) => `上传附件失败：${filename}`,
+    deleteUploadFailedForFile: (filename) => `删除附件失败：${filename}`,
     streamRecoveryFailed: '实时连接恢复失败，请稍后重试。',
     invalidStreamEvent: '实时事件格式无效。',
   },
@@ -87,6 +88,7 @@ export const uiCopy = {
       uploadFailed: '附件上传失败',
       uploadCompleted: '附件上传完成',
       uploadCompletedDetail: (count) => `已上传 ${count} 个附件，将附加到下一次发送。`,
+      deleteUploadFailed: '附件删除失败',
       runCreated: '运行创建成功',
       runCreatedDetail: '后端已接受请求，正在建立实时连接。',
       runStartFailed: '运行启动失败',
@@ -126,6 +128,7 @@ export const uiCopy = {
       idle: '附件会自动附加到下一次发送。',
     },
     uploadButton: '上传附件',
+    removeUpload: '删除附件',
     placeholder: '请输入你的问题，或结合附件说明要处理的任务。',
     composerHint: {
       stop: '当前任务处理中，可直接使用同一按钮停止。',
@@ -255,6 +258,7 @@ export const uiCopy = {
       deleteSessionFailed: '删除会话失败。',
       loadMessagesFailed: '加载消息失败。',
       uploadFailed: '上传附件失败。',
+      deleteUploadFailed: '删除附件失败。',
       runFailed: '本轮处理失败。',
     },
     run: {

@@ -243,4 +243,29 @@ describe('createApiClient fallback errors', () => {
       uiCopy.api.uploadFailedForFile('notes.txt'),
     )
   })
+
+  it('uses backend detail when delete upload is rejected', async () => {
+    const storage = {
+      getItem: vi.fn(() => 'token-123'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    }
+
+    vi.stubGlobal('window', {
+      location: { origin: 'http://localhost:5173' },
+      localStorage: storage,
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 409,
+        text: async () => JSON.stringify({ detail: 'Sent uploads cannot be deleted' }),
+      })),
+    )
+
+    await expect(createApiClient('/api').deleteUpload('upload-1')).rejects.toThrow(
+      'Sent uploads cannot be deleted',
+    )
+  })
 })

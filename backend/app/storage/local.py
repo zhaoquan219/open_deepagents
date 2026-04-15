@@ -20,3 +20,6 @@ class LocalStorage:
 
     def resolve(self, storage_key: str) -> Path:
         return self.root / storage_key
+
+    def delete(self, storage_key: str) -> None:
+        self.resolve(storage_key).unlink(missing_ok=True)

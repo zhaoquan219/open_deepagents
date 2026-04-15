@@ -633,6 +633,23 @@ button {
   font-size: 0.78rem;
 }
 
+.upload-list-filename {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-remove-button {
+  min-width: 20px;
+  padding: 0;
+  color: var(--accent-strong);
+}
+
+.upload-remove-button.is-disabled {
+  color: var(--text-muted);
+}
+
 .message-row[data-role="user"] .attachment-list li {
   background: rgba(255, 255, 255, 0.16);
   color: #ffffff;

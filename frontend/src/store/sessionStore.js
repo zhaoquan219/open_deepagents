@@ -17,6 +17,7 @@ function createEmptyState() {
     currentSessionId: null,
     messagesBySession: {},
     pendingUploadsBySession: {},
+    deletingUploadIds: {},
     loadingSessions: false,
     loadingMessages: false,
     submitting: false,
@@ -194,6 +195,10 @@ export function createSessionStore(apiClient) {
     return state.pendingUploadsBySession[sessionId] || []
   }
 
+  function isDeletingUpload(uploadId) {
+    return Boolean(state.deletingUploadIds[String(uploadId)])
+  }
+
   function touchSession(sessionId, titleFallback) {
     const existing = state.sessions.find((session) => session.id === sessionId)
     const updatedAt = new Date().toISOString()
@@ -308,6 +313,35 @@ export function createSessionStore(apiClient) {
     }
   }
 
+  async function deletePendingUpload(sessionId, uploadId) {
+    const normalizedSessionId = String(sessionId)
+    const normalizedUploadId = String(uploadId)
+    state.uploadError = ''
+    state.deletingUploadIds[normalizedUploadId] = true
+
+    try {
+      await apiClient.deleteUpload(normalizedUploadId)
+      const nextUploads = (state.pendingUploadsBySession[normalizedSessionId] || []).filter(
+        (upload) => String(upload?.id || '') !== normalizedUploadId,
+      )
+      if (nextUploads.length > 0) {
+        state.pendingUploadsBySession[normalizedSessionId] = nextUploads
+      } else {
+        delete state.pendingUploadsBySession[normalizedSessionId]
+      }
+      return { ok: true }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : uiCopy.store.session.deleteUploadFailed
+      state.uploadError = message
+      return {
+        ok: false,
+        error: new Error(message),
+      }
+    } finally {
+      delete state.deletingUploadIds[normalizedUploadId]
+    }
+  }
+
   function clearPendingUploads(sessionId) {
     const normalizedId = String(sessionId)
     delete state.pendingUploadsBySession[normalizedId]
@@ -398,10 +432,12 @@ export function createSessionStore(apiClient) {
     createSession,
     clearErrors,
     clearPendingUploads,
+    deletePendingUpload,
     deleteSession,
     getCurrentMessages,
     getCurrentSession,
     getPendingUploads,
+    isDeletingUpload,
     loadSessions,
     selectSession,
     setSubmitting,

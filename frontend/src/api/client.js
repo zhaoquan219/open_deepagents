@@ -90,6 +90,48 @@ function normalizeMessage(message) {
   }
 }
 
+function normalizeErrorDetail(detail) {
+  if (typeof detail === 'string') {
+    return detail
+  }
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => normalizeErrorDetail(item))
+      .filter(Boolean)
+      .join('；')
+  }
+  if (detail && typeof detail === 'object') {
+    if (typeof detail.message === 'string') {
+      return detail.message
+    }
+    if (typeof detail.msg === 'string') {
+      return detail.msg
+    }
+  }
+  return ''
+}
+
+async function readErrorMessage(response) {
+  const body = await response.text()
+  if (!body) {
+    return ''
+  }
+
+  try {
+    const payload = JSON.parse(body)
+    if (typeof payload === 'string') {
+      return payload
+    }
+    if (payload && typeof payload === 'object') {
+      return normalizeErrorDetail(payload.detail) || normalizeErrorDetail(payload.message) || body
+    }
+  } catch {
+    return body
+  }
+
+  return body
+}
+
 async function fetchJson(url, options = {}) {
   const accessToken = resolveAccessToken()
   const response = await fetch(url, {
@@ -104,7 +146,7 @@ async function fetchJson(url, options = {}) {
   })
 
   if (!response.ok) {
-    const message = await response.text()
+    const message = await readErrorMessage(response)
     throw new Error(message || uiCopy.api.requestFailedStatus(response.status))
   }
 
@@ -177,7 +219,7 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
         })
 
         if (!response.ok) {
-          const message = await response.text()
+          const message = await readErrorMessage(response)
           throw new Error(message || uiCopy.api.uploadFailedForFile(file.name))
         }
 
@@ -192,6 +234,12 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
       }
 
       return uploaded
+    },
+
+    async deleteUpload(uploadId) {
+      await fetchJson(`${baseUrl}/uploads/${encodeURIComponent(uploadId)}`, {
+        method: 'DELETE',
+      })
     },
 
     async startRun({ sessionId, prompt, attachments }) {
