@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 
 import ChatWorkspace from './components/ChatWorkspace.vue'
@@ -64,6 +64,7 @@ const runtimeDiagnostics = computed(() => runStore.state.diagnostics)
 const runError = computed(() => runStore.state.error)
 const runStatus = computed(() => runStore.state.activeRun?.status || 'idle')
 const currentLocale = computed(() => localeState.current)
+const appShell = ref(null)
 const canStopRun = computed(
   () => ['queued', 'running'].includes(runStatus.value) && Boolean(activeRun.value?.runId),
 )
@@ -100,9 +101,57 @@ const showTimelinePanel = computed(() => isWideLayout.value || timelinePanelOpen
 const timelineToggleLabel = computed(() =>
   showTimelinePanel.value ? uiCopy.app.timelineToggle.close : uiCopy.app.timelineToggle.open,
 )
+let headerResizeObserver = null
 
 function handleLocaleChange(locale) {
   setLocale(locale)
+}
+
+function collectPanelHeaders() {
+  if (!appShell.value) {
+    return []
+  }
+  return [...appShell.value.querySelectorAll('.sidebar-header, .workspace-header, .runtime-header')]
+}
+
+function syncPanelHeaderHeights() {
+  if (!appShell.value) {
+    return
+  }
+  if (!isWideLayout.value) {
+    appShell.value.style.removeProperty('--panel-header-row-height')
+    return
+  }
+  const headers = collectPanelHeaders().filter((element) => element.offsetParent !== null)
+  if (headers.length === 0) {
+    appShell.value.style.removeProperty('--panel-header-row-height')
+    return
+  }
+  const maxHeight = Math.max(...headers.map((element) => Math.ceil(element.getBoundingClientRect().height)))
+  appShell.value.style.setProperty('--panel-header-row-height', `${maxHeight}px`)
+}
+
+function teardownHeaderResizeObserver() {
+  if (headerResizeObserver) {
+    headerResizeObserver.disconnect()
+    headerResizeObserver = null
+  }
+}
+
+function setupHeaderResizeObserver() {
+  teardownHeaderResizeObserver()
+  const ResizeObserverCtor = globalThis.ResizeObserver
+  if (typeof ResizeObserverCtor === 'undefined') {
+    syncPanelHeaderHeights()
+    return
+  }
+  headerResizeObserver = new ResizeObserverCtor(() => {
+    syncPanelHeaderHeights()
+  })
+  for (const header of collectPanelHeaders()) {
+    headerResizeObserver.observe(header)
+  }
+  syncPanelHeaderHeights()
 }
 
 function applyViewportLayout(matches) {
@@ -478,16 +527,27 @@ onMounted(async () => {
   } finally {
     authChecked.value = true
   }
+  await nextTick()
+  setupHeaderResizeObserver()
 })
 
 onBeforeUnmount(() => {
   closeStream()
+  teardownHeaderResizeObserver()
   teardownViewportTracking()
 })
+
+watch(
+  () => [isWideLayout.value, showTimelinePanel.value, currentLocale.value],
+  async () => {
+    await nextTick()
+    setupHeaderResizeObserver()
+  },
+)
 </script>
 
 <template>
-  <div class="app-shell">
+  <div ref="appShell" class="app-shell">
     <template v-if="isAuthenticated">
       <header class="app-toolbar">
         <div class="toolbar-brand">
