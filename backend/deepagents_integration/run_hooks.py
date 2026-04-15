@@ -16,7 +16,6 @@ class RunInputHookContext:
     content: str
     attachments: tuple[Mapping[str, Any], ...] = ()
     is_current_run: bool = False
-    session_state_helper: Any | None = None
 
 
 @dataclass(frozen=True)

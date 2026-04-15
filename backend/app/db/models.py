@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -50,11 +50,6 @@ class SessionRecord(Base):
         passive_deletes=True,
     )
     runtime_links: Mapped[list[SessionRuntimeLinkRecord]] = relationship(
-        back_populates="session",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
-    states: Mapped[list[SessionStateRecord]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -200,36 +195,3 @@ class SessionRuntimeLinkRecord(Base):
     extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     session: Mapped[SessionRecord] = relationship(back_populates="runtime_links")
-
-
-class SessionStateRecord(Base):
-    __tablename__ = "session_states"
-    __table_args__ = (
-        Index("ix_session_states_session_namespace_status", "session_id", "namespace", "status"),
-        Index("ix_session_states_expires_at", "expires_at"),
-    )
-
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("sessions.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    namespace: Mapped[str] = mapped_column(String(128), primary_key=True)
-    key: Mapped[str] = mapped_column(String(255), primary_key=True)
-    status: Mapped[str] = mapped_column(String(32), default="ready")
-    consume_policy: Mapped[str] = mapped_column(String(32), default="once")
-    value: Mapped[Any | None] = mapped_column(JSON, nullable=True)
-    version: Mapped[int] = mapped_column(Integer, default=1)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=utc_now,
-        onupdate=utc_now,
-    )
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_consumed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
-    last_consumed_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-
-    session: Mapped[SessionRecord] = relationship(back_populates="states")

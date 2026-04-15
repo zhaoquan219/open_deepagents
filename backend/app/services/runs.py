@@ -27,7 +27,6 @@ from app.db.models import (
     SessionRuntimeLinkRecord,
     UploadRecord,
 )
-from app.services.session_state import SessionStateHookHelper
 from app.services.session_titles import sync_session_title_from_source
 from deepagents_integration import DeepAgentsRuntimeConfig, SseEventEnvelope, stream_sse_envelopes
 from deepagents_integration.run_hooks import RunInputHookContext, apply_run_input_hooks
@@ -894,7 +893,6 @@ class RunService:
         attachments: list[dict[str, Any]],
         hook_specs: tuple[str, ...] = (),
     ) -> dict[str, list[dict[str, str]]]:
-        session_state_helper = SessionStateHookHelper(self.database.session_factory)
         with self.database.session_factory() as db:
             records = (
                 db.query(MessageRecord)
@@ -922,7 +920,6 @@ class RunService:
                         content=content,
                         attachments=tuple(record_attachments),
                         is_current_run=record.run_id == run_id,
-                        session_state_helper=session_state_helper,
                     ),
                     hook_specs=hook_specs,
                 )
@@ -945,7 +942,6 @@ class RunService:
                             content=prompt,
                             attachments=tuple(attachments),
                             is_current_run=True,
-                            session_state_helper=session_state_helper,
                         ),
                         hook_specs=hook_specs,
                     ),
