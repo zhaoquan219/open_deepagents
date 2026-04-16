@@ -116,6 +116,33 @@ describe('runStore reducer', () => {
     })
   })
 
+  it('marks a run cancelled immediately without leaving the connection open', () => {
+    const store = createRunStore()
+    store.beginRun({ runId: 'run-stop', sessionId: 'session-stop' })
+    store.markConnected('run-stop')
+    store.recordClientIssue({
+      sessionId: 'session-stop',
+      label: '临时错误',
+      detail: '稍后会清除',
+    })
+
+    store.markCancelled('run-stop', '已手动停止当前运行。')
+
+    expect(store.state.error).toBe('')
+    expect(store.state.activeRun).toMatchObject({
+      runId: 'run-stop',
+      status: 'cancelled',
+      connectionState: 'closed',
+      connected: false,
+      lastError: '',
+    })
+    expect(store.state.activeRun.timeline.at(-1)).toMatchObject({
+      label: '运行已手动停止',
+      detail: '已手动停止当前运行。',
+      status: 'cancelled',
+    })
+  })
+
   it('coalesces consecutive message delta entries in the timeline', () => {
     const started = createInitialRun('run-3', 'session-3')
     const afterFirstDelta = reduceRunState(started, {

@@ -540,6 +540,7 @@ button {
 
 .message-row[data-role="assistant"] .message-bubble,
 .message-row[data-role="system"] .message-bubble {
+  max-width: 80%;
   border-top-left-radius: 10px;
 }
 
@@ -579,6 +580,10 @@ button {
   word-break: break-word;
 }
 
+.markdown-segment {
+  min-width: 0;
+}
+
 .markdown-content :where(p, ul, ol, pre, blockquote) {
   margin-top: 0;
 }
@@ -600,6 +605,44 @@ button {
 
 .message-row[data-role="user"] .markdown-content pre {
   background: rgba(4, 26, 56, 0.18);
+}
+
+.thinking-block {
+  margin: 0 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(237, 242, 248, 0.72);
+  overflow: hidden;
+}
+
+.thinking-block > summary {
+  padding: 10px 12px;
+  color: var(--text-soft);
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+  list-style: none;
+}
+
+.thinking-block > summary::-webkit-details-marker {
+  display: none;
+}
+
+.thinking-block-body {
+  padding: 0 12px 12px;
+}
+
+.thinking-block-body > :last-child {
+  margin-bottom: 0;
+}
+
+.message-row[data-role="user"] .thinking-block {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(4, 26, 56, 0.18);
+}
+
+.message-row[data-role="user"] .thinking-block > summary {
+  color: rgba(255, 255, 255, 0.86);
 }
 
 .message-row[data-role="user"] .streaming-indicator,

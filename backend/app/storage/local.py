@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 from uuid import uuid4
 
-
 _FILENAME_SAFE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 _SESSION_TOKEN_LENGTH = 8
 _UPLOAD_TOKEN_LENGTH = 10
@@ -38,7 +37,7 @@ def _safe_filename(filename: str) -> str:
     normalized = _FILENAME_SAFE_CHARS.sub("-", raw_name).strip(".-_")
     if not normalized:
         return "upload.bin"
-    return normalized[:80]
+    return normalized
 
 
 def _short_session_token(session_id: str) -> str:

@@ -6,6 +6,7 @@ from app.core.config import (
     BACKEND_ROOT,
     DEEPAGENTS_SYSTEM_PROMPT_PATH,
     DEFAULT_SANDBOX_READ_PATHS,
+    DEFAULT_SANDBOX_ROOT,
     Settings,
     normalize_runtime_backend_path,
     normalize_sandbox_permission_path,
@@ -229,6 +230,32 @@ def test_relative_sandbox_root_dir_resolves_from_backend_root() -> None:
 
     assert settings.deepagents_sandbox_root_dir == str((BACKEND_ROOT / "data").resolve())
     assert settings.to_runtime_config().sandbox.root_dir == str((BACKEND_ROOT / "data").resolve())
+
+
+def test_filesystem_sandbox_defaults_to_backend_data_root() -> None:
+    settings = Settings(
+        deepagents_model="openai:gpt-5.4",
+        deepagents_sandbox_kind="filesystem",
+        deepagents_sandbox_root_dir="",
+    )
+
+    runtime_config = settings.to_runtime_config()
+
+    assert settings.deepagents_sandbox_root_dir is None
+    assert runtime_config.sandbox.root_dir == str(DEFAULT_SANDBOX_ROOT)
+    assert settings.logging_summary()["sandbox_root_dir_configured"] is False
+    assert settings.logging_summary()["sandbox_root_dir_effective"] is True
+    assert runtime_config.logging_summary()["sandbox_root_dir_configured"] is True
+
+
+def test_local_shell_sandbox_defaults_to_backend_data_root() -> None:
+    settings = Settings(
+        deepagents_model="openai:gpt-5.4",
+        deepagents_sandbox_kind="local_shell",
+        deepagents_sandbox_root_dir="",
+    )
+
+    assert settings.to_runtime_config().sandbox.root_dir == str(DEFAULT_SANDBOX_ROOT)
 
 
 def test_runtime_permissions_include_custom_upload_dir_outside_default_data_root() -> None:

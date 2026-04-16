@@ -187,6 +187,29 @@ def test_upload_storage_key_is_short_and_does_not_include_session_id(
     assert filename.endswith("-very-long-report-name.txt")
 
 
+def test_upload_storage_key_preserves_long_sanitized_filename(
+    client: TestClient,
+    auth_headers: dict[str, str],
+) -> None:
+    create_session = client.post(
+        "/api/sessions",
+        headers=auth_headers,
+        json={"title": "Long upload filename"},
+    )
+    session_id = create_session.json()["id"]
+    long_name = f"{'quarterly-report-' * 8}final.txt"
+
+    upload_response = client.post(
+        f"/api/sessions/{session_id}/uploads",
+        headers=auth_headers,
+        files={"file": (long_name, b"backend attachment", "text/plain")},
+    )
+
+    assert upload_response.status_code == 201
+    filename = upload_response.json()["storage_key"].split("/", 1)[1]
+    assert filename.endswith(long_name)
+
+
 def test_unsent_upload_can_be_deleted_and_cleans_record_and_file(
     client: TestClient,
     auth_headers: dict[str, str],

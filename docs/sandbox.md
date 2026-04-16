@@ -30,6 +30,9 @@ Upload records may carry three path-like fields:
 When `DEEPAGENTS_SANDBOX_VIRTUAL_MODE=true`, `sandbox_path` is formatted as a
 virtual path with a leading slash, for example `/uploads/session-id/uuid-notes.txt`.
 When virtual mode is false, DeepAgents receives normal backend path semantics.
+For the default `state` backend, uploads are copied into the run's virtual file
+state and `sandbox_path` is always a leading-slash virtual path under
+`/uploads/`.
 
 ## Upload Visibility
 
@@ -49,17 +52,17 @@ Safe default:
 
 ```dotenv
 DEEPAGENTS_SANDBOX_KIND=state
-DEEPAGENTS_SANDBOX_ROOT_DIR=./data
-DEEPAGENTS_SANDBOX_VIRTUAL_MODE=false
 ```
 
 Filesystem backend rooted under backend data:
 
 ```dotenv
 DEEPAGENTS_SANDBOX_KIND=filesystem
-DEEPAGENTS_SANDBOX_ROOT_DIR=./data
 DEEPAGENTS_SANDBOX_VIRTUAL_MODE=true
 ```
+
+If `DEEPAGENTS_SANDBOX_ROOT_DIR` is omitted for `filesystem` or `local_shell`,
+the backend defaults it to `backend/data`.
 
 Trusted local shell, usually with write/execute tools filtered unless needed:
 

@@ -1,6 +1,7 @@
 import json
 from functools import lru_cache
 from pathlib import Path, PurePath
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from langchain_openai import ChatOpenAI
@@ -17,13 +18,20 @@ DEFAULT_SANDBOX_READ_PATHS = (
     (BACKEND_ROOT / "data").resolve(),
     (BACKEND_ROOT / "extensions" / "skills").resolve(),
 )
+DEFAULT_SANDBOX_ROOT = (BACKEND_ROOT / "data").resolve()
 
 
 class _LenientComplexEmptyMixin:
-    def prepare_field_value(self, field_name, field, value, value_is_complex):
+    def prepare_field_value(
+        self,
+        field_name: str,
+        field: Any,
+        value: Any,
+        value_is_complex: bool,
+    ) -> Any:
         if field_name in {"admin_users", "custom_api_default_headers"} and value == "":
             value = "{}"
-        return super().prepare_field_value(field_name, field, value, value_is_complex)
+        return super().prepare_field_value(field_name, field, value, value_is_complex)  # type: ignore[misc]
 
 
 class _LenientEnvSettingsSource(_LenientComplexEmptyMixin, EnvSettingsSource):
@@ -212,11 +220,11 @@ class Settings(BaseSettings):
     def settings_customise_sources(
         cls,
         settings_cls: type[BaseSettings],
-        init_settings,
-        env_settings,
-        dotenv_settings,
-        file_secret_settings,
-    ):
+        init_settings: Any,
+        env_settings: Any,
+        dotenv_settings: Any,
+        file_secret_settings: Any,
+    ) -> tuple[Any, Any, Any, Any]:
         env_settings = _LenientEnvSettingsSource(settings_cls)
         dotenv_settings = _LenientDotEnvSettingsSource(
             settings_cls,
@@ -250,6 +258,7 @@ class Settings(BaseSettings):
 
     def to_runtime_config(self) -> DeepAgentsRuntimeConfig:
         resolved_skill_sources = self.deepagents_skill_sources()
+        sandbox_root_dir = self.resolved_sandbox_root_dir()
         return DeepAgentsRuntimeConfig(
             model=self.resolve_model(),
             system_prompt=self.load_deepagents_system_prompt(),
@@ -267,7 +276,7 @@ class Settings(BaseSettings):
             permissions=self.default_permissions(),
             sandbox=SandboxConfig(
                 kind=self.deepagents_sandbox_kind,  # type: ignore[arg-type]
-                root_dir=self.deepagents_sandbox_root_dir,
+                root_dir=sandbox_root_dir,
                 virtual_mode=self.deepagents_sandbox_virtual_mode,
                 timeout=self.deepagents_sandbox_timeout,
                 max_output_bytes=self.deepagents_sandbox_max_output_bytes,
@@ -289,6 +298,13 @@ class Settings(BaseSettings):
                 "paths": [normalize_sandbox_permission_path(path) for path in paths],
             },
         )
+
+    def resolved_sandbox_root_dir(self) -> str | None:
+        if self.deepagents_sandbox_root_dir:
+            return self.deepagents_sandbox_root_dir
+        if self.deepagents_sandbox_kind in {"filesystem", "local_shell"}:
+            return str(DEFAULT_SANDBOX_ROOT)
+        return None
 
     def resolve_model(self) -> str | ChatOpenAI | None:
         if self.custom_api_key and self.custom_api_url and self.custom_api_model:
@@ -366,6 +382,8 @@ class Settings(BaseSettings):
             "admin_auth_enabled": self.admin_auth_enabled,
             "run_input_hook_count": len(self.run_input_hook_specs()),
             "sandbox_kind": self.deepagents_sandbox_kind,
+            "sandbox_root_dir_configured": bool(self.deepagents_sandbox_root_dir),
+            "sandbox_root_dir_effective": bool(self.resolved_sandbox_root_dir()),
             "upload_hook_count": len(self.upload_hook_specs()),
             "upload_storage_dir": str(self.upload_storage_dir),
         }

@@ -1,7 +1,11 @@
 <script setup>
-import { nextTick, onMounted, ref, watch } from 'vue'
+/* eslint-disable vue/no-v-html */
+import { computed } from 'vue'
 
-import { hydrateMermaidBlocks, renderMarkdownToHtml } from '../lib/markdown.js'
+import { uiCopy } from '../lib/copy.js'
+import { renderMarkdownFragmentToHtml } from '../lib/markdown.js'
+import { parseMarkdownSegments } from '../lib/markdownSegments.js'
+import MermaidBlock from './MermaidBlock.vue'
 
 const props = defineProps({
   content: {
@@ -10,31 +14,40 @@ const props = defineProps({
   },
 })
 
-const container = ref(null)
-
-async function renderContent() {
-  if (!container.value) {
-    return
-  }
-
-  container.value.innerHTML = renderMarkdownToHtml(props.content)
-  await nextTick()
-  await hydrateMermaidBlocks(container.value)
-}
-
-watch(
-  () => props.content,
-  async () => {
-    await renderContent()
-  },
-  { flush: 'post' },
+const segments = computed(() =>
+  parseMarkdownSegments(props.content).map((segment) => {
+    if (segment.type === 'markdown' || segment.type === 'thinking') {
+      return {
+        ...segment,
+        html: renderMarkdownFragmentToHtml(segment.content),
+      }
+    }
+    return segment
+  }),
 )
 
-onMounted(async () => {
-  await renderContent()
-})
+function thinkingSummary(kind) {
+  return kind === 'reasoning' ? uiCopy.common.reasoning : uiCopy.common.thinking
+}
 </script>
 
 <template>
-  <div ref="container" class="markdown-content"></div>
+  <div class="markdown-content">
+    <template v-for="segment in segments" :key="segment.key">
+      <div
+        v-if="segment.type === 'markdown'"
+        class="markdown-segment"
+        v-html="segment.html"
+      ></div>
+      <MermaidBlock
+        v-else-if="segment.type === 'mermaid'"
+        :diagram-key="segment.key"
+        :source="segment.source"
+      />
+      <details v-else class="thinking-block">
+        <summary>{{ thinkingSummary(segment.kind) }}</summary>
+        <div class="thinking-block-body markdown-segment" v-html="segment.html"></div>
+      </details>
+    </template>
+  </div>
 </template>

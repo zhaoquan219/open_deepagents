@@ -917,7 +917,8 @@ def test_run_logging_captures_lifecycle_without_prompt_or_attachment_content(
     assert any('"phase": "streaming"' in message for message in messages)
     assert all("super secret prompt" not in message for message in messages)
     assert all("top-secret attachment" not in message for message in messages)
-    assert any('"runtime_run_id": "runtime-1"' in message for message in messages)
+    assert all('"runtime_run_id"' not in message for message in messages)
+    assert any('"state_file_count"' in message for message in messages)
 
 
 def test_run_failure_logging_identifies_the_failing_phase(tmp_path, caplog) -> None:
@@ -1032,7 +1033,7 @@ def test_run_builds_attachment_context_with_storage_key_and_upload_path(tmp_path
     assert "notes.txt" in content
     assert upload_payload["storage_key"] in content
     assert str(expected_upload_path) in content
-    assert "If sandbox_path is provided, use it directly with filesystem tools" in content
+    assert "If sandbox_path is provided, use it directly with file tools" in content
     assert "Do not rediscover the file by searching the workspace first" in content
 
 
@@ -1302,7 +1303,7 @@ def test_run_builds_attachment_context_with_sandbox_path_for_virtual_filesystem(
 
     assert f"sandbox_path={expected_sandbox_path}" in content
     assert f"upload_path={expected_upload_path}" in content
-    assert "If sandbox_path is provided, use it directly with filesystem tools" in content
+    assert "If sandbox_path is provided, use it directly with file tools" in content
     assert "Do not rediscover the file by searching the workspace first" in content
 
 
@@ -1360,10 +1361,73 @@ def test_run_builds_attachment_context_with_state_sandbox_uses_real_upload_path(
                 if line and '"status": "completed"' in line:
                     break
 
-    content = runtime.inputs[0]["messages"][0]["content"]
+    agent_input = runtime.inputs[0]
+    content = agent_input["messages"][0]["content"]
     expected_upload_path = (settings.upload_storage_dir / upload_payload["storage_key"]).resolve()
-    assert f"sandbox_path={expected_upload_path}" in content
+    expected_sandbox_path = f"/uploads/{upload_payload['storage_key']}"
+    assert f"sandbox_path={expected_sandbox_path}" in content
     assert f"upload_path={expected_upload_path}" in content
+    assert agent_input["files"][expected_sandbox_path]["content"] == "hello upload"
+    assert agent_input["files"][expected_sandbox_path]["encoding"] == "utf-8"
+
+
+def test_filesystem_sandbox_attachment_path_stays_under_data_root(tmp_path) -> None:
+    runtime = CapturingConversationRuntime()
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'filesystem-upload.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir="data/uploads",
+        deepagents_model="openai:gpt-5.4",
+        deepagents_sandbox_kind="filesystem",
+        deepagents_sandbox_virtual_mode=True,
+        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post(
+            "/api/sessions",
+            headers=headers,
+            json={"title": "Filesystem upload"},
+        )
+        session_id = session.json()["id"]
+
+        upload = client.post(
+            f"/api/sessions/{session_id}/uploads",
+            headers=headers,
+            files={"file": ("notes.txt", b"hello upload", "text/plain")},
+        )
+        upload_payload = upload.json()
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "请读取刚上传的文件",
+                "attachments": [{"id": upload_payload["id"], "status": "uploaded"}],
+            },
+        )
+        run_id = run.json()["run_id"]
+
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and '"status": "completed"' in line:
+                    break
+
+    content = runtime.inputs[0]["messages"][0]["content"]
+    assert app.state.settings.to_runtime_config().sandbox.root_dir.endswith("backend/data")
+    assert f"sandbox_path=/uploads/{upload_payload['storage_key']}" in content
+    assert "files" not in runtime.inputs[0]
 
 
 def test_single_uploaded_file_tasks_use_generic_attachment_context_without_keyword_hint(

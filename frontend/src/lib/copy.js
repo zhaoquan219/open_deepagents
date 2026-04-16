@@ -16,6 +16,8 @@ export const messages = {
       cancelling: '停止中',
       cancelled: '已停止',
       failed: '失败',
+      thinking: '思考过程',
+      reasoning: '推理过程',
     },
     api: {
       unnamedAttachment: '未命名附件',
@@ -308,6 +310,8 @@ export const messages = {
       cancelling: 'Stopping',
       cancelled: 'Stopped',
       failed: 'Failed',
+      thinking: 'Thinking',
+      reasoning: 'Reasoning',
     },
     api: {
       unnamedAttachment: 'Unnamed attachment',

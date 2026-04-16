@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import threading
@@ -362,8 +363,7 @@ class RunService:
 
         started_at = time.perf_counter()
         runtime_event_counts: Counter[str] = Counter()
-        runtime_run_id = ""
-        agent_input: dict[str, list[dict[str, str]]] = {"messages": []}
+        agent_input: dict[str, Any] = {"messages": []}
         phase = "starting execution"
 
         try:
@@ -415,6 +415,7 @@ class RunService:
             )
             phase = "building agent input"
             agent_input = self._build_agent_input(
+                settings=settings,
                 session_id=session_id,
                 run_id=run_id,
                 prompt=prompt,
@@ -433,6 +434,7 @@ class RunService:
                 session_id=session_id,
                 attachment_count=len(attachments),
                 message_count=len(agent_input["messages"]),
+                state_file_count=len(agent_input.get("files", {})),
             )
 
             final_message = ""
@@ -457,7 +459,6 @@ class RunService:
                 if state.status == "cancelled" or state.completed:
                     return
                 runtime_event_counts[envelope.event] += 1
-                runtime_run_id = str(envelope.data.get("runtime_run_id") or runtime_run_id)
                 sequence += 1
                 ui_event = _bridge_to_ui(
                     envelope=envelope,
@@ -511,7 +512,6 @@ class RunService:
                 duration_ms=_elapsed_ms(started_at),
                 message_delta_events=runtime_event_counts["message.delta"],
                 runtime_event_count=sum(runtime_event_counts.values()),
-                runtime_run_id=runtime_run_id,
                 sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
                 skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
                 tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
@@ -628,17 +628,6 @@ class RunService:
             )
             state.publish(completion_envelope)
             state.finish("completed")
-            if not runtime_run_id:
-                _log_run(
-                    logging.WARNING,
-                    "run completed without receiving an upstream runtime link",
-                    event="run.runtime_link_missing",
-                    phase=phase,
-                    run_id=run_id,
-                    session_id=session_id,
-                    next_step="inspect upstream runtime envelopes for a missing runtime_run_id",
-                    status="completed",
-                )
             _log_run(
                 logging.INFO,
                 "run completed with "
@@ -652,7 +641,6 @@ class RunService:
                 duration_ms=_elapsed_ms(started_at),
                 message_delta_events=runtime_event_counts["message.delta"],
                 runtime_event_count=sum(runtime_event_counts.values()),
-                runtime_run_id=runtime_run_id,
                 sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
                 skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
                 status="completed",
@@ -676,7 +664,6 @@ class RunService:
                 session_id=session_id,
                 status="cancelled",
                 runtime_event_count=sum(runtime_event_counts.values()),
-                runtime_run_id=runtime_run_id,
             )
             return
         except GraphRecursionError as exc:
@@ -736,17 +723,6 @@ class RunService:
                 db.add(recovered_session)
                 db.commit()
             state.finish("completed")
-            if not runtime_run_id:
-                _log_run(
-                    logging.WARNING,
-                    "run completed without receiving an upstream runtime link",
-                    event="run.runtime_link_missing",
-                    phase=phase,
-                    run_id=run_id,
-                    session_id=session_id,
-                    next_step="inspect upstream runtime envelopes for a missing runtime_run_id",
-                    status="completed",
-                )
             _log_run(
                 logging.WARNING,
                 "run completed with a fallback response after the recursion limit was reached",
@@ -760,7 +736,6 @@ class RunService:
                 duration_ms=_elapsed_ms(started_at),
                 error_type=type(exc).__name__,
                 runtime_event_count=sum(runtime_event_counts.values()),
-                runtime_run_id=runtime_run_id,
                 sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
                 skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
                 status="completed",
@@ -809,17 +784,6 @@ class RunService:
                     db.add(failed_session)
                     db.commit()
             state.finish("failed")
-            if not runtime_run_id:
-                _log_run(
-                    logging.WARNING,
-                    "run failed before an upstream runtime link was available",
-                    event="run.runtime_link_missing",
-                    phase=phase,
-                    run_id=run_id,
-                    session_id=session_id,
-                    next_step="inspect upstream runtime envelopes for a missing runtime_run_id",
-                    status="failed",
-                )
             _log_run(
                 logging.ERROR,
                 f"run failed while {phase}",
@@ -833,7 +797,6 @@ class RunService:
                 duration_ms=_elapsed_ms(started_at),
                 error_type=type(exc).__name__,
                 runtime_event_count=sum(runtime_event_counts.values()),
-                runtime_run_id=runtime_run_id,
                 sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
                 skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
                 status="failed",
@@ -908,12 +871,13 @@ class RunService:
     def _build_agent_input(
         self,
         *,
+        settings: Settings,
         session_id: str,
         run_id: str,
         prompt: str,
         attachments: list[dict[str, Any]],
         hook_specs: tuple[str, ...] = (),
-    ) -> dict[str, list[dict[str, str]]]:
+    ) -> dict[str, Any]:
         with self.database.session_factory() as db:
             records = (
                 db.query(MessageRecord)
@@ -948,11 +912,8 @@ class RunService:
                 continue
             messages.append({"role": record.role, "content": content})
 
-        if messages:
-            return {"messages": messages}
-
-        return {
-            "messages": [
+        if not messages:
+            messages = [
                 {
                     "role": "user",
                     "content": apply_run_input_hooks(
@@ -968,7 +929,17 @@ class RunService:
                     ),
                 }
             ]
-        }
+
+        agent_input: dict[str, Any] = {"messages": messages}
+        state_files = _state_attachment_files(
+            attachments=attachments,
+            settings=settings,
+            run_id=run_id,
+            session_id=session_id,
+        )
+        if state_files:
+            agent_input["files"] = state_files
+        return agent_input
 
     def _persist_event(self, *, run_id: str, session_id: str, envelope: dict[str, Any]) -> None:
         event_id = str(envelope["event_id"])
@@ -1007,18 +978,6 @@ class RunService:
             )
             if record is None:
                 record = SessionRuntimeLinkRecord(session_id=session_id)
-            elif record.runtime_run_id and record.runtime_run_id != runtime_run_id:
-                _log_run(
-                    logging.WARNING,
-                    "session runtime link changed from "
-                    f"{record.runtime_run_id} to {runtime_run_id}",
-                    event="run.session_runtime_link_changed",
-                    phase="syncing runtime link",
-                    run_id=run_id,
-                    session_id=session_id,
-                    previous_runtime_run_id=record.runtime_run_id,
-                    runtime_run_id=runtime_run_id,
-                )
             record.runtime_run_id = runtime_run_id
             record.last_seen_at = utc_now()
             db.add(record)
@@ -1031,22 +990,9 @@ class RunService:
                     phase="syncing runtime link",
                     run_id=run_id,
                     session_id=session_id,
-                    runtime_run_id=runtime_run_id,
                     next_step="inspect run persistence ordering if runtime links stop attaching",
                 )
             else:
-                if run_record.runtime_run_id and run_record.runtime_run_id != runtime_run_id:
-                    _log_run(
-                        logging.WARNING,
-                        "run runtime link changed from "
-                        f"{run_record.runtime_run_id} to {runtime_run_id}",
-                        event="run.runtime_run_id_changed",
-                        phase="syncing runtime link",
-                        run_id=run_id,
-                        session_id=session_id,
-                        previous_runtime_run_id=run_record.runtime_run_id,
-                        runtime_run_id=runtime_run_id,
-                    )
                 run_record.runtime_run_id = runtime_run_id
                 db.add(run_record)
             db.commit()
@@ -1440,7 +1386,7 @@ def _resolve_sandbox_attachment_path(*, upload_path: Path | None, settings: Sett
         return ""
 
     if settings.deepagents_sandbox_kind == "state":
-        return str(upload_path)
+        return _state_attachment_path(upload_path=upload_path, settings=settings)
 
     sandbox_root = _resolved_sandbox_root(settings)
     if sandbox_root is None:
@@ -1458,11 +1404,63 @@ def _resolve_sandbox_attachment_path(*, upload_path: Path | None, settings: Sett
 
 
 def _resolved_sandbox_root(settings: Settings) -> Path | None:
-    if settings.deepagents_sandbox_root_dir is not None:
-        return Path(settings.deepagents_sandbox_root_dir).expanduser().resolve()
-    if settings.deepagents_sandbox_kind == "filesystem":
-        return settings.upload_storage_dir.resolve()
+    root_dir = settings.resolved_sandbox_root_dir()
+    if root_dir is not None:
+        return Path(root_dir).expanduser().resolve()
     return None
+
+
+def _state_attachment_path(*, upload_path: Path, settings: Settings) -> str:
+    try:
+        relative_path = upload_path.resolve().relative_to(settings.upload_storage_dir.resolve())
+    except ValueError:
+        return f"/uploads/{upload_path.name}"
+    return f"/uploads/{relative_path.as_posix().lstrip('/')}"
+
+
+def _state_attachment_files(
+    *,
+    attachments: list[dict[str, Any]],
+    settings: Settings,
+    run_id: str,
+    session_id: str,
+) -> dict[str, dict[str, str]]:
+    if settings.deepagents_sandbox_kind != "state":
+        return {}
+
+    files: dict[str, dict[str, str]] = {}
+    for attachment in attachments:
+        sandbox_path = str(attachment.get("sandbox_path") or "").strip()
+        upload_path = str(attachment.get("upload_path") or "").strip()
+        if not sandbox_path or not upload_path:
+            continue
+        try:
+            payload = Path(upload_path).read_bytes()
+        except OSError as exc:
+            _log_run(
+                logging.WARNING,
+                "uploaded attachment could not be loaded into state sandbox",
+                event="run.attachment_state_load_failed",
+                phase="building agent input",
+                run_id=run_id,
+                session_id=session_id,
+                reason=type(exc).__name__,
+                next_step="verify upload storage path and permissions",
+                attachment_name=str(attachment.get("name") or ""),
+            )
+            continue
+        files[sandbox_path] = _state_file_data(payload)
+    return files
+
+
+def _state_file_data(payload: bytes) -> dict[str, str]:
+    try:
+        return {"content": payload.decode("utf-8"), "encoding": "utf-8"}
+    except UnicodeDecodeError:
+        return {
+            "content": base64.standard_b64encode(payload).decode("ascii"),
+            "encoding": "base64",
+        }
 
 
 def _message_attachments(*, record: MessageRecord) -> list[dict[str, Any]]:
