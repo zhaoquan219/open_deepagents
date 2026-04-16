@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     admin_email: str | None = None
     admin_username: str = "admin"
     admin_password: str = "change-me"
+    admin_users: dict[str, str] = Field(default_factory=dict)
     admin_token_secret: str = "change-me-too"
     admin_token_expire_minutes: int = 720
     admin_auth_enabled: bool = True
@@ -127,6 +128,45 @@ class Settings(BaseSettings):
                 )
             headers[key.strip()] = header_value.strip()
         return headers
+
+    @field_validator("admin_users", mode="before")
+    @classmethod
+    def parse_admin_users(cls, value: object) -> dict[str, str]:
+        if value in ("", None):
+            return {}
+        if isinstance(value, dict):
+            if not all(
+                isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+            ):
+                raise ValueError("admin_users must use string usernames and passwords")
+            return dict(value)
+        if not isinstance(value, str):
+            raise ValueError("admin_users must be a JSON object or USERNAME=PASSWORD pairs")
+
+        text = value.strip()
+        if not text:
+            return {}
+        if text.startswith("{"):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError("admin_users JSON is invalid") from exc
+            if not isinstance(parsed, dict) or not all(
+                isinstance(key, str) and isinstance(item, str) for key, item in parsed.items()
+            ):
+                raise ValueError("admin_users JSON must be an object of strings")
+            return dict(parsed)
+
+        users: dict[str, str] = {}
+        for raw_item in text.replace("\n", ",").split(","):
+            item = raw_item.strip()
+            if not item:
+                continue
+            username, separator, password = item.partition("=")
+            if not separator or not username.strip():
+                raise ValueError("admin_users must be JSON or comma-separated USERNAME=PASSWORD")
+            users[username.strip()] = password.strip()
+        return users
 
     @field_validator("upload_storage_dir", mode="after")
     @classmethod

@@ -9,6 +9,9 @@ ALGORITHM = "HS256"
 
 
 def verify_admin_credentials(settings: Settings, username: str, password: str) -> bool:
+    configured_password = settings.admin_users.get(username)
+    if configured_password is not None:
+        return password == configured_password
     return username == settings.admin_username and password == settings.admin_password
 
 

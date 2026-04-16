@@ -1,8 +1,8 @@
 # open_deepagents
 
-`open_deepagents` 是一个用于构建 DeepAgents Web 工作台的全栈脚手架。
+不用从空文件夹开始，就能搭起一个 DeepAgents Web 工作台。
 
-它定位为可扩展的工程基础，而不是开箱即用的成品平台。仓库已经具备本地端到端运行能力，覆盖管理员鉴权、会话管理、附件上传、运行流式输出，以及 DeepAgents 运行时集成，同时保留了较清晰的扩展边界。
+`open_deepagents` 是一个面向开发者的全栈脚手架：FastAPI 后端、Vue 控制台、持久化聊天历史、附件上传、运行事件流，以及工具 / 中间件 / 运行时钩子 / 技能扩展模板都已经放在同一个可运行工程里。它不是封闭的成品平台，而是一个可以克隆、改模型、接扩展、快速做出自己 Agent 工作台的工程基础。
 
 English version: [README.md](README.md)
 
@@ -55,12 +55,13 @@ English version: [README.md](README.md)
 
 - FastAPI 应用工厂与 `/health` 健康检查
 - 单管理员 Bearer Token 鉴权
+- 开启鉴权时按用户名隔离历史会话
 - 会话、消息、上传的 CRUD
 - DeepAgents run 创建、运行时事件桥接与 SSE 流输出
 - 本地文件上传存储
 - 可配置的工具、中间件、运行时钩子、技能、记忆和沙箱后端
 - 通过环境变量控制 DeepAgents 内置工具 allowlist / blocklist
-- 以 SQLite 为默认本地方案，并兼容 MySQL 部署模型
+- 以 SQLite 为默认本地方案，并支持 MySQL schema 初始化
 
 ### 前端
 
@@ -103,6 +104,7 @@ cp backend/.env.example backend/.env
 
 - 后端只读取 `backend/.env`。
 - 如果没有设置 `DATABASE_URL`，后端会回退到 `sqlite+pysqlite:///./data/backend.db`。
+- 后端启动时会自动创建缺失的 SQLite/MySQL 表。
 - 运行时系统提示词位于 [backend/prompts/deepagents-system-prompt.md](backend/prompts/deepagents-system-prompt.md)，不放在 `.env` 中。
 - 如果同时设置了 `CUSTOM_API_KEY`、`CUSTOM_API_URL` 和 `CUSTOM_API_MODEL`，后端会改用该 OpenAI-compatible 端点，且 `CUSTOM_API_MODEL` 优先于 `DEEPAGENTS_MODEL`。
 
@@ -113,14 +115,23 @@ cd backend
 uv sync --group dev
 ```
 
-### 3. 安装前端依赖
+### 3. 初始化数据库 schema
+
+```bash
+cd backend
+uv run python -m app.db.manage init
+```
+
+默认 SQLite 开发模式下这一步是可选的，因为后端启动时也会创建并更新 schema。对 MySQL 部署来说，这个命令很适合提前执行：它会按 `DATABASE_URL` 创建数据库（如果不存在），再创建或更新表结构。
+
+### 4. 安装前端依赖
 
 ```bash
 cd frontend
 npm install
 ```
 
-### 4. 启动后端
+### 5. 启动后端
 
 ```bash
 cd backend
@@ -133,7 +144,7 @@ uv run uvicorn app.main:app --reload
 - 健康检查：`http://127.0.0.1:8000/health`
 - OpenAPI：`http://127.0.0.1:8000/docs`
 
-### 5. 启动前端
+### 6. 启动前端
 
 ```bash
 cd frontend
@@ -142,7 +153,7 @@ npm run dev
 
 默认情况下前端通过 `/api` 访问后端；如有需要，可通过 `VITE_API_BASE_URL` 覆盖。
 
-### 6. 登录
+### 7. 登录
 
 默认凭据来自 `backend/.env`：
 
@@ -163,9 +174,10 @@ npm run dev
 | `ADMIN_EMAIL` | 管理员邮箱，可选 |
 | `ADMIN_USERNAME` | 管理员用户名 |
 | `ADMIN_PASSWORD` | 管理员密码 |
+| `ADMIN_USERS` | 可选的额外登录用户，支持 JSON object 或逗号分隔的 `USERNAME=PASSWORD` |
 | `ADMIN_TOKEN_SECRET` | JWT 签名密钥 |
 | `ADMIN_TOKEN_EXPIRE_MINUTES` | Token 过期时间（分钟） |
-| `ADMIN_AUTH_ENABLED` | 设置为 `false` 时，本地部署可跳过登录直接进入对话 |
+| `ADMIN_AUTH_ENABLED` | 设置为 `false` 时，本地可信部署可跳过登录；开启鉴权时会按用户名隔离历史会话 |
 | `CORS_ALLOWED_ORIGINS` | 允许的前端来源，逗号分隔 |
 | `UPLOAD_STORAGE_DIR` | 上传目录 |
 | `MAX_UPLOAD_SIZE_BYTES` | 单文件上传大小限制 |
@@ -213,6 +225,28 @@ CUSTOM_API_DEFAULT_HEADERS=HTTP-Referer=https://app.example.com,X-Title=open_dee
 
 - 如果以 `/chat/completions` 结尾，会去掉该后缀
 - 否则如果尚未以 `/v1` 结尾，会自动补上 `/v1`
+
+### 数据库初始化与历史会话
+
+后端负责 schema 初始化。启动时会创建缺失的表，并执行小型增量迁移。你也可以直接运行同一条初始化路径：
+
+```bash
+cd backend
+uv run python -m app.db.manage init
+```
+
+SQLite 默认会创建 `backend/data/backend.db`。MySQL 模式下，后端会连接 `DATABASE_URL` 指向的服务器，必要时创建其中指定的数据库，然后创建或更新表结构。
+
+历史会话的可见性由鉴权模式决定：
+
+- `ADMIN_AUTH_ENABLED=true`：会话写入 `owner_username`，每个已登录用户名只能看到自己的会话。
+- `ADMIN_AUTH_ENABLED=false`：关闭登录门禁，所有会话共享，适合可信本地演示和快速内部调试。
+
+默认登录来自 `ADMIN_USERNAME` / `ADMIN_PASSWORD`。如需多个开发者账号，可设置 `ADMIN_USERS`：
+
+```dotenv
+ADMIN_USERS={"alice":"alice-secret","bob":"bob-secret"}
+```
 
 ### 默认扩展配置
 

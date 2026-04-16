@@ -25,6 +25,13 @@ from app.main import create_app
 DEFAULT_RUN_INPUT_HOOK_SPEC = "extensions.runtime_hooks:RUN_INPUT_HOOKS"
 
 
+def login_headers(client: TestClient, username: str, password: str) -> dict[str, str]:
+    response = client.post("/api/admin/login", json={"username": username, "password": password})
+    assert response.status_code == 200
+    token = response.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 class FakeRuntime:
     async def astream_events(
         self,
@@ -335,6 +342,51 @@ def test_run_lifecycle_and_stream(tmp_path) -> None:
             assert runtime_link.runtime_run_id == "runtime-1"
 
 
+def test_run_routes_reject_cross_user_access(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'isolated-runs.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_users={"user-a": "secret-a", "user-b": "secret-b"},
+        admin_token_secret="test-secret-key-with-32-bytes-minimum",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = build_fake_runtime
+
+    with TestClient(app) as client:
+        user_a = login_headers(client, "user-a", "secret-a")
+        user_b = login_headers(client, "user-b", "secret-b")
+        user_b_token = user_b["Authorization"].removeprefix("Bearer ")
+
+        session = client.post("/api/sessions", headers=user_a, json={"title": "Private run"})
+        session_id = session.json()["id"]
+
+        forbidden_create = client.post(
+            "/api/runs",
+            headers=user_b,
+            json={"session_id": session_id, "prompt": "steal", "attachments": []},
+        )
+        assert forbidden_create.status_code == 404
+
+        run = client.post(
+            "/api/runs",
+            headers=user_a,
+            json={"session_id": session_id, "prompt": "Say hello", "attachments": []},
+        )
+        run_id = run.json()["run_id"]
+
+        assert client.get(f"/api/runs/{run_id}", headers=user_b).status_code == 404
+        assert client.post(f"/api/runs/{run_id}/cancel", headers=user_b).status_code == 404
+        with client.stream(
+            "GET",
+            f"/api/runs/{run_id}/stream?access_token={user_b_token}",
+        ) as response:
+            assert response.status_code == 404
+
+
 def test_run_stream_allows_missing_access_token_when_admin_auth_disabled(tmp_path) -> None:
     settings = Settings(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'no-auth-run.db'}",
@@ -510,7 +562,19 @@ def test_stream_route_resumes_from_last_event_id_header(tmp_path) -> None:
         deepagents_model="openai:gpt-5.4",
     )
     app = create_app(settings)
+    app.state.database.create_all()
     run_state = app.state.run_manager.create("session-1")
+    with app.state.database.session_factory() as db:
+        db.add(SessionRecord(id="session-1", title="Resume stream", owner_username="admin"))
+        db.add(
+            AgentRunRecord(
+                id=run_state.run_id,
+                session_id="session-1",
+                status="completed",
+                prompt="resume",
+            )
+        )
+        db.commit()
     run_state.publish(
         {
             "event_id": f"{run_state.run_id}:000001",

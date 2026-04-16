@@ -5,10 +5,10 @@ from typing import cast
 from fastapi import APIRouter, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
-from app.api.deps import AdminUserDep, DatabaseSessionDep
+from app.api.deps import AdminUserDep, DatabaseSessionDep, DatabaseStateDep
 from app.core.auth import decode_access_token
 from app.core.config import Settings
-from app.db.models import SessionRecord
+from app.core.session_scope import get_run_for_user, get_session_for_user
 from app.schemas.run import RunCreate, RunRead
 from app.services.runs import InvalidRunAttachmentError, RunManager, RunService
 
@@ -27,16 +27,20 @@ def get_run_manager(request: Request) -> RunManager:
 async def create_run(
     payload: RunCreate,
     request: Request,
-    _: AdminUserDep,
+    username: AdminUserDep,
     db: DatabaseSessionDep,
 ) -> RunRead:
-    session = db.query(SessionRecord).filter(SessionRecord.id == payload.session_id).first()
-    if session is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    settings = cast(Settings, request.app.state.settings)
+    get_session_for_user(
+        db,
+        session_id=payload.session_id,
+        username=username,
+        settings=settings,
+    )
 
     try:
         run_state = get_run_service(request).start_run(
-            settings=cast(Settings, request.app.state.settings),
+            settings=settings,
             session_id=payload.session_id,
             prompt=payload.prompt,
             attachments=payload.attachments,
@@ -52,7 +56,14 @@ async def create_run(
 
 
 @router.get("/runs/{run_id}", response_model=RunRead)
-def get_run(run_id: str, request: Request, _: AdminUserDep) -> RunRead:
+def get_run(
+    run_id: str,
+    request: Request,
+    username: AdminUserDep,
+    db: DatabaseSessionDep,
+) -> RunRead:
+    settings = cast(Settings, request.app.state.settings)
+    get_run_for_user(db, run_id=run_id, username=username, settings=settings)
     run_state = get_run_manager(request).get(run_id)
     if run_state is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
@@ -65,7 +76,14 @@ def get_run(run_id: str, request: Request, _: AdminUserDep) -> RunRead:
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunRead)
-def cancel_run(run_id: str, request: Request, _: AdminUserDep) -> RunRead:
+def cancel_run(
+    run_id: str,
+    request: Request,
+    username: AdminUserDep,
+    db: DatabaseSessionDep,
+) -> RunRead:
+    settings = cast(Settings, request.app.state.settings)
+    get_run_for_user(db, run_id=run_id, username=username, settings=settings)
     try:
         run_state = get_run_service(request).cancel_run(run_id=run_id)
     except KeyError as exc:
@@ -82,6 +100,7 @@ def cancel_run(run_id: str, request: Request, _: AdminUserDep) -> RunRead:
 async def stream_run(
     run_id: str,
     request: Request,
+    database: DatabaseStateDep,
     last_event_id: str | None = None,
     access_token: str | None = Query(default=None),
     last_event_id_header: str | None = Header(default=None, alias="Last-Event-ID"),
@@ -93,7 +112,17 @@ async def stream_run(
             detail="Admin authentication required",
         )
     if settings.admin_auth_enabled:
-        decode_access_token(settings, access_token or "")
+        username = decode_access_token(settings, access_token or "")
+    else:
+        username = settings.admin_username
+
+    with database.session_factory() as db:
+        get_run_for_user(
+            db,
+            run_id=run_id,
+            username=username,
+            settings=settings,
+        )
 
     run_state = get_run_manager(request).get(run_id)
     if run_state is None:

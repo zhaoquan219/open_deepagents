@@ -49,6 +49,7 @@ def require_admin(
 
 
 AdminUserDep = Annotated[str, Depends(require_admin)]
+DatabaseStateDep = Annotated[DatabaseState, Depends(get_database)]
 DatabaseSessionDep = Annotated[Session, Depends(get_db)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 StorageDep = Annotated[LocalStorage, Depends(get_storage)]

@@ -1,20 +1,29 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, status
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import DatabaseSessionDep, require_admin
+from app.api.deps import AdminUserDep, DatabaseSessionDep, SettingsDep
+from app.core.session_scope import (
+    assign_session_owner,
+    get_session_for_user,
+)
 from app.db.models import SessionRecord
 from app.schemas.session import SessionCreate, SessionDetail, SessionRead, SessionUpdate
 from app.services.session_titles import sync_session_title_from_history
 
-router = APIRouter(dependencies=[Depends(require_admin)])
+router = APIRouter()
 
 
 @router.get("", response_model=list[SessionRead])
-def list_sessions(db: DatabaseSessionDep) -> list[SessionRecord]:
+def list_sessions(
+    db: DatabaseSessionDep,
+    settings: SettingsDep,
+    username: AdminUserDep,
+) -> list[SessionRecord]:
+    query = db.query(SessionRecord)
+    if settings.admin_auth_enabled:
+        query = query.filter(SessionRecord.owner_username == username)
     records = list(
-        db.query(SessionRecord)
-        .order_by(SessionRecord.updated_at.desc(), SessionRecord.created_at.desc())
-        .all()
+        query.order_by(SessionRecord.updated_at.desc(), SessionRecord.created_at.desc()).all()
     )
     changed = False
     for record in records:
@@ -25,12 +34,18 @@ def list_sessions(db: DatabaseSessionDep) -> list[SessionRecord]:
 
 
 @router.post("", response_model=SessionRead, status_code=status.HTTP_201_CREATED)
-def create_session(payload: SessionCreate, db: DatabaseSessionDep) -> SessionRecord:
+def create_session(
+    payload: SessionCreate,
+    db: DatabaseSessionDep,
+    settings: SettingsDep,
+    username: AdminUserDep,
+) -> SessionRecord:
     record = SessionRecord(
         title=payload.title,
         runtime_thread_id=payload.runtime_thread_id,
         extra=payload.extra,
     )
+    assign_session_owner(record, username, settings)
     db.add(record)
     db.commit()
     db.refresh(record)
@@ -38,18 +53,22 @@ def create_session(payload: SessionCreate, db: DatabaseSessionDep) -> SessionRec
 
 
 @router.get("/{session_id}", response_model=SessionDetail)
-def get_session(session_id: str, db: DatabaseSessionDep) -> SessionRecord:
-    record = (
-        db.query(SessionRecord)
-        .options(
+def get_session(
+    session_id: str,
+    db: DatabaseSessionDep,
+    settings: SettingsDep,
+    username: AdminUserDep,
+) -> SessionRecord:
+    record = get_session_for_user(
+        db,
+        session_id=session_id,
+        username=username,
+        settings=settings,
+        options=(
             selectinload(SessionRecord.messages),
             selectinload(SessionRecord.uploads),
-        )
-        .filter(SessionRecord.id == session_id)
-        .first()
+        ),
     )
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     if sync_session_title_from_history(db, record):
         db.commit()
         db.refresh(record)
@@ -61,10 +80,15 @@ def update_session(
     session_id: str,
     payload: SessionUpdate,
     db: DatabaseSessionDep,
+    settings: SettingsDep,
+    username: AdminUserDep,
 ) -> SessionRecord:
-    record = db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    record = get_session_for_user(
+        db,
+        session_id=session_id,
+        username=username,
+        settings=settings,
+    )
 
     for field_name, value in payload.model_dump(exclude_unset=True).items():
         setattr(record, field_name, value)
@@ -76,10 +100,18 @@ def update_session(
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_session(session_id: str, db: DatabaseSessionDep) -> None:
-    record = db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+def delete_session(
+    session_id: str,
+    db: DatabaseSessionDep,
+    settings: SettingsDep,
+    username: AdminUserDep,
+) -> None:
+    record = get_session_for_user(
+        db,
+        session_id=session_id,
+        username=username,
+        settings=settings,
+    )
 
     db.delete(record)
     db.commit()

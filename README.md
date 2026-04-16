@@ -1,8 +1,13 @@
 # open_deepagents
 
-`open_deepagents` is a full-stack scaffold for building a DeepAgents-powered web workspace.
+Build a DeepAgents-powered web workspace without starting from a blank folder.
 
-It is designed as a practical foundation rather than a finished product. The repository already supports local end-to-end runs, administrator authentication, session management, uploads, run streaming, and DeepAgents runtime integration, while still leaving room for project-specific extensions.
+`open_deepagents` is a full-stack developer scaffold with a FastAPI backend, Vue
+console, persistent chat history, uploads, streamed run events, and extension
+templates for tools, middleware, runtime hooks, and skills. It is intentionally a
+foundation, not a locked product: clone it, wire in your model/provider, customize
+the runtime surface, and ship your own agent workspace from a codebase that is
+already runnable end to end.
 
 Chinese documentation: [README_CH.md](README_CH.md)
 
@@ -55,12 +60,13 @@ The current request flow is:
 
 - FastAPI app factory and `/health` health check
 - Single-admin bearer-token authentication
+- Username-scoped session history when authentication is enabled
 - CRUD for sessions, messages, and uploads
 - DeepAgents run creation, runtime event bridging, and SSE streaming
 - Local file upload storage
 - Configurable tools, middleware, runtime hooks, skills, memory, and sandbox backends
 - Environment-controlled DeepAgents built-in tool allow/block filtering
-- SQLite-first local development with MySQL-compatible models
+- SQLite-first local development with MySQL-compatible schema initialization
 
 ### Frontend
 
@@ -103,6 +109,7 @@ Key points:
 
 - The backend only reads `backend/.env`.
 - If `DATABASE_URL` is unset, the backend falls back to `sqlite+pysqlite:///./data/backend.db`.
+- Missing SQLite/MySQL tables are created automatically when the backend starts.
 - The runtime system prompt is stored in [backend/prompts/deepagents-system-prompt.md](backend/prompts/deepagents-system-prompt.md), not in `.env`.
 - If `CUSTOM_API_KEY`, `CUSTOM_API_URL`, and `CUSTOM_API_MODEL` are all set, the backend uses that OpenAI-compatible endpoint and `CUSTOM_API_MODEL` takes precedence over `DEEPAGENTS_MODEL`.
 
@@ -113,14 +120,25 @@ cd backend
 uv sync --group dev
 ```
 
-### 3. Install frontend dependencies
+### 3. Initialize the database schema
+
+```bash
+cd backend
+uv run python -m app.db.manage init
+```
+
+This command is optional for the default SQLite setup because app startup also
+creates and updates the schema. It is handy for MySQL deployments because it
+creates the configured database if needed, then creates or migrates the tables.
+
+### 4. Install frontend dependencies
 
 ```bash
 cd frontend
 npm install
 ```
 
-### 4. Start the backend
+### 5. Start the backend
 
 ```bash
 cd backend
@@ -133,7 +151,7 @@ Default URLs:
 - health check: `http://127.0.0.1:8000/health`
 - OpenAPI: `http://127.0.0.1:8000/docs`
 
-### 5. Start the frontend
+### 6. Start the frontend
 
 ```bash
 cd frontend
@@ -142,7 +160,7 @@ npm run dev
 
 By default the frontend talks to the backend through `/api`. Override it with `VITE_API_BASE_URL` if needed.
 
-### 6. Sign in
+### 7. Sign in
 
 Default credentials come from `backend/.env`:
 
@@ -163,9 +181,10 @@ Common settings in `backend/.env`:
 | `ADMIN_EMAIL` | Optional admin email |
 | `ADMIN_USERNAME` | Admin username |
 | `ADMIN_PASSWORD` | Admin password |
+| `ADMIN_USERS` | Optional extra login users as JSON object or comma-separated `USERNAME=PASSWORD` pairs |
 | `ADMIN_TOKEN_SECRET` | JWT signing secret |
 | `ADMIN_TOKEN_EXPIRE_MINUTES` | Token expiry in minutes |
-| `ADMIN_AUTH_ENABLED` | Set `false` to disable the login gate for local deployments |
+| `ADMIN_AUTH_ENABLED` | Set `false` for trusted local deployments without login; authenticated mode isolates session history by username |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated frontend origins |
 | `UPLOAD_STORAGE_DIR` | Upload directory |
 | `MAX_UPLOAD_SIZE_BYTES` | Per-file upload limit |
@@ -213,6 +232,34 @@ CUSTOM_API_DEFAULT_HEADERS=HTTP-Referer=https://app.example.com,X-Title=open_dee
 
 - if it ends with `/chat/completions`, that suffix is removed
 - otherwise `/v1` is appended unless it is already present
+
+### Database initialization and session history
+
+The backend owns schema setup. On startup it creates missing tables and applies
+small additive migrations. You can run the same path directly:
+
+```bash
+cd backend
+uv run python -m app.db.manage init
+```
+
+For SQLite, this creates `backend/data/backend.db` by default. For MySQL, the
+backend connects to the server in `DATABASE_URL`, creates the named database if
+needed, and then creates or updates the tables.
+
+Session history follows the auth mode:
+
+- `ADMIN_AUTH_ENABLED=true`: sessions are stored with `owner_username`, and each
+  authenticated username sees only its own sessions.
+- `ADMIN_AUTH_ENABLED=false`: the login gate is disabled and sessions are shared,
+  which is useful for trusted local demos and quick internal debugging.
+
+The default login comes from `ADMIN_USERNAME` / `ADMIN_PASSWORD`. For multiple
+developer logins, set `ADMIN_USERS`:
+
+```dotenv
+ADMIN_USERS={"alice":"alice-secret","bob":"bob-secret"}
+```
 
 ### Default extension settings
 

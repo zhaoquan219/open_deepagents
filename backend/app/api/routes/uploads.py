@@ -2,16 +2,21 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import DatabaseSessionDep, SettingsDep, StorageDep, require_admin
-from app.db.models import MessageRecord, SessionRecord, UploadRecord
+from app.api.deps import AdminUserDep, DatabaseSessionDep, SettingsDep, StorageDep
+from app.core.session_scope import (
+    get_message_for_user,
+    get_session_for_user,
+    get_upload_for_user,
+)
+from app.db.models import UploadRecord
 from app.schemas.upload import UploadRead
 from deepagents_integration.run_hooks import apply_upload_hooks, build_upload_hook_context
 
-router = APIRouter(dependencies=[Depends(require_admin)])
+router = APIRouter()
 UploadFileDep = Annotated[UploadFile, File()]
 MessageIdForm = Annotated[str | None, Form()]
 PendingUploadCleanup = Callable[[Session, UploadRecord], None]
@@ -19,8 +24,13 @@ PENDING_UPLOAD_CLEANUPS: tuple[PendingUploadCleanup, ...] = ()
 
 
 @router.get("/sessions/{session_id}/uploads", response_model=list[UploadRead])
-def list_uploads(session_id: str, db: DatabaseSessionDep) -> list[UploadRecord]:
-    ensure_session_exists(db, session_id)
+def list_uploads(
+    session_id: str,
+    db: DatabaseSessionDep,
+    settings: SettingsDep,
+    username: AdminUserDep,
+) -> list[UploadRecord]:
+    get_session_for_user(db, session_id=session_id, username=username, settings=settings)
     return list(
         db.query(UploadRecord)
         .filter(UploadRecord.session_id == session_id)
@@ -40,12 +50,18 @@ async def upload_file(
     db: DatabaseSessionDep,
     storage: StorageDep,
     settings: SettingsDep,
+    username: AdminUserDep,
     message_id: MessageIdForm = None,
 ) -> UploadRecord:
-    ensure_session_exists(db, session_id)
+    get_session_for_user(db, session_id=session_id, username=username, settings=settings)
     if message_id is not None:
-        message = db.query(MessageRecord).filter(MessageRecord.id == message_id).first()
-        if message is None or message.session_id != session_id:
+        message = get_message_for_user(
+            db,
+            message_id=message_id,
+            username=username,
+            settings=settings,
+        )
+        if message.session_id != session_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid message binding",
@@ -104,6 +120,7 @@ async def upload_file_global(
     db: DatabaseSessionDep,
     storage: StorageDep,
     settings: SettingsDep,
+    username: AdminUserDep,
     message_id: MessageIdForm = None,
 ) -> UploadRecord:
     return await upload_file(
@@ -112,16 +129,19 @@ async def upload_file_global(
         db=db,
         storage=storage,
         settings=settings,
+        username=username,
         message_id=message_id,
     )
 
 
 @router.get("/uploads/{upload_id}", response_model=UploadRead)
-def get_upload(upload_id: str, db: DatabaseSessionDep) -> UploadRecord:
-    record = db.query(UploadRecord).filter(UploadRecord.id == upload_id).first()
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found")
-    return record
+def get_upload(
+    upload_id: str,
+    db: DatabaseSessionDep,
+    settings: SettingsDep,
+    username: AdminUserDep,
+) -> UploadRecord:
+    return get_upload_for_user(db, upload_id=upload_id, username=username, settings=settings)
 
 
 @router.get("/uploads/{upload_id}/content")
@@ -129,8 +149,10 @@ def download_upload(
     upload_id: str,
     db: DatabaseSessionDep,
     storage: StorageDep,
+    settings: SettingsDep,
+    username: AdminUserDep,
 ) -> FileResponse:
-    record = get_upload(upload_id, db)
+    record = get_upload_for_user(db, upload_id=upload_id, username=username, settings=settings)
     file_path = storage.resolve(record.storage_key)
     if not file_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload content missing")
@@ -146,8 +168,10 @@ def delete_upload(
     upload_id: str,
     db: DatabaseSessionDep,
     storage: StorageDep,
+    settings: SettingsDep,
+    username: AdminUserDep,
 ) -> None:
-    record = get_upload(upload_id, db)
+    record = get_upload_for_user(db, upload_id=upload_id, username=username, settings=settings)
     if record.message_id is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -158,13 +182,6 @@ def delete_upload(
     storage.delete(record.storage_key)
     db.delete(record)
     db.commit()
-
-
-def ensure_session_exists(db: DatabaseSessionDep, session_id: str) -> SessionRecord:
-    record = db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
-    return record
 
 
 def cleanup_pending_upload_state(*, db: Session, record: UploadRecord) -> None:

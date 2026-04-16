@@ -1,14 +1,18 @@
-## Backend scaffold
+## Backend Scaffold
 
-FastAPI backend foundation for the DeepAgents agent platform scaffold.
+FastAPI backend foundation for a DeepAgents-powered developer workspace. This
+lane owns auth, persistence, uploads, run orchestration, schema initialization,
+and the extension hooks that make the scaffold useful as a starting point rather
+than a blank demo.
 
 ### Included in this lane
 
 - FastAPI app shell
 - single-admin bearer auth
+- username-scoped session history when auth is enabled
 - session/message CRUD
 - upload metadata + local file persistence
-- SQLAlchemy models compatible with MySQL-backed deployments
+- SQLAlchemy schema initialization for SQLite and MySQL-backed deployments
 - project-managed extension templates under `backend/extensions/`
 - runtime hook templates for upload and run-input customization
 
@@ -17,14 +21,26 @@ FastAPI backend foundation for the DeepAgents agent platform scaffold.
 ```bash
 cd backend
 uv sync
+uv run python -m app.db.manage init
 uv run uvicorn app.main:app --reload
 ```
+
+The app also initializes the schema on startup, so the explicit `init` command
+is optional for SQLite. It is useful for MySQL deployments when you want to
+create the database and tables before starting the service.
 
 ### Environment
 
 Copy `backend/.env.example` to `.env` and adjust as needed.
 The runtime system prompt is managed in `backend/prompts/deepagents-system-prompt.md`.
 `backend/.env` is the only env file used by the backend runtime.
+When `ADMIN_AUTH_ENABLED=true`, each session is owned by the authenticated
+username and hidden from other usernames. When `ADMIN_AUTH_ENABLED=false`, the
+backend skips the login gate and keeps session history shared for trusted local
+use.
+`ADMIN_USERNAME` / `ADMIN_PASSWORD` define the default login. Add optional extra
+logins with `ADMIN_USERS`, preferably as a JSON object such as
+`{"alice":"alice-secret","bob":"bob-secret"}`.
 The default template already enables the unified tool, middleware, runtime hook
 entrypoints, the default skills directory, and the sample sandbox settings.
 Tools are aggregated from `extensions.tools:TOOLS`.
@@ -48,6 +64,22 @@ the backend builds a `ChatOpenAI` client for that endpoint.
 `CUSTOM_API_TEMPERATURE` is optional and omitted entirely when unset.
 `CUSTOM_API_DEFAULT_HEADERS` accepts a JSON object string and also supports
 comma-separated `KEY=VALUE` pairs for compatibility.
+
+### Database schema
+
+The configured `DATABASE_URL` defaults to `sqlite+pysqlite:///./data/backend.db`.
+On startup, the backend creates missing tables and applies lightweight additive
+schema migrations, including the `sessions.owner_username` column used for
+login-mode history isolation.
+
+For MySQL URLs, the backend first creates the configured database if it does not
+exist, then creates or updates the tables. Developers can run the same bootstrap
+explicitly:
+
+```bash
+cd backend
+uv run python -m app.db.manage init
+```
 
 ### Runtime hooks
 

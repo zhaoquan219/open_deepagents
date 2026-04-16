@@ -1,16 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, status
 
-from app.api.deps import DatabaseSessionDep, require_admin
-from app.db.models import MessageRecord, SessionRecord
+from app.api.deps import AdminUserDep, DatabaseSessionDep, SettingsDep
+from app.core.session_scope import get_message_for_user, get_session_for_user
+from app.db.models import MessageRecord
 from app.schemas.message import MessageCreate, MessageRead, MessageUpdate
 from app.services.session_titles import sync_session_title_from_source
 
-router = APIRouter(dependencies=[Depends(require_admin)])
+router = APIRouter()
 
 
 @router.get("/sessions/{session_id}/messages", response_model=list[MessageRead])
-def list_messages(session_id: str, db: DatabaseSessionDep) -> list[MessageRecord]:
-    ensure_session_exists(db, session_id)
+def list_messages(
+    session_id: str,
+    db: DatabaseSessionDep,
+    settings: SettingsDep,
+    username: AdminUserDep,
+) -> list[MessageRecord]:
+    get_session_for_user(db, session_id=session_id, username=username, settings=settings)
     return list(
         db.query(MessageRecord)
         .filter(MessageRecord.session_id == session_id)
@@ -28,8 +34,15 @@ def create_message(
     session_id: str,
     payload: MessageCreate,
     db: DatabaseSessionDep,
+    settings: SettingsDep,
+    username: AdminUserDep,
 ) -> MessageRecord:
-    session = ensure_session_exists(db, session_id)
+    session = get_session_for_user(
+        db,
+        session_id=session_id,
+        username=username,
+        settings=settings,
+    )
     record = MessageRecord(
         session_id=session_id,
         role=payload.role,
@@ -50,11 +63,13 @@ def create_message(
 
 
 @router.get("/messages/{message_id}", response_model=MessageRead)
-def get_message(message_id: str, db: DatabaseSessionDep) -> MessageRecord:
-    record = db.query(MessageRecord).filter(MessageRecord.id == message_id).first()
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
-    return record
+def get_message(
+    message_id: str,
+    db: DatabaseSessionDep,
+    settings: SettingsDep,
+    username: AdminUserDep,
+) -> MessageRecord:
+    return get_message_for_user(db, message_id=message_id, username=username, settings=settings)
 
 
 @router.patch("/messages/{message_id}", response_model=MessageRead)
@@ -62,10 +77,10 @@ def update_message(
     message_id: str,
     payload: MessageUpdate,
     db: DatabaseSessionDep,
+    settings: SettingsDep,
+    username: AdminUserDep,
 ) -> MessageRecord:
-    record = db.query(MessageRecord).filter(MessageRecord.id == message_id).first()
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    record = get_message_for_user(db, message_id=message_id, username=username, settings=settings)
 
     for field_name, value in payload.model_dump(exclude_unset=True).items():
         setattr(record, field_name, value)
@@ -77,16 +92,12 @@ def update_message(
 
 
 @router.delete("/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_message(message_id: str, db: DatabaseSessionDep) -> None:
-    record = db.query(MessageRecord).filter(MessageRecord.id == message_id).first()
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+def delete_message(
+    message_id: str,
+    db: DatabaseSessionDep,
+    settings: SettingsDep,
+    username: AdminUserDep,
+) -> None:
+    record = get_message_for_user(db, message_id=message_id, username=username, settings=settings)
     db.delete(record)
     db.commit()
-
-
-def ensure_session_exists(db: DatabaseSessionDep, session_id: str) -> SessionRecord:
-    record = db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
-    return record

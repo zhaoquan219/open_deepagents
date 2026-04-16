@@ -26,6 +26,33 @@ def test_admin_login_and_identity(client: TestClient) -> None:
         assert admin_user.last_login_at is not None
 
 
+def test_configured_admin_users_can_login(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'multi-admin.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_users={"alice": "alice-secret"},
+        admin_token_secret="test-secret-key-with-32-bytes-minimum",
+        upload_storage_dir=tmp_path / "uploads",
+    )
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        login = client.post(
+            "/api/admin/login",
+            json={"username": "alice", "password": "alice-secret"},
+        )
+        assert login.status_code == 200
+        me = client.get(
+            "/api/admin/me",
+            headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+        )
+
+    assert me.status_code == 200
+    assert me.json() == {"username": "alice"}
+
+
 def test_protected_routes_require_authentication(client: TestClient) -> None:
     response = client.get("/api/sessions")
 

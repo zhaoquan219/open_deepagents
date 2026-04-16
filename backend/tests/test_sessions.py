@@ -1,14 +1,26 @@
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
-from app.db.models import UploadRecord
+from app.db.models import SessionRecord, UploadRecord
 from app.main import create_app
+
+
+def _login_headers(client: TestClient, username: str, password: str) -> dict[str, str]:
+    response = client.post("/api/admin/login", json={"username": username, "password": password})
+    assert response.status_code == 200
+    token = response.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
 
 
 def test_session_message_and_upload_crud(client: TestClient, auth_headers: dict[str, str]) -> None:
     create_session = client.post("/api/sessions", headers=auth_headers, json={"title": "Demo"})
     assert create_session.status_code == 201
     session_id = create_session.json()["id"]
+
+    with client.app.state.database.session_factory() as db:
+        created_session = db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
+        assert created_session is not None
+        assert created_session.owner_username == "admin"
 
     list_sessions = client.get("/api/sessions", headers=auth_headers)
     assert list_sessions.status_code == 200
@@ -229,3 +241,100 @@ def test_sent_upload_cannot_be_deleted(
         record = db.query(UploadRecord).filter(UploadRecord.id == upload_id).first()
         assert record is not None
         assert record.message_id == message_id
+
+
+def test_session_isolation_separates_authenticated_users(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'isolated-sessions.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_users={"user-a": "secret-a", "user-b": "secret-b"},
+        admin_token_secret="test-secret-key-with-32-bytes-minimum",
+        upload_storage_dir=tmp_path / "uploads",
+    )
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        user_a = _login_headers(client, "user-a", "secret-a")
+        user_b = _login_headers(client, "user-b", "secret-b")
+
+        create_a = client.post("/api/sessions", headers=user_a, json={"title": "User A"})
+        create_b = client.post("/api/sessions", headers=user_b, json={"title": "User B"})
+        session_a_id = create_a.json()["id"]
+        session_b_id = create_b.json()["id"]
+
+        list_a = client.get("/api/sessions", headers=user_a)
+        list_b = client.get("/api/sessions", headers=user_b)
+        get_b_from_a = client.get(f"/api/sessions/{session_b_id}", headers=user_a)
+        get_a_from_b = client.get(f"/api/sessions/{session_a_id}", headers=user_b)
+
+    assert [item["title"] for item in list_a.json()] == ["User A"]
+    assert [item["title"] for item in list_b.json()] == ["User B"]
+    assert get_b_from_a.status_code == 404
+    assert get_a_from_b.status_code == 404
+
+
+def test_session_isolation_applies_to_messages_and_uploads(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'isolated-resources.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_users={"user-a": "secret-a", "user-b": "secret-b"},
+        admin_token_secret="test-secret-key-with-32-bytes-minimum",
+        upload_storage_dir=tmp_path / "uploads",
+    )
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        user_a = _login_headers(client, "user-a", "secret-a")
+        user_b = _login_headers(client, "user-b", "secret-b")
+
+        create_session = client.post("/api/sessions", headers=user_a, json={"title": "Owned"})
+        session_id = create_session.json()["id"]
+        create_message = client.post(
+            f"/api/sessions/{session_id}/messages",
+            headers=user_a,
+            json={"role": "user", "content": "private"},
+        )
+        message_id = create_message.json()["id"]
+        upload = client.post(
+            f"/api/sessions/{session_id}/uploads",
+            headers=user_a,
+            files={"file": ("secret.txt", b"private upload", "text/plain")},
+        )
+        upload_id = upload.json()["id"]
+
+        assert client.get(f"/api/messages/{message_id}", headers=user_b).status_code == 404
+        assert client.patch(
+            f"/api/messages/{message_id}",
+            headers=user_b,
+            json={"content": "takeover"},
+        ).status_code == 404
+        assert client.get(f"/api/uploads/{upload_id}", headers=user_b).status_code == 404
+        assert client.get(f"/api/uploads/{upload_id}/content", headers=user_b).status_code == 404
+        assert client.delete(f"/api/uploads/{upload_id}", headers=user_b).status_code == 404
+
+
+def test_sessions_are_shared_when_admin_auth_is_disabled(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'shared-sessions.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret-key-with-32-bytes-minimum",
+        upload_storage_dir=tmp_path / "uploads",
+        admin_auth_enabled=False,
+    )
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        client.post("/api/sessions", json={"title": "Shared A"})
+        client.post("/api/sessions", json={"title": "Shared B"})
+
+        first_list = client.get("/api/sessions")
+        second_list = client.get("/api/sessions")
+
+    assert sorted(item["title"] for item in first_list.json()) == ["Shared A", "Shared B"]
+    assert sorted(item["title"] for item in second_list.json()) == ["Shared A", "Shared B"]

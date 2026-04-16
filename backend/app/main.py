@@ -34,7 +34,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if resolved_settings.sqlite_file_path is not None:
             resolved_settings.sqlite_file_path.parent.mkdir(parents=True, exist_ok=True)
         resolved_settings.upload_storage_dir.mkdir(parents=True, exist_ok=True)
-        database.create_all()
+        database.initialize_schema()
         yield
         database.dispose()
 

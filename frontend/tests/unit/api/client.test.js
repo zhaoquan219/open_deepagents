@@ -49,6 +49,8 @@ describe('createApiClient.openRunStream', () => {
 
     const eventSource = FakeEventSource.instances[0]
     expect(storage.getItem).toHaveBeenCalledWith('deepagents.admin.token')
+    expect(eventSource.url).toContain('access_token=token-123')
+    expect(eventSource.url).not.toContain('actor_id=')
 
     stream.close()
     eventSource.onerror()
@@ -188,6 +190,31 @@ describe('createApiClient session normalization', () => {
         name: uiCopy.api.unnamedAttachment,
       }),
     ])
+  })
+
+  it('sends the bearer token without anonymous actor headers', async () => {
+    const storage = {
+      getItem: vi.fn(() => 'token-123'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    }
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ sessions: [] }),
+    }))
+
+    vi.stubGlobal('window', {
+      location: { origin: 'http://localhost:5173' },
+      localStorage: storage,
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await createApiClient('/api').listSessions()
+
+    expect(storage.setItem).not.toHaveBeenCalled()
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer token-123')
+    expect(fetchMock.mock.calls[0][1].headers['X-Deepagents-Actor-Id']).toBeUndefined()
   })
 })
 
