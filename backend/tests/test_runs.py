@@ -1306,6 +1306,66 @@ def test_run_builds_attachment_context_with_sandbox_path_for_virtual_filesystem(
     assert "Do not rediscover the file by searching the workspace first" in content
 
 
+def test_run_builds_attachment_context_with_state_sandbox_uses_real_upload_path(tmp_path) -> None:
+    runtime = CapturingConversationRuntime()
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'attachments-state.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+        deepagents_sandbox_kind="state",
+        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post("/api/sessions", headers=headers, json={"title": "Uploads demo"})
+        session_id = session.json()["id"]
+
+        upload = client.post(
+            f"/api/sessions/{session_id}/uploads",
+            headers=headers,
+            files={"file": ("notes.txt", b"hello upload", "text/plain")},
+        )
+        upload_payload = upload.json()
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "请读取刚上传的文件",
+                "attachments": [
+                    {
+                        "id": upload_payload["id"],
+                        "name": upload_payload["filename"],
+                        "status": "uploaded",
+                    }
+                ],
+            },
+        )
+        run_id = run.json()["run_id"]
+
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and '"status": "completed"' in line:
+                    break
+
+    content = runtime.inputs[0]["messages"][0]["content"]
+    expected_upload_path = (settings.upload_storage_dir / upload_payload["storage_key"]).resolve()
+    assert f"sandbox_path={expected_upload_path}" in content
+    assert f"upload_path={expected_upload_path}" in content
+
+
 def test_single_uploaded_file_tasks_use_generic_attachment_context_without_keyword_hint(
     tmp_path,
 ) -> None:

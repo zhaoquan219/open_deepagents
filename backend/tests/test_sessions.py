@@ -181,8 +181,10 @@ def test_upload_storage_key_is_short_and_does_not_include_session_id(
     assert upload_response.status_code == 201
     storage_key = upload_response.json()["storage_key"]
     assert session_id not in storage_key
-    assert "/" not in storage_key
-    assert storage_key.endswith("-very-long-report-name.txt")
+    assert storage_key.count("/") == 1
+    folder, filename = storage_key.split("/", 1)
+    assert len(folder) <= 8
+    assert filename.endswith("-very-long-report-name.txt")
 
 
 def test_unsent_upload_can_be_deleted_and_cleans_record_and_file(

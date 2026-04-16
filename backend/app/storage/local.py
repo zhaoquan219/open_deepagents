@@ -7,6 +7,8 @@ from uuid import uuid4
 
 
 _FILENAME_SAFE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+_SESSION_TOKEN_LENGTH = 8
+_UPLOAD_TOKEN_LENGTH = 10
 
 
 class LocalStorage:
@@ -15,8 +17,9 @@ class LocalStorage:
 
     def save_bytes(self, *, session_id: str, filename: str, payload: bytes) -> tuple[str, str]:
         safe_name = _safe_filename(filename)
-        token = uuid4().hex[:12]
-        relative_path = Path(f"{token}-{safe_name}")
+        session_token = _short_session_token(session_id)
+        upload_token = uuid4().hex[:_UPLOAD_TOKEN_LENGTH]
+        relative_path = Path(session_token) / f"{upload_token}-{safe_name}"
         destination = self.root / relative_path
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(payload)
@@ -36,3 +39,10 @@ def _safe_filename(filename: str) -> str:
     if not normalized:
         return "upload.bin"
     return normalized[:80]
+
+
+def _short_session_token(session_id: str) -> str:
+    compact = re.sub(r"[^A-Za-z0-9]", "", session_id)
+    if compact:
+        return compact[:_SESSION_TOKEN_LENGTH]
+    return uuid4().hex[:_SESSION_TOKEN_LENGTH]

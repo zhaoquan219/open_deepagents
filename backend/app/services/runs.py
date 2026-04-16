@@ -1436,10 +1436,16 @@ def _resolve_attachment_disk_path(*, upload_root: Path, storage_key: str) -> Pat
 
 
 def _resolve_sandbox_attachment_path(*, upload_path: Path | None, settings: Settings) -> str:
-    if upload_path is None or settings.deepagents_sandbox_root_dir is None:
+    if upload_path is None:
         return ""
 
-    sandbox_root = Path(settings.deepagents_sandbox_root_dir).expanduser().resolve()
+    if settings.deepagents_sandbox_kind == "state":
+        return str(upload_path)
+
+    sandbox_root = _resolved_sandbox_root(settings)
+    if sandbox_root is None:
+        return ""
+
     try:
         relative_path = upload_path.resolve().relative_to(sandbox_root)
     except ValueError:
@@ -1449,6 +1455,14 @@ def _resolve_sandbox_attachment_path(*, upload_path: Path | None, settings: Sett
     if settings.deepagents_sandbox_virtual_mode:
         return f"/{normalized.lstrip('/')}"
     return normalized
+
+
+def _resolved_sandbox_root(settings: Settings) -> Path | None:
+    if settings.deepagents_sandbox_root_dir is not None:
+        return Path(settings.deepagents_sandbox_root_dir).expanduser().resolve()
+    if settings.deepagents_sandbox_kind == "filesystem":
+        return settings.upload_storage_dir.resolve()
+    return None
 
 
 def _message_attachments(*, record: MessageRecord) -> list[dict[str, Any]]:
