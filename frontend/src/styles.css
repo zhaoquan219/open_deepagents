@@ -528,7 +528,7 @@ button {
 
 .message-bubble {
   width: auto;
-  max-width: min(82%, 800px);
+  max-width: 82%;
   min-width: 0;
   padding: 12px 14px;
   border-radius: 16px;
