@@ -1032,7 +1032,8 @@ def test_run_builds_attachment_context_with_storage_key_and_upload_path(tmp_path
     assert "notes.txt" in content
     assert upload_payload["storage_key"] in content
     assert str(expected_upload_path) in content
-    assert "Prefer sandbox_path for filesystem tools when it is provided" in content
+    assert "If sandbox_path is provided, use it directly with filesystem tools" in content
+    assert "Do not rediscover the file by searching the workspace first" in content
 
 
 def test_run_consumes_pending_upload_by_binding_it_to_user_message(tmp_path) -> None:
@@ -1301,7 +1302,8 @@ def test_run_builds_attachment_context_with_sandbox_path_for_virtual_filesystem(
 
     assert f"sandbox_path={expected_sandbox_path}" in content
     assert f"upload_path={expected_upload_path}" in content
-    assert "Prefer sandbox_path for filesystem tools when it is provided" in content
+    assert "If sandbox_path is provided, use it directly with filesystem tools" in content
+    assert "Do not rediscover the file by searching the workspace first" in content
 
 
 def test_single_uploaded_file_tasks_use_generic_attachment_context_without_keyword_hint(

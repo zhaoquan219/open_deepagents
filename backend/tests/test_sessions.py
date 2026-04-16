@@ -161,6 +161,30 @@ def test_upload_hook_can_enrich_upload_metadata(tmp_path) -> None:
     assert extra["upload_path"].endswith(upload_response.json()["storage_key"])
 
 
+def test_upload_storage_key_is_short_and_does_not_include_session_id(
+    client: TestClient,
+    auth_headers: dict[str, str],
+) -> None:
+    create_session = client.post(
+        "/api/sessions",
+        headers=auth_headers,
+        json={"title": "Short upload path"},
+    )
+    session_id = create_session.json()["id"]
+
+    upload_response = client.post(
+        f"/api/sessions/{session_id}/uploads",
+        headers=auth_headers,
+        files={"file": ("very long report name.txt", b"backend attachment", "text/plain")},
+    )
+
+    assert upload_response.status_code == 201
+    storage_key = upload_response.json()["storage_key"]
+    assert session_id not in storage_key
+    assert "/" not in storage_key
+    assert storage_key.endswith("-very-long-report-name.txt")
+
+
 def test_unsent_upload_can_be_deleted_and_cleans_record_and_file(
     client: TestClient,
     auth_headers: dict[str, str],

@@ -13,8 +13,8 @@ def inject_attachment_brief(context: RunInputHookContext) -> str | None:
         lines = [context.content, "", "Current user attachments:"]
         guidance = (
             "These files are already uploaded and available to the runtime. "
-            "Prefer sandbox_path for filesystem tools when it is provided; "
-            "otherwise use upload_path."
+            "If sandbox_path is provided, use it directly with filesystem tools. "
+            "Do not rediscover the file by searching the workspace first."
         )
     else:
         lines = [context.content, "", "Historical attachments for this earlier user message:"]
@@ -46,7 +46,12 @@ def inject_attachment_brief(context: RunInputHookContext) -> str | None:
 
         lines.append(f"- {' | '.join(details)}")
 
-    lines.append(guidance)
+    lines.extend(
+        [
+            guidance,
+            "When the user asks about an uploaded file, open the provided path directly and answer from its contents.",
+        ]
+    )
     return "\n".join(lines)
 
 
