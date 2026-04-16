@@ -6,6 +6,7 @@ from urllib.parse import urlsplit, urlunsplit
 from langchain_openai import ChatOpenAI
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources import DotEnvSettingsSource, EnvSettingsSource
 
 from deepagents_integration import DeepAgentsRuntimeConfig, SandboxConfig, SkillSourceConfig
 
@@ -16,6 +17,21 @@ DEFAULT_SANDBOX_READ_PATHS = (
     (BACKEND_ROOT / "data").resolve(),
     (BACKEND_ROOT / "extensions" / "skills").resolve(),
 )
+
+
+class _LenientComplexEmptyMixin:
+    def prepare_field_value(self, field_name, field, value, value_is_complex):
+        if field_name in {"admin_users", "custom_api_default_headers"} and value == "":
+            value = "{}"
+        return super().prepare_field_value(field_name, field, value, value_is_complex)
+
+
+class _LenientEnvSettingsSource(_LenientComplexEmptyMixin, EnvSettingsSource):
+    pass
+
+
+class _LenientDotEnvSettingsSource(_LenientComplexEmptyMixin, DotEnvSettingsSource):
+    pass
 
 
 class Settings(BaseSettings):
@@ -61,6 +77,7 @@ class Settings(BaseSettings):
         env_file=BACKEND_ENV_PATH,
         env_file_encoding="utf-8",
         extra="ignore",
+        enable_decoding=False,
     )
 
     @field_validator(
@@ -190,6 +207,23 @@ class Settings(BaseSettings):
         if self.deepagents_model is None and self.custom_api_model is not None:
             self.deepagents_model = self.custom_api_model
         return self
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        env_settings = _LenientEnvSettingsSource(settings_cls)
+        dotenv_settings = _LenientDotEnvSettingsSource(
+            settings_cls,
+            env_file=BACKEND_ENV_PATH,
+            env_file_encoding="utf-8",
+        )
+        return init_settings, env_settings, dotenv_settings, file_secret_settings
 
     @property
     def is_sqlite(self) -> bool:

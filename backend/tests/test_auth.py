@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
@@ -78,3 +80,27 @@ def test_admin_auth_can_be_disabled_for_local_chat_access(tmp_path) -> None:
     assert me_response.status_code == 200
     assert me_response.json() == {"username": "admin"}
     assert sessions_response.status_code == 200
+
+
+def test_settings_accept_empty_complex_env_values(tmp_path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "ADMIN_USERS=",
+                "CUSTOM_API_DEFAULT_HEADERS=",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    original_env_file = Settings.model_config.get("env_file")
+    Settings.model_config["env_file"] = Path(env_file)
+    try:
+        settings = Settings()
+    finally:
+        Settings.model_config["env_file"] = original_env_file
+
+    assert settings.admin_users == {}
+    assert settings.custom_api_default_headers == {}
