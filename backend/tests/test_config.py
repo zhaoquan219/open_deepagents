@@ -12,6 +12,7 @@ from app.core.config import (
     normalize_sandbox_permission_path,
     resolve_runtime_disk_path,
 )
+from deepagents_integration.extensions import resolve_backend
 
 
 def test_runtime_config_loads_system_prompt_from_project_file() -> None:
@@ -237,15 +238,37 @@ def test_filesystem_sandbox_defaults_to_backend_data_root() -> None:
         deepagents_model="openai:gpt-5.4",
         deepagents_sandbox_kind="filesystem",
         deepagents_sandbox_root_dir="",
+        deepagents_sandbox_virtual_mode=False,
     )
 
     runtime_config = settings.to_runtime_config()
 
     assert settings.deepagents_sandbox_root_dir is None
     assert runtime_config.sandbox.root_dir == str(DEFAULT_SANDBOX_ROOT)
+    assert runtime_config.sandbox.virtual_mode is True
     assert settings.logging_summary()["sandbox_root_dir_configured"] is False
     assert settings.logging_summary()["sandbox_root_dir_effective"] is True
     assert runtime_config.logging_summary()["sandbox_root_dir_configured"] is True
+
+
+def test_filesystem_sandbox_root_is_virtual_root_for_file_tools(tmp_path) -> None:
+    (tmp_path / "inside.txt").write_text("sandboxed", encoding="utf-8")
+    settings = Settings(
+        deepagents_model="openai:gpt-5.4",
+        deepagents_sandbox_kind="filesystem",
+        deepagents_sandbox_root_dir=str(tmp_path),
+        deepagents_sandbox_virtual_mode=False,
+    )
+
+    backend = resolve_backend(settings.to_runtime_config().sandbox)
+    result = backend.ls("/")
+
+    assert result.error is None
+    entries = result.entries or []
+    assert len(entries) == 1
+    assert entries[0]["path"] == "/inside.txt"
+    assert entries[0]["is_dir"] is False
+    assert entries[0]["size"] == len("sandboxed")
 
 
 def test_local_shell_sandbox_defaults_to_backend_data_root() -> None:
@@ -253,9 +276,13 @@ def test_local_shell_sandbox_defaults_to_backend_data_root() -> None:
         deepagents_model="openai:gpt-5.4",
         deepagents_sandbox_kind="local_shell",
         deepagents_sandbox_root_dir="",
+        deepagents_sandbox_virtual_mode=False,
     )
 
-    assert settings.to_runtime_config().sandbox.root_dir == str(DEFAULT_SANDBOX_ROOT)
+    runtime_config = settings.to_runtime_config()
+
+    assert runtime_config.sandbox.root_dir == str(DEFAULT_SANDBOX_ROOT)
+    assert runtime_config.sandbox.virtual_mode is True
 
 
 def test_runtime_permissions_include_custom_upload_dir_outside_default_data_root() -> None:

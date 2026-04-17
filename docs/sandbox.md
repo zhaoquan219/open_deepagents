@@ -27,12 +27,12 @@ Upload records may carry three path-like fields:
 - `sandbox_path`: path to use from inside the configured sandbox root when the
   upload file is under that root.
 
-When `DEEPAGENTS_SANDBOX_VIRTUAL_MODE=true`, `sandbox_path` is formatted as a
-virtual path with a leading slash, for example `/uploads/session-id/uuid-notes.txt`.
-When virtual mode is false, DeepAgents receives normal backend path semantics.
-For the default `state` backend, uploads are copied into the run's virtual file
-state and `sandbox_path` is always a leading-slash virtual path under
-`/uploads/`.
+For `filesystem` and `local_shell`, the app forces virtual path semantics so `/`
+inside file tools maps to `DEEPAGENTS_SANDBOX_ROOT_DIR`, not the host filesystem
+root. In this mode, `sandbox_path` is formatted as a virtual path with a leading
+slash, for example `/uploads/session-id/uuid-notes.txt`. For the default `state`
+backend, uploads are copied into the run's virtual file state and `sandbox_path`
+is always a leading-slash virtual path under `/uploads/`.
 
 ## Upload Visibility
 

@@ -317,8 +317,9 @@ DEEPAGENTS_DISABLED_BUILTIN_TOOLS=execute,write_file,edit_file
 - `upload_path`：宿主机绝对路径，适合后端有读权限时使用。
 - `sandbox_path`：当上传文件位于 sandbox root 内时，给 DeepAgents 工具使用的路径。
 
-如果 `DEEPAGENTS_SANDBOX_VIRTUAL_MODE=true`，sandbox 路径会带前导斜杠，例如
-`/uploads/<session>/<file>`。如果关闭 virtual mode，则更接近普通文件系统路径。
+对于 `filesystem` 和 `local_shell`，应用会强制使用虚拟路径语义，因此文件工具里的
+`/` 会映射到 `DEEPAGENTS_SANDBOX_ROOT_DIR`，不会映射到宿主机根目录。sandbox 路径会带前导斜杠，
+例如 `/uploads/<session>/<file>`。
 
 ## 后端 API 概览
 

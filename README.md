@@ -333,9 +333,10 @@ Path fields in upload metadata:
 - `upload_path`: absolute host path, useful when the backend has read permission to that location.
 - `sandbox_path`: path relative to the configured sandbox root when the upload lives inside it.
 
-If `DEEPAGENTS_SANDBOX_VIRTUAL_MODE=true`, sandbox paths are presented with a leading
-slash, for example `/uploads/<session>/<file>`. If virtual mode is false, paths are
-normal filesystem paths relative to the backend/sandbox root where the backend allows it.
+For `filesystem` and `local_shell`, the app forces virtual path semantics so `/`
+inside file tools maps to `DEEPAGENTS_SANDBOX_ROOT_DIR`, not the host filesystem
+root. Sandbox paths are presented with a leading slash, for example
+`/uploads/<session>/<file>`.
 
 ### Uploaded file paths and sandbox visibility
 

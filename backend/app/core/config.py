@@ -277,7 +277,7 @@ class Settings(BaseSettings):
             sandbox=SandboxConfig(
                 kind=self.deepagents_sandbox_kind,  # type: ignore[arg-type]
                 root_dir=sandbox_root_dir,
-                virtual_mode=self.deepagents_sandbox_virtual_mode,
+                virtual_mode=self.resolved_sandbox_virtual_mode(),
                 timeout=self.deepagents_sandbox_timeout,
                 max_output_bytes=self.deepagents_sandbox_max_output_bytes,
                 inherit_env=self.deepagents_sandbox_inherit_env,
@@ -304,6 +304,13 @@ class Settings(BaseSettings):
             return self.deepagents_sandbox_root_dir
         if self.deepagents_sandbox_kind in {"filesystem", "local_shell"}:
             return str(DEFAULT_SANDBOX_ROOT)
+        return None
+
+    def resolved_sandbox_virtual_mode(self) -> bool | None:
+        if self.deepagents_sandbox_kind in {"filesystem", "local_shell"}:
+            return True
+        if self.deepagents_sandbox_virtual_mode is not None:
+            return self.deepagents_sandbox_virtual_mode
         return None
 
     def resolve_model(self) -> str | ChatOpenAI | None:

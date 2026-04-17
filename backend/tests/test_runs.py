@@ -1252,7 +1252,7 @@ def test_run_builds_attachment_context_with_sandbox_path_for_virtual_filesystem(
         deepagents_model="openai:gpt-5.4",
         deepagents_sandbox_kind="filesystem",
         deepagents_sandbox_root_dir=str(sandbox_root),
-        deepagents_sandbox_virtual_mode=True,
+        deepagents_sandbox_virtual_mode=False,
         deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
@@ -1382,7 +1382,7 @@ def test_filesystem_sandbox_attachment_path_stays_under_data_root(tmp_path) -> N
         upload_storage_dir="data/uploads",
         deepagents_model="openai:gpt-5.4",
         deepagents_sandbox_kind="filesystem",
-        deepagents_sandbox_virtual_mode=True,
+        deepagents_sandbox_virtual_mode=False,
         deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)

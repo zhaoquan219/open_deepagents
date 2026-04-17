@@ -1398,7 +1398,7 @@ def _resolve_sandbox_attachment_path(*, upload_path: Path | None, settings: Sett
         return ""
 
     normalized = relative_path.as_posix()
-    if settings.deepagents_sandbox_virtual_mode:
+    if settings.resolved_sandbox_virtual_mode():
         return f"/{normalized.lstrip('/')}"
     return normalized
 
