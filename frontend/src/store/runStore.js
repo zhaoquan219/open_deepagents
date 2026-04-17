@@ -260,6 +260,22 @@ export function createRunStore() {
       })
   }
 
+  function markCancelling(runId, detail = uiCopy.common.cancelling) {
+    if (!state.activeRun || state.activeRun.runId !== runId) {
+      return
+    }
+    state.error = ''
+    state.activeRun.status = 'cancelling'
+    state.activeRun.lastError = ''
+    appendTimeline(state.activeRun, {
+      type: 'status',
+      label: uiCopy.common.cancelling,
+      detail,
+      status: 'cancelling',
+      timestamp: new Date().toISOString(),
+    })
+  }
+
   function markCompleted(runId, detail = uiCopy.store.run.completedDetail) {
     if (!state.activeRun || state.activeRun.runId !== runId) {
       return
@@ -361,6 +377,7 @@ export function createRunStore() {
     consume,
     getLastEventId,
     markConnected,
+    markCancelling,
     markCompleted,
     markCancelled,
     markConnecting,

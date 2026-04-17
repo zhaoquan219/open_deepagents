@@ -20,6 +20,12 @@ class RunInputHookContext:
 
 @dataclass(frozen=True)
 class UploadHookContext:
+    """Metadata-only upload hook context.
+
+    Upload hooks must not receive raw file bytes. Hooks can enrich upload metadata,
+    but content inspection belongs to an explicit later user action.
+    """
+
     upload_id: str
     session_id: str
     message_id: str | None
@@ -29,7 +35,6 @@ class UploadHookContext:
     storage_key: str
     sha256: str
     upload_path: str
-    payload: bytes
 
 
 def apply_run_input_hooks(
@@ -74,7 +79,6 @@ def build_upload_hook_context(
     storage_key: str,
     sha256: str,
     upload_root: Path,
-    payload: bytes,
 ) -> UploadHookContext:
     return UploadHookContext(
         upload_id=upload_id,
@@ -86,7 +90,6 @@ def build_upload_hook_context(
         storage_key=storage_key,
         sha256=sha256,
         upload_path=str((upload_root / storage_key).resolve()),
-        payload=payload,
     )
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import sys
 import tempfile
 import textwrap
@@ -16,13 +18,15 @@ from deepagents.middleware.skills import _list_skills
 
 from deepagents_integration import (
     BuiltinToolSelectionMiddleware,
-    DeepAgentsRuntimeConfig,
     DeepAgentsRunContext,
+    DeepAgentsRuntimeConfig,
     RunInputHookContext,
     SandboxConfig,
     SkillSourceConfig,
     apply_run_input_hooks,
+    apply_upload_hooks,
     build_deep_agent,
+    build_upload_hook_context,
     load_middleware_extensions,
     load_object_from_spec,
     load_tool_extensions,
@@ -170,6 +174,38 @@ class DeepAgentsConfigTests(unittest.TestCase):
         self.assertTrue(upload_hooks)
         self.assertTrue(callable(run_hooks[0]))
         self.assertTrue(callable(upload_hooks[0]))
+
+    def test_upload_hook_context_is_metadata_only(self):
+        context = build_upload_hook_context(
+            upload_id="upload-1",
+            session_id="session-1",
+            message_id=None,
+            filename="archive.bin",
+            content_type="application/octet-stream",
+            size_bytes=4096,
+            storage_key="session/archive.bin",
+            sha256="abc123",
+            upload_root=Path("/tmp/uploads"),
+        )
+
+        self.assertFalse(hasattr(context, "payload"))
+        self.assertEqual(context.size_bytes, 4096)
+        expected_path = str(Path("/tmp/uploads/session/archive.bin").resolve())
+        self.assertEqual(context.upload_path, expected_path)
+
+        def hook(hook_context):
+            self.assertFalse(hasattr(hook_context, "payload"))
+            return {"seen_size": hook_context.size_bytes}
+
+        self.assertEqual(
+            apply_upload_hooks(context=context, hook_specs=()),
+            {},
+        )
+        with patch("deepagents_integration.run_hooks._load_hooks", return_value=(hook,)):
+            self.assertEqual(
+                apply_upload_hooks(context=context, hook_specs=("pkg:HOOK",)),
+                {"seen_size": 4096},
+            )
 
     def test_route_skill_sources_loads_disk_skills_with_state_backend(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -462,6 +498,28 @@ class DeepAgentsSseBridgeTests(unittest.IsolatedAsyncioTestCase):
         assert envelope is not None
         self.assertEqual(envelope.event, "run.progress")
         self.assertEqual(envelope.data["payload"], {"pct": 50})
+
+    def test_runtime_event_normalization_redacts_binary_payloads(self):
+        raw = b"\xff" * 512
+        encoded = base64.b64encode(raw).decode("ascii")
+        envelope = normalize_runtime_event(
+            {
+                "event": "on_tool_end",
+                "name": "execute",
+                "run_id": "runtime-1",
+                "data": {"output": {"raw": raw, "encoded": encoded}},
+            },
+            bridge_run_id="run-1",
+            sequence=2,
+        )
+
+        self.assertIsNotNone(envelope)
+        assert envelope is not None
+        output = envelope.data["output"]
+        self.assertEqual(output["raw"]["omitted"], "binary")
+        self.assertEqual(output["raw"]["size_bytes"], 512)
+        self.assertTrue(output["encoded"].startswith("[redacted base64-like runtime string"))
+        self.assertNotIn(encoded, json.dumps(envelope.data))
 
     def test_validator_rejects_invalid_payload(self):
         with self.assertRaises(ValueError):

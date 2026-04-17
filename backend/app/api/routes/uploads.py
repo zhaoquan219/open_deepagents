@@ -101,7 +101,6 @@ async def upload_file(
             storage_key=record.storage_key,
             sha256=record.sha256,
             upload_root=settings.upload_storage_dir,
-            payload=payload,
         ),
         hook_specs=settings.upload_hook_specs(),
     )

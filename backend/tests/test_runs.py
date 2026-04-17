@@ -1307,7 +1307,7 @@ def test_run_builds_attachment_context_with_sandbox_path_for_virtual_filesystem(
     assert "Do not rediscover the file by searching the workspace first" in content
 
 
-def test_run_builds_attachment_context_with_state_sandbox_uses_real_upload_path(tmp_path) -> None:
+def test_run_builds_attachment_context_with_state_sandbox_without_file_payload(tmp_path) -> None:
     runtime = CapturingConversationRuntime()
     settings = Settings(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'attachments-state.db'}",
@@ -1367,8 +1367,9 @@ def test_run_builds_attachment_context_with_state_sandbox_uses_real_upload_path(
     expected_sandbox_path = f"/uploads/{upload_payload['storage_key']}"
     assert f"sandbox_path={expected_sandbox_path}" in content
     assert f"upload_path={expected_upload_path}" in content
-    assert agent_input["files"][expected_sandbox_path]["content"] == "hello upload"
-    assert agent_input["files"][expected_sandbox_path]["encoding"] == "utf-8"
+    assert "files" not in agent_input
+    serialized_input = json.dumps(agent_input, ensure_ascii=False)
+    assert "hello upload" not in serialized_input
 
 
 def test_filesystem_sandbox_attachment_path_stays_under_data_root(tmp_path) -> None:

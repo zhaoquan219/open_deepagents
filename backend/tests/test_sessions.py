@@ -123,7 +123,7 @@ def test_upload_hook_can_enrich_upload_metadata(tmp_path) -> None:
                 "def enrich(context):",
                 "    return {",
                 "        'hooked': True,",
-                "        'payload_size': len(context.payload),",
+                "        'payload_size': context.size_bytes,",
                 "        'upload_path': context.upload_path,",
                 "    }",
             ]

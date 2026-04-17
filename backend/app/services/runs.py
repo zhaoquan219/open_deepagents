@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import threading
@@ -931,14 +930,6 @@ class RunService:
             ]
 
         agent_input: dict[str, Any] = {"messages": messages}
-        state_files = _state_attachment_files(
-            attachments=attachments,
-            settings=settings,
-            run_id=run_id,
-            session_id=session_id,
-        )
-        if state_files:
-            agent_input["files"] = state_files
         return agent_input
 
     def _persist_event(self, *, run_id: str, session_id: str, envelope: dict[str, Any]) -> None:
@@ -1416,51 +1407,6 @@ def _state_attachment_path(*, upload_path: Path, settings: Settings) -> str:
     except ValueError:
         return f"/uploads/{upload_path.name}"
     return f"/uploads/{relative_path.as_posix().lstrip('/')}"
-
-
-def _state_attachment_files(
-    *,
-    attachments: list[dict[str, Any]],
-    settings: Settings,
-    run_id: str,
-    session_id: str,
-) -> dict[str, dict[str, str]]:
-    if settings.deepagents_sandbox_kind != "state":
-        return {}
-
-    files: dict[str, dict[str, str]] = {}
-    for attachment in attachments:
-        sandbox_path = str(attachment.get("sandbox_path") or "").strip()
-        upload_path = str(attachment.get("upload_path") or "").strip()
-        if not sandbox_path or not upload_path:
-            continue
-        try:
-            payload = Path(upload_path).read_bytes()
-        except OSError as exc:
-            _log_run(
-                logging.WARNING,
-                "uploaded attachment could not be loaded into state sandbox",
-                event="run.attachment_state_load_failed",
-                phase="building agent input",
-                run_id=run_id,
-                session_id=session_id,
-                reason=type(exc).__name__,
-                next_step="verify upload storage path and permissions",
-                attachment_name=str(attachment.get("name") or ""),
-            )
-            continue
-        files[sandbox_path] = _state_file_data(payload)
-    return files
-
-
-def _state_file_data(payload: bytes) -> dict[str, str]:
-    try:
-        return {"content": payload.decode("utf-8"), "encoding": "utf-8"}
-    except UnicodeDecodeError:
-        return {
-            "content": base64.standard_b64encode(payload).decode("ascii"),
-            "encoding": "base64",
-        }
 
 
 def _message_attachments(*, record: MessageRecord) -> list[dict[str, Any]]:

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
 SSE_SCHEMA_VERSION = "2026-04-12"
+MAX_RUNTIME_EVENT_STRING_CHARS = 2048
+MAX_RUNTIME_EVENT_COLLECTION_ITEMS = 25
+MAX_RUNTIME_EVENT_DEPTH = 6
+BASE64_LIKE_RE = re.compile(r"^[A-Za-z0-9+/=\s]+$")
 
 
 class SupportsAstreamEvents(Protocol):
@@ -248,11 +254,65 @@ def _tool_category(name: str) -> str:
 
 
 def _json_safe(value: Any) -> Any:
+    return _bounded_runtime_payload(value)
+
+
+def _bounded_runtime_payload(value: Any, *, depth: int = 0) -> Any:
+    if depth > MAX_RUNTIME_EVENT_DEPTH:
+        return "[omitted nested runtime payload]"
+    if isinstance(value, bytes | bytearray | memoryview):
+        payload = bytes(value)
+        return {
+            "omitted": "binary",
+            "size_bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+    if isinstance(value, str):
+        return _bounded_runtime_string(value)
+    if isinstance(value, Mapping):
+        items = list(value.items())
+        result: dict[str, Any] = {}
+        for key, child in items[:MAX_RUNTIME_EVENT_COLLECTION_ITEMS]:
+            result[str(key)] = _bounded_runtime_payload(child, depth=depth + 1)
+        omitted = len(items) - MAX_RUNTIME_EVENT_COLLECTION_ITEMS
+        if omitted > 0:
+            result["__omitted_keys__"] = omitted
+        return result
+    if isinstance(value, list | tuple | set):
+        items = list(value)
+        list_result = [
+            _bounded_runtime_payload(item, depth=depth + 1)
+            for item in items[:MAX_RUNTIME_EVENT_COLLECTION_ITEMS]
+        ]
+        omitted = len(items) - MAX_RUNTIME_EVENT_COLLECTION_ITEMS
+        if omitted > 0:
+            list_result.append({"__omitted_items__": omitted})
+        return list_result
     try:
         json.dumps(value)
         return value
     except TypeError:
-        return _extract_text(value) or repr(value)
+        text = _extract_text(value)
+        if text:
+            return _bounded_runtime_string(text)
+        return _bounded_runtime_string(repr(value))
+
+
+def _bounded_runtime_string(value: str) -> str:
+    if _looks_like_base64(value):
+        return f"[redacted base64-like runtime string: {len(value)} chars]"
+    if len(value) > MAX_RUNTIME_EVENT_STRING_CHARS:
+        return f"[omitted long runtime string: {len(value)} chars]"
+    return value
+
+
+def _looks_like_base64(value: str) -> bool:
+    compact = "".join(value.split())
+    if len(compact) < 256 or len(compact) % 4 != 0:
+        return False
+    if not BASE64_LIKE_RE.match(value):
+        return False
+    return any(char in compact for char in "+/=")
 
 
 def _extract_text(value: Any) -> str:

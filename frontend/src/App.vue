@@ -489,11 +489,16 @@ async function handleStopRun() {
   }
 
   stoppingRunId.value = runId
-  closeStream()
-  runStore.markCancelled(runId, uiCopy.app.notices.stopped)
+  runStore.markCancelling(runId, uiCopy.common.cancelling)
   try {
     const result = await apiClient.cancelRun(runId)
-    if (result.status === 'completed') {
+    if (result.status === 'cancelled') {
+      runStore.markCancelled(runId, uiCopy.app.notices.stopped)
+      closeStream({
+        markDisconnected: true,
+        detail: uiCopy.app.stream.terminalCancelled,
+      })
+    } else if (result.status === 'completed') {
       runStore.recordClientNotice({
         sessionId,
         runId,
@@ -503,6 +508,10 @@ async function handleStopRun() {
         clearError: false,
       })
       syncSessionTranscript(sessionId)
+      closeStream({
+        markDisconnected: true,
+        detail: uiCopy.app.stream.completedClosed,
+      })
     } else if (result.status === 'failed') {
       runStore.recordClientNotice({
         sessionId,
@@ -511,6 +520,10 @@ async function handleStopRun() {
         detail: uiCopy.app.notices.stopAlreadyFailed,
         status: 'warning',
         clearError: false,
+      })
+      closeStream({
+        markDisconnected: true,
+        detail: uiCopy.app.stream.terminalError,
       })
     }
   } catch (error) {
