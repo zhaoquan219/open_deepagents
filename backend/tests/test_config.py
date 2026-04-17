@@ -1,6 +1,8 @@
 import json
 from pathlib import Path, PureWindowsPath
 
+import pytest
+
 import app.core.config as config_module
 from app.core.config import (
     BACKEND_ROOT,
@@ -50,17 +52,20 @@ def test_normalize_sandbox_permission_path_supports_windows_drive_paths() -> Non
     assert normalize_sandbox_permission_path(path) == "/C:/repo/backend/data"
 
 
-def test_custom_api_default_headers_accepts_json_and_legacy_pairs() -> None:
+def test_custom_api_default_headers_accepts_json_object_string() -> None:
     settings = Settings(
         custom_api_default_headers='{"HTTP-Referer":"https://app.example.com","X-Title":"open_deepagents"}'
     )
-    legacy_settings = Settings(custom_api_default_headers="X-One=1, X-Two=2")
 
     assert settings.custom_api_default_headers == {
         "HTTP-Referer": "https://app.example.com",
         "X-Title": "open_deepagents",
     }
-    assert legacy_settings.custom_api_default_headers == {"X-One": "1", "X-Two": "2"}
+
+
+def test_custom_api_default_headers_rejects_non_json_strings() -> None:
+    with pytest.raises(ValueError, match="custom_api_default_headers JSON is invalid"):
+        Settings(custom_api_default_headers="X-One=1, X-Two=2")
 
 
 def test_resolve_model_omits_optional_custom_model_kwargs(monkeypatch) -> None:
@@ -114,6 +119,32 @@ def test_resolve_model_passes_configured_temperature_and_headers(monkeypatch) ->
     assert captured["default_headers"] == {
         "HTTP-Referer": "https://app.example.com",
         "X-Title": "open_deepagents",
+    }
+
+
+def test_resolve_model_passes_thinking_switch_as_extra_body(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(config_module, "ChatOpenAI", FakeChatOpenAI)
+
+    settings = Settings(
+        custom_api_key="secret",
+        custom_api_url="https://example.com/v1",
+        custom_api_model="demo-model",
+        custom_api_enable_thinking=False,
+    )
+
+    model = settings.resolve_model()
+
+    assert isinstance(model, FakeChatOpenAI)
+    assert captured["extra_body"] == {
+        "chat_template_kwargs": {
+            "enable_thinking": False,
+        }
     }
 
 
@@ -199,6 +230,7 @@ def test_runtime_model_logging_summary_is_safe_and_descriptive() -> None:
         custom_api_url="https://user:pass@example.com/chat/completions?token=abc",
         custom_api_model="demo-model",
         custom_api_temperature=0.2,
+        custom_api_enable_thinking=False,
         custom_api_default_headers='{"HTTP-Referer":"https://app.example.com","X-Title":"open_deepagents"}',
     )
 
@@ -211,6 +243,7 @@ def test_runtime_model_logging_summary_is_safe_and_descriptive() -> None:
     assert summary["custom_model_base_url"] == "https://example.com"
     assert summary["custom_model_headers_count"] == 2
     assert summary["custom_model_temperature_configured"] is True
+    assert summary["custom_model_thinking_configured"] is True
     assert "secret-key" not in summary_text
     assert "user:pass" not in summary_text
     assert "token=abc" not in summary_text

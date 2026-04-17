@@ -1,13 +1,19 @@
 # open_deepagents
 
-Build a DeepAgents-powered web workspace without starting from a blank folder.
+`open_deepagents` is a starter web console for teams building internal AI agent
+tools on top of DeepAgents.
 
-`open_deepagents` is a full-stack developer scaffold with a FastAPI backend, Vue
-console, persistent chat history, uploads, streamed run events, and extension
-templates for tools, middleware, runtime hooks, and skills. It is intentionally a
-foundation, not a locked product: clone it, wire in your model/provider, customize
-the runtime surface, and ship your own agent workspace from a codebase that is
-already runnable end to end.
+It is for developers who want a runnable agent workspace before they start
+customizing runtime behavior: authentication, session history, file uploads,
+streamed run events, a Vue chat UI, and extension points for tools, middleware,
+runtime hooks, and skills are already wired together. Bring your model provider,
+replace the example extensions with your own domain logic, and use this repo as
+the base for an operator console, research assistant, support workflow, or other
+agent-powered internal app.
+
+Use this project when you need the application shell around an agent, not just a
+notebook or CLI demo. It is intentionally a foundation rather than a hosted
+platform or finished product.
 
 Chinese documentation: [README_CH.md](README_CH.md)
 
@@ -214,18 +220,13 @@ Optional variables:
 | Variable | Purpose |
 | --- | --- |
 | `CUSTOM_API_TEMPERATURE` | Optional custom-model temperature. If unset or empty, the backend does not send a `temperature` field to `ChatOpenAI`. |
-| `CUSTOM_API_DEFAULT_HEADERS` | Optional request headers for the custom endpoint. Recommended format: JSON object string. |
+| `CUSTOM_API_ENABLE_THINKING` | Optional provider-specific thinking switch. If set to `true` or `false`, the backend sends it as `extra_body.chat_template_kwargs.enable_thinking`. Leave empty to omit it. |
+| `CUSTOM_API_DEFAULT_HEADERS` | Optional request headers for the custom endpoint. Must be a JSON object string. |
 
-Recommended header format:
+Header format:
 
 ```dotenv
 CUSTOM_API_DEFAULT_HEADERS={"HTTP-Referer":"https://app.example.com","X-Title":"open_deepagents"}
-```
-
-Backward-compatible fallback format is also accepted:
-
-```dotenv
-CUSTOM_API_DEFAULT_HEADERS=HTTP-Referer=https://app.example.com,X-Title=open_deepagents
 ```
 
 `CUSTOM_API_URL` is normalized to the base API URL before client creation:

@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     custom_api_url: str | None = None
     custom_api_model: str | None = None
     custom_api_temperature: float | None = None
+    custom_api_enable_thinking: bool | None = None
     custom_api_default_headers: dict[str, str] = Field(default_factory=dict)
 
     model_config = SettingsConfigDict(
@@ -98,6 +99,7 @@ class Settings(BaseSettings):
         "custom_api_url",
         "custom_api_model",
         "custom_api_temperature",
+        "custom_api_enable_thinking",
         mode="before",
     )
     @classmethod
@@ -125,34 +127,20 @@ class Settings(BaseSettings):
                 raise ValueError("custom_api_default_headers must use string keys and values")
             return dict(value)
         if not isinstance(value, str):
-            raise ValueError("custom_api_default_headers must be a JSON object or KEY=VALUE pairs")
+            raise ValueError("custom_api_default_headers must be a JSON object")
 
         text = value.strip()
         if not text:
             return {}
-        if text.startswith("{"):
-            try:
-                parsed = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise ValueError("custom_api_default_headers JSON is invalid") from exc
-            if not isinstance(parsed, dict) or not all(
-                isinstance(key, str) and isinstance(item, str) for key, item in parsed.items()
-            ):
-                raise ValueError("custom_api_default_headers JSON must be an object of strings")
-            return dict(parsed)
-
-        headers: dict[str, str] = {}
-        for raw_item in text.replace("\n", ",").split(","):
-            item = raw_item.strip()
-            if not item:
-                continue
-            key, separator, header_value = item.partition("=")
-            if not separator or not key.strip():
-                raise ValueError(
-                    "custom_api_default_headers must be JSON or comma-separated KEY=VALUE pairs"
-                )
-            headers[key.strip()] = header_value.strip()
-        return headers
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("custom_api_default_headers JSON is invalid") from exc
+        if not isinstance(parsed, dict) or not all(
+            isinstance(key, str) and isinstance(item, str) for key, item in parsed.items()
+        ):
+            raise ValueError("custom_api_default_headers JSON must be an object of strings")
+        return dict(parsed)
 
     @field_validator("admin_users", mode="before")
     @classmethod
@@ -321,34 +309,27 @@ class Settings(BaseSettings):
             elif not base_url.endswith("/v1"):
                 base_url = f"{base_url}/v1"
             api_key = SecretStr(self.custom_api_key)
-            if self.custom_api_temperature is not None and self.custom_api_default_headers:
-                return ChatOpenAI(
-                    model=self.custom_api_model,
-                    api_key=api_key,
-                    base_url=base_url,
-                    temperature=self.custom_api_temperature,
-                    default_headers=self.custom_api_default_headers,
-                )
-            if self.custom_api_temperature is not None:
-                return ChatOpenAI(
-                    model=self.custom_api_model,
-                    api_key=api_key,
-                    base_url=base_url,
-                    temperature=self.custom_api_temperature,
-                )
-            if self.custom_api_default_headers:
-                return ChatOpenAI(
-                    model=self.custom_api_model,
-                    api_key=api_key,
-                    base_url=base_url,
-                    default_headers=self.custom_api_default_headers,
-                )
             return ChatOpenAI(
                 model=self.custom_api_model,
                 api_key=api_key,
                 base_url=base_url,
+                **self.custom_api_model_kwargs(),
             )
         return self.deepagents_model
+
+    def custom_api_model_kwargs(self) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+        if self.custom_api_temperature is not None:
+            kwargs["temperature"] = self.custom_api_temperature
+        if self.custom_api_default_headers:
+            kwargs["default_headers"] = self.custom_api_default_headers
+        if self.custom_api_enable_thinking is not None:
+            kwargs["extra_body"] = {
+                "chat_template_kwargs": {
+                    "enable_thinking": self.custom_api_enable_thinking,
+                }
+            }
+        return kwargs
 
     def deepagents_skill_sources(
         self,
@@ -408,6 +389,7 @@ class Settings(BaseSettings):
         custom_model_base_url: str | None = None
         custom_model_headers_count = 0
         custom_model_temperature_configured = False
+        custom_model_thinking_configured = False
 
         if self._uses_custom_api_model():
             model_source = "custom_api"
@@ -416,6 +398,7 @@ class Settings(BaseSettings):
             custom_model_base_url = self.normalized_custom_api_base_url()
             custom_model_headers_count = len(self.custom_api_default_headers)
             custom_model_temperature_configured = self.custom_api_temperature is not None
+            custom_model_thinking_configured = self.custom_api_enable_thinking is not None
         elif self.deepagents_model:
             model_source = "configured_model"
             model_provider, model_name = describe_model_reference(self.deepagents_model)
@@ -427,6 +410,7 @@ class Settings(BaseSettings):
             "custom_model_base_url": custom_model_base_url,
             "custom_model_headers_count": custom_model_headers_count,
             "custom_model_temperature_configured": custom_model_temperature_configured,
+            "custom_model_thinking_configured": custom_model_thinking_configured,
         }
 
     def normalized_custom_api_base_url(self) -> str | None:

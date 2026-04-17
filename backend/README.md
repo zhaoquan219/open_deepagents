@@ -62,8 +62,10 @@ directory to the runtime read permissions.
 If `CUSTOM_API_KEY`, `CUSTOM_API_URL`, and `CUSTOM_API_MODEL` are all set,
 the backend builds a `ChatOpenAI` client for that endpoint.
 `CUSTOM_API_TEMPERATURE` is optional and omitted entirely when unset.
-`CUSTOM_API_DEFAULT_HEADERS` accepts a JSON object string and also supports
-comma-separated `KEY=VALUE` pairs for compatibility.
+`CUSTOM_API_ENABLE_THINKING` is optional and, when set to `true` or `false`,
+is sent as `extra_body.chat_template_kwargs.enable_thinking` for compatible
+providers.
+`CUSTOM_API_DEFAULT_HEADERS` accepts only a JSON object string.
 
 ### Database schema
 

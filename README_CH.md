@@ -1,8 +1,16 @@
 # open_deepagents
 
-不用从空文件夹开始，就能搭起一个 DeepAgents Web 工作台。
+`open_deepagents` 是一个面向团队内部 AI Agent 应用的 Web 控制台起点，基于 DeepAgents 构建。
 
-`open_deepagents` 是一个面向开发者的全栈脚手架：FastAPI 后端、Vue 控制台、持久化聊天历史、附件上传、运行事件流，以及工具 / 中间件 / 运行时钩子 / 技能扩展模板都已经放在同一个可运行工程里。它不是封闭的成品平台，而是一个可以克隆、改模型、接扩展、快速做出自己 Agent 工作台的工程基础。
+它适合正在做 Agent 工具的开发者：你不想只停留在 notebook 或 CLI demo，
+而是需要一个能直接运行、能登录、能保存会话、能上传文件、能看流式执行过程的
+Web 工作台。FastAPI 后端、Vue 聊天界面、持久化历史、附件上传、SSE 事件流，以及
+工具 / 中间件 / 运行时钩子 / 技能扩展入口都已经接好。你只需要接入自己的模型供应商，
+替换示例扩展和业务逻辑，就可以把它作为内部运营控制台、研究助手、客服流程、自动化工作流等
+Agent 应用的工程底座。
+
+这个项目不是托管平台，也不是最终产品；它解决的是“Agent 外面那层应用壳”：
+鉴权、会话、上传、流式状态、前后端接口和可扩展运行时。
 
 English version: [README.md](README.md)
 
@@ -207,18 +215,13 @@ npm run dev
 | 变量 | 说明 |
 | --- | --- |
 | `CUSTOM_API_TEMPERATURE` | 自定义模型温度。未设置或为空时，后端不会向 `ChatOpenAI` 传递 `temperature` 字段。 |
-| `CUSTOM_API_DEFAULT_HEADERS` | 自定义端点请求头。推荐使用 JSON object 字符串格式。 |
+| `CUSTOM_API_ENABLE_THINKING` | 可选的模型思考开关。设置为 `true` 或 `false` 时，后端会通过 `extra_body.chat_template_kwargs.enable_thinking` 透传给兼容端点；留空则不传。 |
+| `CUSTOM_API_DEFAULT_HEADERS` | 自定义端点请求头。必须使用 JSON object 字符串格式。 |
 
-推荐的 header 格式：
+Header 格式：
 
 ```dotenv
 CUSTOM_API_DEFAULT_HEADERS={"HTTP-Referer":"https://app.example.com","X-Title":"open_deepagents"}
-```
-
-为兼容性考虑，也支持旧式的逗号分隔 `KEY=VALUE` 格式：
-
-```dotenv
-CUSTOM_API_DEFAULT_HEADERS=HTTP-Referer=https://app.example.com,X-Title=open_deepagents
 ```
 
 `CUSTOM_API_URL` 在创建客户端前会被标准化为基础 API 地址：
