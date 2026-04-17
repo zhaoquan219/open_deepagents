@@ -65,7 +65,7 @@ function extractText(value) {
   }
   if (typeof value === 'object') {
     if ('messages' in value && Array.isArray(value.messages)) {
-      return value.messages.map((message) => extractText(message)).join('')
+      return value.messages.length ? extractText(value.messages.at(-1)) : ''
     }
     if ('content' in value) {
       return extractText(value.content)

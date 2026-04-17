@@ -167,4 +167,30 @@ describe('normalizeStreamEnvelope', () => {
       },
     })
   })
+
+  it('uses the latest message from nested output payloads instead of stitching history', () => {
+    const envelope = normalizeStreamEnvelope({
+      event_id: 'evt-7',
+      type: 'step',
+      run_id: 'run-13',
+      session_id: 'session-8',
+      label: 'message.completed',
+      data: {
+        output: {
+          messages: [
+            { role: 'user', content: '之前的问题' },
+            { role: 'assistant', content: '之前的回答' },
+            { role: 'assistant', content: '最新回答' },
+          ],
+        },
+      },
+    })
+
+    expect(envelope).toMatchObject({
+      type: 'message.final',
+      message: {
+        content: '最新回答',
+      },
+    })
+  })
 })

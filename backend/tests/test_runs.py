@@ -266,6 +266,109 @@ class MultiMessageRuntime:
         }
 
 
+class HighVolumeDeltaRuntime:
+    async def astream_events(
+        self,
+        agent_input: Any,
+        *,
+        version: str = "v2",
+        config: Any = None,
+        context: Any = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "event": "on_chain_start",
+            "name": "deep-agent",
+            "run_id": "runtime-many-deltas",
+            "metadata": {"langgraph_node": "agent"},
+            "data": {"input": agent_input},
+        }
+        for index in range(40):
+            yield {
+                "event": "on_chat_model_stream",
+                "name": "model",
+                "run_id": "runtime-many-deltas",
+                "metadata": {"langgraph_node": "model"},
+                "data": {"chunk": {"content": [{"text": f"{index},"}]}},
+            }
+        yield {
+            "event": "on_chat_model_end",
+            "name": "model",
+            "run_id": "runtime-many-deltas",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"output": {"messages": [{"content": "done"}]}},
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "deep-agent",
+            "run_id": "runtime-many-deltas",
+            "metadata": {"langgraph_node": "agent"},
+            "data": {"output": {"messages": [{"content": "done"}]}},
+        }
+
+
+class StreamOnlyLongRuntime:
+    async def astream_events(
+        self,
+        agent_input: Any,
+        *,
+        version: str = "v2",
+        config: Any = None,
+        context: Any = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        del agent_input, version, config, context
+        final_text = "long-answer-" * 300
+        yield {
+            "event": "on_chain_start",
+            "name": "deep-agent",
+            "run_id": "runtime-stream-only-long",
+            "metadata": {"langgraph_node": "agent"},
+            "data": {"input": {"messages": []}},
+        }
+        for index in range(0, len(final_text), 120):
+            yield {
+                "event": "on_chat_model_stream",
+                "name": "model",
+                "run_id": "runtime-stream-only-long",
+                "metadata": {"langgraph_node": "model"},
+                "data": {"chunk": {"content": [{"text": final_text[index : index + 120]}]}},
+            }
+        yield {
+            "event": "on_chain_end",
+            "name": "deep-agent",
+            "run_id": "runtime-stream-only-long",
+            "metadata": {"langgraph_node": "agent"},
+            "data": {"output": {"messages": [{"content": final_text}]}},
+        }
+
+
+class EarlyTerminalRuntime:
+    def __init__(self, manager: Any) -> None:
+        self.manager = manager
+        self.closed = threading.Event()
+
+    async def astream_events(
+        self,
+        agent_input: Any,
+        *,
+        version: str = "v2",
+        config: Any = None,
+        context: Any = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        del agent_input, version, config
+        yield {
+            "event": "on_tool_start",
+            "name": "echo_tool",
+            "run_id": "runtime-early-terminal",
+            "data": {"input": {"text": "before terminal race"}},
+        }
+        run_id = str((context or {}).get("run_id") or "")
+        state = self.manager.get(run_id)
+        if state is not None:
+            with state.lock:
+                state.status = "cancelled"
+        self.closed.set()
+
+
 def test_run_lifecycle_and_stream(tmp_path) -> None:
     settings = Settings(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'runs.db'}",
@@ -330,7 +433,9 @@ def test_run_lifecycle_and_stream(tmp_path) -> None:
                 .order_by(RunEventViewRecord.sequence.asc())
                 .all()
             )
-            assert len(event_views) >= 4
+            assert len(event_views) >= 3
+            assert all(event.event_type != "message.delta" for event in event_views)
+            assert all(event.event_type != "step" for event in event_views)
             assert any(event.event_type == "message.final" for event in event_views)
 
             runtime_link = (
@@ -340,6 +445,153 @@ def test_run_lifecycle_and_stream(tmp_path) -> None:
             )
             assert runtime_link is not None
             assert runtime_link.runtime_run_id == "runtime-1"
+
+
+def test_run_event_views_skip_transient_deltas_under_long_streams(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'many-deltas.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = lambda _config: HighVolumeDeltaRuntime()
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        session = client.post("/api/sessions", headers=headers, json={"title": "Many deltas"})
+        session_id = session.json()["id"]
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={"session_id": session_id, "prompt": "stream a lot", "attachments": []},
+        )
+        run_id = run.json()["run_id"]
+
+        payloads = []
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and line.startswith("data: "):
+                    payloads.append(json.loads(line[6:]))
+                if line and '"status": "completed"' in line:
+                    break
+
+        assert sum(1 for payload in payloads if payload["type"] == "message.delta") == 40
+
+        with app.state.database.session_factory() as db:
+            event_views = (
+                db.query(RunEventViewRecord)
+                .filter(RunEventViewRecord.run_id == run_id)
+                .order_by(RunEventViewRecord.sequence.asc())
+                .all()
+            )
+            event_types = [event.event_type for event in event_views]
+            assert "message.delta" not in event_types
+            assert event_types.count("message.final") == 1
+            assert event_types.count("status") >= 2
+            assert len(event_views) <= 4
+
+
+def test_long_stream_completion_does_not_emit_omitted_runtime_placeholder(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'long-stream.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = lambda _config: StreamOnlyLongRuntime()
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post("/api/sessions", headers=headers, json={"title": "Long stream"})
+        session_id = session.json()["id"]
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={"session_id": session_id, "prompt": "stream only", "attachments": []},
+        )
+        run_id = run.json()["run_id"]
+
+        payloads = []
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and line.startswith("data: "):
+                    payloads.append(json.loads(line[6:]))
+                if line and '"status": "completed"' in line:
+                    break
+
+        final_payloads = [payload for payload in payloads if payload["type"] == "message.final"]
+        assert len(final_payloads) == 1
+        final_content = final_payloads[0]["message"]["content"]
+        assert final_content.startswith("long-answer-long-answer")
+        assert "[omitted long runtime string:" not in final_content
+
+        transcript = client.get(f"/api/sessions/{session_id}/messages", headers=headers)
+        contents = [item["content"] for item in transcript.json()]
+        assert any(content == final_content for content in contents)
+
+
+def test_event_view_buffer_flushes_when_run_terminalizes_mid_stream(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'early-terminal.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model="openai:gpt-5.4",
+    )
+    app = create_app(settings)
+    runtime = EarlyTerminalRuntime(app.state.run_manager)
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        headers = login_headers(client, "admin", "secret")
+        session = client.post("/api/sessions", headers=headers, json={"title": "Terminal race"})
+        session_id = session.json()["id"]
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={"session_id": session_id, "prompt": "race", "attachments": []},
+        )
+        run_id = run.json()["run_id"]
+
+        assert runtime.closed.wait(timeout=2)
+        deadline = time.time() + 2
+        event_types: list[str] = []
+        while time.time() < deadline:
+            with app.state.database.session_factory() as db:
+                event_types = [
+                    record.event_type
+                    for record in db.query(RunEventViewRecord)
+                    .filter(RunEventViewRecord.run_id == run_id)
+                    .order_by(RunEventViewRecord.sequence.asc())
+                    .all()
+                ]
+            if "tool" in event_types:
+                break
+            time.sleep(0.02)
+
+        assert "tool" in event_types
 
 
 def test_run_routes_reject_cross_user_access(tmp_path) -> None:

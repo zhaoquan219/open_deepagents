@@ -152,6 +152,45 @@ class RunState:
             return len(self.envelopes) + 1
 
 
+class RunEventViewBuffer:
+    def __init__(
+        self,
+        database: DatabaseState,
+        *,
+        run_id: str,
+        session_id: str,
+        batch_size: int = 16,
+    ) -> None:
+        self.database = database
+        self.run_id = run_id
+        self.session_id = session_id
+        self.batch_size = batch_size
+        self.pending: list[dict[str, Any]] = []
+        self.persisted_count = 0
+        self.skipped_count = 0
+
+    def add(self, envelope: dict[str, Any]) -> None:
+        if not _should_persist_event_view(envelope):
+            self.skipped_count += 1
+            return
+        self.pending.append(envelope)
+        if len(self.pending) >= self.batch_size:
+            self.flush()
+
+    def flush(self) -> None:
+        if not self.pending:
+            return
+        envelopes = self.pending
+        self.pending = []
+        self.persisted_count += len(envelopes)
+        _persist_event_views(
+            self.database,
+            run_id=self.run_id,
+            session_id=self.session_id,
+            envelopes=envelopes,
+        )
+
+
 class RunManager:
     def __init__(self, keepalive_interval: float = 15.0) -> None:
         self._runs: dict[str, RunState] = {}
@@ -364,6 +403,12 @@ class RunService:
         runtime_event_counts: Counter[str] = Counter()
         agent_input: dict[str, Any] = {"messages": []}
         phase = "starting execution"
+        event_view_buffer = RunEventViewBuffer(
+            self.database,
+            run_id=run_id,
+            session_id=session_id,
+        )
+        last_synced_runtime_run_id = ""
 
         try:
             _log_run(
@@ -437,6 +482,7 @@ class RunService:
             )
 
             final_message = ""
+            streamed_message_parts: list[str] = []
             saw_message_delta = False
             assistant_message_count = 0
             last_assistant_message = ""
@@ -469,10 +515,11 @@ class RunService:
                 if ui_event["type"] == "status" and ui_event["status"] == "completed":
                     pending_completion_event = ui_event
                 else:
-                    self._persist_event(run_id=run_id, session_id=session_id, envelope=ui_event)
+                    event_view_buffer.add(ui_event)
                     state.publish(ui_event)
                 if ui_event["type"] == "message.delta" and ui_event.get("delta"):
                     saw_message_delta = True
+                    streamed_message_parts.append(str(ui_event.get("delta") or ""))
                 if ui_event["type"] == "message.final":
                     assistant_content = str(ui_event.get("message", {}).get("content") or "")
                     if assistant_content:
@@ -488,16 +535,27 @@ class RunService:
                             step_id=str(ui_event.get("step_id") or "") or None,
                             extra={"event_id": str(ui_event["event_id"])},
                         )
-                elif candidate := _extract_message_text(ui_event.get("data")):
+                elif (
+                    not final_message
+                    and ui_event.get("label") in {"message.completed", "run.completed"}
+                    and (candidate := _extract_message_text(ui_event.get("data")))
+                    and not _is_runtime_placeholder_text(candidate)
+                ):
                     final_message = candidate
-                self._sync_runtime_link(
-                    run_id=run_id,
-                    session_id=session_id,
-                    runtime_run_id=str(ui_event.get("data", {}).get("runtime_run_id") or ""),
-                )
+                runtime_run_id = str(ui_event.get("data", {}).get("runtime_run_id") or "")
+                if runtime_run_id and runtime_run_id != last_synced_runtime_run_id:
+                    self._sync_runtime_link(
+                        run_id=run_id,
+                        session_id=session_id,
+                        runtime_run_id=runtime_run_id,
+                    )
+                    last_synced_runtime_run_id = runtime_run_id
 
             if state.status == "cancelled" or state.completed:
                 return
+            if not final_message and streamed_message_parts:
+                final_message = "".join(streamed_message_parts)
+            event_view_buffer.flush()
 
             _log_run(
                 logging.INFO,
@@ -513,7 +571,9 @@ class RunService:
                 runtime_event_count=sum(runtime_event_counts.values()),
                 sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
                 skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
+                skipped_event_view_count=event_view_buffer.skipped_count,
                 tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
+                persisted_event_view_count=event_view_buffer.persisted_count,
             )
 
             if final_message and not saw_message_delta and assistant_message_count == 0:
@@ -521,17 +581,17 @@ class RunService:
                     return
                 sequence += 1
                 delta_event = _ui_envelope(
-                        run_id=run_id,
-                        session_id=session_id,
-                        sequence=sequence,
-                        event_type="message.delta",
-                        status="running",
-                        label="message.delta",
-                        detail="Assistant response received.",
-                        data={},
-                        delta=final_message,
-                    )
-                self._persist_event(run_id=run_id, session_id=session_id, envelope=delta_event)
+                    run_id=run_id,
+                    session_id=session_id,
+                    sequence=sequence,
+                    event_type="message.delta",
+                    status="running",
+                    label="message.delta",
+                    detail="Assistant response received.",
+                    data={},
+                    delta=final_message,
+                )
+                event_view_buffer.add(delta_event)
                 state.publish(delta_event)
 
             should_emit_terminal_message = bool(final_message) and (
@@ -542,25 +602,26 @@ class RunService:
                     return
                 sequence += 1
                 final_event = _ui_envelope(
-                        run_id=run_id,
-                        session_id=session_id,
-                        sequence=sequence,
-                        event_type="message.final",
-                        status="completed",
-                        label="message.final",
-                        detail="Assistant response completed.",
-                        data={"final": True},
-                        message={
-                            "id": f"final:{run_id}",
-                            "role": "assistant",
-                            "content": final_message,
-                            "createdAt": utc_now().isoformat(),
-                            "attachments": [],
-                        },
-                    )
-                self._persist_event(run_id=run_id, session_id=session_id, envelope=final_event)
+                    run_id=run_id,
+                    session_id=session_id,
+                    sequence=sequence,
+                    event_type="message.final",
+                    status="completed",
+                    label="message.final",
+                    detail="Assistant response completed.",
+                    data={"final": True},
+                    message={
+                        "id": f"final:{run_id}",
+                        "role": "assistant",
+                        "content": final_message,
+                        "createdAt": utc_now().isoformat(),
+                        "attachments": [],
+                    },
+                )
+                event_view_buffer.add(final_event)
                 state.publish(final_event)
 
+            event_view_buffer.flush()
             phase = "persisting final message"
             if state.status == "cancelled" or state.completed:
                 return
@@ -611,15 +672,15 @@ class RunService:
                 )
                 completion_data = dict(pending_completion_event.get("data") or {})
             completion_envelope = _ui_envelope(
-                    run_id=run_id,
-                    session_id=session_id,
-                    sequence=sequence + 1,
-                    event_type="status",
-                    status="completed",
-                    label=completion_label,
-                    detail=completion_detail,
-                    data=completion_data,
-                )
+                run_id=run_id,
+                session_id=session_id,
+                sequence=sequence + 1,
+                event_type="status",
+                status="completed",
+                label=completion_label,
+                detail=completion_detail,
+                data=completion_data,
+            )
             self._persist_event(
                 run_id=run_id,
                 session_id=session_id,
@@ -645,8 +706,11 @@ class RunService:
                 status="completed",
                 tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
                 ui_event_count=len(state.envelopes),
+                skipped_event_view_count=event_view_buffer.skipped_count,
+                persisted_event_view_count=event_view_buffer.persisted_count + 1,
             )
         except asyncio.CancelledError:
+            event_view_buffer.flush()
             if state.status != "cancelled":
                 self._finalize_cancelled(
                     run_id=run_id,
@@ -666,6 +730,7 @@ class RunService:
             )
             return
         except GraphRecursionError as exc:
+            event_view_buffer.flush()
             phase = "persisting fallback response"
             fallback_message = _build_recursion_fallback(prompt, agent_input["messages"])
             fallback_event = _ui_envelope(
@@ -742,16 +807,17 @@ class RunService:
                 ui_event_count=len(state.envelopes),
             )
         except Exception as exc:
+            event_view_buffer.flush()
             error_envelope = _ui_envelope(
-                    run_id=run_id,
-                    session_id=session_id,
-                    sequence=len(state.envelopes) + 1,
-                    event_type="error",
-                    status="failed",
-                    label="Run failed",
-                    detail=str(exc),
-                    data={"error": str(exc)},
-                )
+                run_id=run_id,
+                session_id=session_id,
+                sequence=len(state.envelopes) + 1,
+                event_type="error",
+                status="failed",
+                label="Run failed",
+                detail=str(exc),
+                data={"error": str(exc)},
+            )
             self._persist_event(run_id=run_id, session_id=session_id, envelope=error_envelope)
             state.publish(error_envelope)
             with self.database.session_factory() as db:
@@ -802,6 +868,8 @@ class RunService:
                 tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
                 ui_event_count=len(state.envelopes),
             )
+        finally:
+            event_view_buffer.flush()
 
     def _finalize_cancelled(
         self,
@@ -933,30 +1001,12 @@ class RunService:
         return agent_input
 
     def _persist_event(self, *, run_id: str, session_id: str, envelope: dict[str, Any]) -> None:
-        event_id = str(envelope["event_id"])
-        sequence = int(event_id.rsplit(":", maxsplit=1)[-1])
-        with self.database.session_factory() as db:
-            message_payload = envelope.get("message")
-            record = RunEventViewRecord(
-                id=event_id,
-                run_id=run_id,
-                session_id=session_id,
-                sequence=sequence,
-                event_type=str(envelope.get("type") or ""),
-                status=str(envelope.get("status") or "in_progress"),
-                message_id=message_payload.get("id")
-                if isinstance(message_payload, dict)
-                else None,
-                step_id=str(envelope.get("step_id") or "") or None,
-                payload=dict(envelope),
-            )
-            db.merge(record)
-            run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
-            if run_record is not None:
-                run_record.status = str(envelope.get("status") or run_record.status)
-                run_record.event_count = max(run_record.event_count, sequence)
-                db.add(run_record)
-            db.commit()
+        _persist_event_views(
+            self.database,
+            run_id=run_id,
+            session_id=session_id,
+            envelopes=[envelope],
+        )
 
     def _sync_runtime_link(self, *, run_id: str, session_id: str, runtime_run_id: str) -> None:
         if not runtime_run_id:
@@ -1110,6 +1160,64 @@ def _to_sse(envelope: dict[str, Any]) -> str:
     return f"id: {envelope['event_id']}\ndata: {json.dumps(envelope, ensure_ascii=False)}\n\n"
 
 
+def _should_persist_event_view(envelope: dict[str, Any]) -> bool:
+    event_type = str(envelope.get("type") or "")
+    raw_data = envelope.get("data")
+    data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
+    if data.get("transient") is True:
+        return False
+    return event_type in {"status", "message.final", "tool", "skill", "sandbox", "error"}
+
+
+def _persist_event_views(
+    database: DatabaseState,
+    *,
+    run_id: str,
+    session_id: str,
+    envelopes: list[dict[str, Any]],
+) -> None:
+    if not envelopes:
+        return
+
+    max_sequence = 0
+    latest_status = ""
+    records: list[RunEventViewRecord] = []
+    for envelope in envelopes:
+        event_id = str(envelope["event_id"])
+        sequence = int(event_id.rsplit(":", maxsplit=1)[-1])
+        max_sequence = max(max_sequence, sequence)
+        latest_status = str(envelope.get("status") or latest_status)
+        message_payload = envelope.get("message")
+        records.append(
+            RunEventViewRecord(
+                id=event_id,
+                run_id=run_id,
+                session_id=session_id,
+                sequence=sequence,
+                event_type=str(envelope.get("type") or ""),
+                status=str(envelope.get("status") or "in_progress"),
+                message_id=message_payload.get("id")
+                if isinstance(message_payload, dict)
+                else None,
+                step_id=str(envelope.get("step_id") or "") or None,
+                payload=dict(envelope),
+            )
+        )
+
+    with database.session_factory() as db:
+        for record in records:
+            db.merge(record)
+        run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
+        if run_record is not None:
+            current_status = str(run_record.status or "")
+            terminal_statuses = {"completed", "failed", "cancelled"}
+            if latest_status in terminal_statuses or current_status not in terminal_statuses:
+                run_record.status = latest_status or run_record.status
+            run_record.event_count = max(run_record.event_count, max_sequence)
+            db.add(run_record)
+        db.commit()
+
+
 def _ui_envelope(
     *,
     run_id: str,
@@ -1230,6 +1338,13 @@ def _extract_message_text(payload: Any) -> str:
         if "text" in payload and isinstance(payload["text"], str):
             return payload["text"]
     return ""
+
+
+def _is_runtime_placeholder_text(value: str) -> bool:
+    text = value.strip()
+    return text.startswith("[omitted long runtime string:") or text.startswith(
+        "[redacted base64-like runtime string:"
+    )
 
 
 def _resolve_run_attachments(

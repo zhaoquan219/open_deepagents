@@ -76,6 +76,26 @@ second pass
     ])
   })
 
+  it('supports common think tags as collapsible thinking segments', () => {
+    const segments = parseMarkdownSegments('Before<think>private draft</think>After')
+
+    expect(segments).toEqual([
+      expect.objectContaining({
+        type: 'markdown',
+        content: 'Before',
+      }),
+      expect.objectContaining({
+        type: 'thinking',
+        kind: 'think',
+        content: 'private draft',
+      }),
+      expect.objectContaining({
+        type: 'markdown',
+        content: 'After',
+      }),
+    ])
+  })
+
   it('does not extract thinking tags from ordinary fenced code blocks', () => {
     const segments = parseMarkdownSegments('```html\n<thinking>literal</thinking>\n```')
 

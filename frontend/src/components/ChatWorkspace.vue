@@ -26,6 +26,10 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  messageSendScrollKey: {
+    type: Number,
+    default: 0,
+  },
   pendingUploads: {
     type: Array,
     default: () => [],
@@ -230,7 +234,15 @@ function removeUpload(file) {
           <p>{{ uiCopy.workspace.emptyCopy }}</p>
         </section>
 
-        <MessageThread v-else :messages="props.messages" />
+        <MessageThread
+          v-else
+          :active-run-session-id="String(props.activeRun?.sessionId || '')"
+          :loading="props.loading"
+          :message-send-scroll-key="props.messageSendScrollKey"
+          :messages="props.messages"
+          :run-status="props.runStatus"
+          :session-id="String(props.currentSession?.id || '')"
+        />
       </div>
     </div>
 

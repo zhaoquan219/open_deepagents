@@ -14,6 +14,8 @@ const props = defineProps({
   },
 })
 
+const emit = defineEmits(['rendered'])
+
 const container = ref(null)
 let renderSequence = 0
 
@@ -43,12 +45,14 @@ async function hydrate() {
       return
     }
     container.value.innerHTML = svg
+    emit('rendered')
   } catch (error) {
     if (!container.value || currentSequence !== renderSequence) {
       return
     }
     const message = error instanceof Error ? error.message : 'Unable to render mermaid diagram.'
     container.value.innerHTML = `<pre class="mermaid-error">${escapeHtml(message)}</pre>`
+    emit('rendered')
   }
 }
 

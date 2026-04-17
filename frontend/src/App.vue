@@ -39,6 +39,7 @@ const isAuthenticated = ref(false)
 const isWideLayout = ref(true)
 const stoppingRunId = ref('')
 const timelinePanelOpen = ref(true)
+const messageSendScrollKey = ref(0)
 let viewportMediaQuery = null
 
 const sessions = computed(() => sessionStore.state.sessions)
@@ -286,11 +287,13 @@ function connectRunStream(runId, sessionId) {
       const accepted = runStore.consume(envelope)
       if (!accepted) {
         if (isTerminalEnvelope(envelope)) {
-          syncSessionTranscript(sessionId)
           if (envelope.type === 'status' && envelope.status === 'completed') {
             runStore.markCompleted(runId, uiCopy.app.stream.replayCompleted)
           } else if (envelope.type === 'status' && envelope.status === 'cancelled') {
             runStore.markCancelled(runId, uiCopy.app.stream.replayCancelled)
+            syncSessionTranscript(sessionId)
+          } else if (envelope.type === 'error') {
+            syncSessionTranscript(sessionId)
           }
           closeStream({
             markDisconnected: true,
@@ -310,7 +313,10 @@ function connectRunStream(runId, sessionId) {
       }
 
       if (isTerminalEnvelope(envelope)) {
-        if (envelope.type === 'status' && envelope.status === 'completed') {
+        if (
+          envelope.type === 'status' &&
+          ['failed', 'cancelled'].includes(envelope.status)
+        ) {
           syncSessionTranscript(sessionId)
         }
         closeStream({
@@ -351,16 +357,12 @@ async function handleRefreshSessions() {
 }
 
 async function handleCreateSession() {
-  closeStream()
-  runStore.clear()
   const session = await sessionStore.createSession()
   await sessionStore.selectSession(session.id)
   return session
 }
 
 async function handleSelectSession(sessionId) {
-  closeStream()
-  runStore.clear()
   await sessionStore.selectSession(sessionId)
 }
 
@@ -457,6 +459,7 @@ async function handleSubmit({ prompt }) {
     })
 
     sessionStore.clearPendingUploads(sessionId)
+    messageSendScrollKey.value += 1
     runStore.beginRun({ runId: run.runId, sessionId })
     runStore.recordClientNotice({
       sessionId,
@@ -647,6 +650,7 @@ watch(
             :can-stop="canStopRun"
             :current-session="currentSession"
             :messages="currentMessages"
+            :message-send-scroll-key="messageSendScrollKey"
             :pending-uploads="pendingUploads"
             :deleting-uploads="deletingUploads"
             :loading="loadingMessages"

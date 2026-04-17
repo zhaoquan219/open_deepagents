@@ -14,6 +14,8 @@ const props = defineProps({
   },
 })
 
+const emit = defineEmits(['content-rendered'])
+
 const segments = computed(() =>
   parseMarkdownSegments(props.content).map((segment) => {
     if (segment.type === 'markdown' || segment.type === 'thinking') {
@@ -43,6 +45,7 @@ function thinkingSummary(kind) {
         v-else-if="segment.type === 'mermaid'"
         :diagram-key="segment.key"
         :source="segment.source"
+        @rendered="emit('content-rendered')"
       />
       <details v-else class="thinking-block">
         <summary>{{ thinkingSummary(segment.kind) }}</summary>

@@ -14,8 +14,10 @@ function createSegmentKey(type, index, content) {
   return `${type}-${index}-${hashString(content)}`
 }
 
+const THINKING_BLOCK_KINDS = new Set(['thinking', 'reasoning', 'think', 'thought'])
+
 const SPECIAL_BLOCK_PATTERN =
-  /```([^\n`]*)\s*\n?([\s\S]*?)```|<(thinking|reasoning)>([\s\S]*?)<\/\3>/gi
+  /```([^\n`]*)\s*\n?([\s\S]*?)```|<(thinking|reasoning|think|thought)>([\s\S]*?)<\/\3>/gi
 
 export function parseMarkdownSegments(markdown) {
   const source = String(markdown || '')
@@ -53,7 +55,7 @@ export function parseMarkdownSegments(markdown) {
           key: createSegmentKey('mermaid', mermaidIndex, content),
         })
         mermaidIndex += 1
-      } else if (kind === 'thinking' || kind === 'reasoning') {
+      } else if (THINKING_BLOCK_KINDS.has(kind)) {
         segments.push({
           type: 'thinking',
           kind,
