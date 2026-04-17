@@ -1219,10 +1219,10 @@ def _extract_message_text(payload: Any) -> str:
     if isinstance(payload, str):
         return payload
     if isinstance(payload, list):
-        return "".join(_extract_message_text(item) for item in payload)
+        return _extract_message_text(payload[-1]) if payload else ""
     if isinstance(payload, dict):
-        if "messages" in payload and isinstance(payload["messages"], list):
-            return _extract_message_text(payload["messages"])
+        if "messages" in payload and isinstance(payload["messages"], list) and payload["messages"]:
+            return _extract_message_text(payload["messages"][-1])
         if "output" in payload:
             return _extract_message_text(payload["output"])
         if "content" in payload:
