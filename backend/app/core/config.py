@@ -15,9 +15,7 @@ from deepagents_integration import DeepAgentsRuntimeConfig, SandboxConfig, Skill
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ENV_PATH = BACKEND_ROOT / ".env"
-DEEPAGENTS_SYSTEM_PROMPT_PATH = BACKEND_ROOT / "prompts" / "deepagents-system-prompt.md"
 DEFAULT_AGENT_SYSTEM_PROMPT_PATH = BACKEND_ROOT / "agents" / "prompts" / "system.md"
-DEFAULT_MODEL_CONFIG_PATH = BACKEND_ROOT / "models.json"
 DEFAULT_MODEL_EXAMPLE_PATH = BACKEND_ROOT / "models.example.json"
 DEFAULT_SANDBOX_READ_PATHS = (
     (BACKEND_ROOT / "data").resolve(),
@@ -259,13 +257,13 @@ class Settings(BaseSettings):
         )
 
     def load_deepagents_system_prompt(self, agent: Mapping[str, Any] | None = None) -> str:
-        if self._uses_legacy_runtime_config():
-            return DEEPAGENTS_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
         if agent is not None and agent.get("system_prompt_path"):
             return Path(agent["system_prompt_path"]).read_text(encoding="utf-8").strip()
         if DEFAULT_AGENT_SYSTEM_PROMPT_PATH.is_file():
             return DEFAULT_AGENT_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
-        return DEEPAGENTS_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+        raise FileNotFoundError(
+            f"Agent system prompt not found: {DEFAULT_AGENT_SYSTEM_PROMPT_PATH}"
+        )
 
     def default_permissions(self) -> tuple[dict[str, object], ...]:
         paths: list[Path] = list(DEFAULT_SANDBOX_READ_PATHS)
@@ -304,14 +302,7 @@ class Settings(BaseSettings):
         )
 
     def load_model_catalog_for_runtime(self, selection: RuntimeSelection | None = None) -> Any:
-        if (
-            selection is not None
-            and selection.model_id
-            and selection.model_id != self.legacy_model_id()
-        ):
-            return self.load_model_catalog()
-        if self._uses_legacy_runtime_config():
-            return None
+        _ = selection
         return self.load_model_catalog()
 
     def resolve_runtime(
@@ -332,18 +323,8 @@ class Settings(BaseSettings):
         options = runtime_options(
             agent_spec=self.deepagents_main_agent,
             model_catalog=model_catalog,
-            default_model_id=self.deepagents_default_model or self.legacy_model_id(),
+            default_model_id=self.deepagents_default_model,
         )
-        if model_catalog is None and (legacy_model_id := self.legacy_model_id()):
-            options["default_model_id"] = legacy_model_id
-            options["models"] = [
-                {
-                    "id": legacy_model_id,
-                    "name": legacy_model_id,
-                    "provider": "legacy",
-                    "provider_name": "Legacy",
-                }
-            ]
         return options
 
     def resolve_model(
@@ -358,12 +339,6 @@ class Settings(BaseSettings):
                 model_catalog.resolve(model_id or self.deepagents_default_model),
             )
         return None
-
-    def _uses_legacy_runtime_config(self) -> bool:
-        return False
-
-    def legacy_model_id(self) -> str:
-        return ""
 
     def deepagents_skill_sources(
         self,
@@ -399,8 +374,6 @@ class Settings(BaseSettings):
         return ()
 
     def upload_hooks(self) -> tuple[Any, ...]:
-        if self._uses_legacy_runtime_config():
-            return ()
         try:
             agent = self.resolve_runtime(
                 selection=None,

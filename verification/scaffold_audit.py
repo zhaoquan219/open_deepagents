@@ -25,18 +25,18 @@ REQUIRED_CONTRACT_FILES = (
     "packages/contracts/deepagents-sse-event-v1.json",
     "packages/extension-manifest.template.json",
 )
-REQUIRED_EXTENSION_TEMPLATES = (
-    "backend/extensions/tools/__init__.py",
-    "backend/extensions/tools/README.md",
-    "backend/extensions/tools/echo_tool.py",
-    "backend/extensions/middleware/__init__.py",
-    "backend/extensions/middleware/README.md",
-    "backend/extensions/middleware/audit_middleware.py",
-    "backend/extensions/runtime_hooks/__init__.py",
-    "backend/extensions/runtime_hooks/attachment_hooks.py",
-    "backend/extensions/runtime_hooks/README.md",
-    "backend/extensions/skills/README.md",
-    "backend/extensions/skills/skill-creator/SKILL.md",
+REQUIRED_AGENT_PACKAGE_TEMPLATES = (
+    "backend/agents/__init__.py",
+    "backend/agents/README.md",
+    "backend/agents/prompts/system.md",
+    "backend/agents/tools/__init__.py",
+    "backend/agents/tools/echo_tool.py",
+    "backend/agents/middleware/__init__.py",
+    "backend/agents/middleware/audit_middleware.py",
+    "backend/agents/hooks/__init__.py",
+    "backend/agents/hooks/attachment_hooks.py",
+    "backend/agents/skills/skill-creator/SKILL.md",
+    "backend/agents/memory/project.md",
     "backend/app/storage/minio.py",
 )
 @dataclass(frozen=True)
@@ -75,7 +75,7 @@ def audit_repo(root: Path) -> AuditReport:
         _check_paths(root, "backend-scaffold", REQUIRED_BACKEND_DIRS),
         _check_paths(root, "frontend-scaffold", REQUIRED_FRONTEND_DIRS),
         _check_paths(root, "contract-files", REQUIRED_CONTRACT_FILES),
-        _check_paths(root, "extension-templates", REQUIRED_EXTENSION_TEMPLATES),
+        _check_paths(root, "agent-package-templates", REQUIRED_AGENT_PACKAGE_TEMPLATES),
     )
     return AuditReport(ok=all(check.ok for check in checks), checks=checks)
 

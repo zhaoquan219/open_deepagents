@@ -34,6 +34,11 @@ slash, for example `/uploads/session-id/uuid-notes.txt`. For the default `state`
 backend, uploads are copied into the run's virtual file state and `sandbox_path`
 is always a leading-slash virtual path under `/uploads/`.
 
+When the `state` backend produces new or changed files, the app exports those
+files after the run completes. Exported files become `UploadRecord` rows under
+`UPLOAD_STORAGE_DIR` and are attached to the final assistant message so users can
+download them from the UI.
+
 ## Upload Visibility
 
 - User uploads are persisted before the agent run starts.
@@ -76,5 +81,9 @@ Custom backend:
 
 ```dotenv
 DEEPAGENTS_SANDBOX_KIND=custom
-DEEPAGENTS_SANDBOX_BACKEND_SPEC=extensions.custom_sandbox:build_backend
+DEEPAGENTS_SANDBOX_BACKEND_SPEC=path/to/custom_sandbox.py:build_backend
 ```
+
+Custom backend specs can point to an importable module or a Python file path.
+The default agent package lives in `backend/agents`; sandbox backend factories do
+not need to live inside that package.

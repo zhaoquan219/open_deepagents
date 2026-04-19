@@ -100,8 +100,8 @@ class DeepAgentsConfigTests(unittest.TestCase):
     def test_tool_and_middleware_specs_load_from_unified_init_entrypoints(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            tools_dir = root / "extensions" / "tools"
-            middleware_dir = root / "extensions" / "middleware"
+            tools_dir = root / "demo_agents" / "tools"
+            middleware_dir = root / "demo_agents" / "middleware"
             tools_dir.mkdir(parents=True)
             middleware_dir.mkdir(parents=True)
 
@@ -116,7 +116,7 @@ class DeepAgentsConfigTests(unittest.TestCase):
                 )
             )
             (tools_dir / "__init__.py").write_text(
-                "from extensions.tools.echo_tool import TOOLS as SAMPLE_TOOLS\n"
+                "from demo_agents.tools.echo_tool import TOOLS as SAMPLE_TOOLS\n"
                 "TOOLS = [*SAMPLE_TOOLS]\n"
             )
             (middleware_dir / "audit_middleware.py").write_text(
@@ -130,7 +130,7 @@ class DeepAgentsConfigTests(unittest.TestCase):
                 )
             )
             (middleware_dir / "__init__.py").write_text(
-                "from extensions.middleware.audit_middleware import "
+                "from demo_agents.middleware.audit_middleware import "
                 "MIDDLEWARE as SAMPLE_MIDDLEWARE\n"
                 "MIDDLEWARE = [*SAMPLE_MIDDLEWARE]\n"
             )
@@ -138,11 +138,11 @@ class DeepAgentsConfigTests(unittest.TestCase):
             saved_modules = {
                 name: sys.modules.pop(name, None)
                 for name in (
-                    "extensions",
-                    "extensions.tools",
-                    "extensions.tools.echo_tool",
-                    "extensions.middleware",
-                    "extensions.middleware.audit_middleware",
+                    "demo_agents",
+                    "demo_agents.tools",
+                    "demo_agents.tools.echo_tool",
+                    "demo_agents.middleware",
+                    "demo_agents.middleware.audit_middleware",
                 )
             }
             sys.path.insert(0, tmpdir)

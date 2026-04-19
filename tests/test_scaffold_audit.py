@@ -27,29 +27,29 @@ class ScaffoldAuditTests(unittest.TestCase):
             self._write(root, "docs/sandbox.md", "sandbox")
             self._write(root, "packages/contracts/deepagents-sse-event-v1.json", "{}")
             self._write(root, "packages/extension-manifest.template.json", "{}")
-            self._write(root, "backend/extensions/tools/__init__.py", "TOOLS = []")
-            self._write(root, "backend/extensions/tools/README.md", "tools")
-            self._write(root, "backend/extensions/tools/echo_tool.py", "TOOLS = []")
-            self._write(root, "backend/extensions/middleware/__init__.py", "MIDDLEWARE = []")
-            self._write(root, "backend/extensions/middleware/README.md", "middleware")
+            self._write(root, "backend/agents/__init__.py", "AGENT = {}")
+            self._write(root, "backend/agents/README.md", "agents")
+            self._write(root, "backend/agents/prompts/system.md", "system")
+            self._write(root, "backend/agents/tools/__init__.py", "TOOLS = []")
+            self._write(root, "backend/agents/tools/echo_tool.py", "TOOLS = []")
+            self._write(root, "backend/agents/middleware/__init__.py", "MIDDLEWARE = []")
             self._write(
                 root,
-                "backend/extensions/middleware/audit_middleware.py",
+                "backend/agents/middleware/audit_middleware.py",
                 "MIDDLEWARE = []",
             )
             self._write(
                 root,
-                "backend/extensions/runtime_hooks/__init__.py",
+                "backend/agents/hooks/__init__.py",
                 "RUN_INPUT_HOOKS = []\nUPLOAD_HOOKS = []",
             )
             self._write(
                 root,
-                "backend/extensions/runtime_hooks/attachment_hooks.py",
+                "backend/agents/hooks/attachment_hooks.py",
                 "RUN_INPUT_HOOKS = []\nUPLOAD_HOOKS = []",
             )
-            self._write(root, "backend/extensions/runtime_hooks/README.md", "runtime hooks")
-            self._write(root, "backend/extensions/skills/README.md", "skills")
-            self._write(root, "backend/extensions/skills/skill-creator/SKILL.md", "skill")
+            self._write(root, "backend/agents/skills/skill-creator/SKILL.md", "skill")
+            self._write(root, "backend/agents/memory/project.md", "memory")
             self._write(root, "backend/app/storage/minio.py", "class MinioStoragePlaceholder: ...")
             for relative_dir in (
                 "backend/app/api",

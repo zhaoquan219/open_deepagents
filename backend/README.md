@@ -1,126 +1,111 @@
-## Backend Scaffold
+# Backend
 
-FastAPI backend foundation for a DeepAgents-powered developer workspace. This
-lane owns auth, persistence, uploads, run orchestration, schema initialization,
-and the extension hooks that make the scaffold useful as a starting point rather
-than a blank demo.
+FastAPI backend for the open_deepagents workspace. This lane owns auth,
+session/message/upload persistence, run orchestration, schema initialization,
+and the bridge into DeepAgents.
 
-### Included in this lane
+## Current Architecture
 
-- FastAPI app shell
-- single-admin bearer auth
-- username-scoped session history when auth is enabled
-- session/message CRUD
-- upload metadata + local file persistence
-- SQLAlchemy schema initialization for SQLite and MySQL-backed deployments
-- project-managed extension templates under `backend/extensions/`
-- runtime hook templates for upload and run-input customization
+The runtime is configured through an agent package plus a model catalog:
 
-### Local development
+- Main agent: `backend/agents:AGENT`
+- Main prompt: `backend/agents/prompts/system.md`
+- Tools: `backend/agents/tools`
+- Middleware: `backend/agents/middleware`
+- Run/upload hooks: `backend/agents/hooks`
+- Skills: `backend/agents/skills`
+- Memory: `backend/agents/memory`
+- Subagents: `backend/agents/subagents`
+- Models: `backend/models.json`
+
+The previous extension-directory and environment-only model configuration have
+been retired. Keep runtime customization in `backend/agents/` and model/provider
+selection in `backend/models.json`.
+
+## Local Development
 
 ```bash
 cd backend
-uv sync
+uv sync --group dev
+cp .env.example .env
+cp models.example.json models.json
 uv run python -m app.db.manage init
 uv run uvicorn app.main:app --reload
 ```
 
-The app also initializes the schema on startup, so the explicit `init` command
-is optional for SQLite. It is useful for MySQL deployments when you want to
-create the database and tables before starting the service.
+The app also initializes the schema on startup. The explicit `init` command is
+useful for MySQL deployments and harmless for SQLite.
 
-### Environment
+## Environment
 
-Copy `backend/.env.example` to `.env` and adjust as needed.
-The runtime system prompt is managed in `backend/prompts/deepagents-system-prompt.md`.
-`backend/.env` is the only env file used by the backend runtime.
-When `ADMIN_AUTH_ENABLED=true`, each session is owned by the authenticated
-username and hidden from other usernames. When `ADMIN_AUTH_ENABLED=false`, the
-backend skips the login gate and keeps session history shared for trusted local
-use.
-`ADMIN_USERNAME` / `ADMIN_PASSWORD` define the default login. Add optional extra
-logins with `ADMIN_USERS`, preferably as a JSON object such as
-`{"alice":"alice-secret","bob":"bob-secret"}`.
-The default template already enables the unified tool, middleware, runtime hook
-entrypoints, the default skills directory, and the sample sandbox settings.
-Tools are aggregated from `extensions.tools:TOOLS`.
-Middleware is aggregated from `extensions.middleware:MIDDLEWARE`.
-See `backend/extensions/tools/README.md` and
-`backend/extensions/middleware/README.md` for extension authoring examples.
-Runtime hooks are loaded from `backend/extensions/runtime_hooks/__init__.py`
-with `DEEPAGENTS_RUN_INPUT_HOOK_SPECS` and `DEEPAGENTS_UPLOAD_HOOK_SPECS`.
-If either spec is blank, that hook lane has no effect.
-Skills are loaded from `DEEPAGENTS_SKILLS` by scanning subdirectories for
-`SKILL.md`, and the backend routes those skill paths to disk even when the main
-runtime backend is `state` or a sandbox rooted elsewhere.
-The default sandbox permissions are enforced in code and only allow read access
-to `backend/data/` and `backend/extensions/skills/`.
-Uploaded files are stored at `UPLOAD_STORAGE_DIR/<session_id>/<uuid>-<filename>`.
-With the default configuration that resolves to `backend/data/uploads/...`, and if
-you point `UPLOAD_STORAGE_DIR` somewhere else the backend automatically adds that
-directory to the runtime read permissions.
-If `CUSTOM_API_KEY`, `CUSTOM_API_URL`, and `CUSTOM_API_MODEL` are all set,
-the backend builds a `ChatOpenAI` client for that endpoint.
-`CUSTOM_API_TEMPERATURE` is optional and omitted entirely when unset.
-`CUSTOM_API_ENABLE_THINKING` is optional and, when set to `true` or `false`,
-is sent as `extra_body.chat_template_kwargs.enable_thinking` for compatible
-providers.
-`CUSTOM_API_DEFAULT_HEADERS` accepts only a JSON object string.
+The backend reads `backend/.env`.
 
-### Database schema
+Core runtime settings:
 
-The configured `DATABASE_URL` defaults to `sqlite+pysqlite:///./data/backend.db`.
-On startup, the backend creates missing tables and applies lightweight additive
-schema migrations, including the `sessions.owner_username` column used for
-login-mode history isolation.
+| Variable | Purpose |
+| --- | --- |
+| `DEEPAGENTS_MAIN_AGENT` | Import spec for the main agent. Default: `agents:AGENT`. |
+| `DEEPAGENTS_MODEL_CONFIG_PATH` | Model catalog path. Default: `./models.json`. |
+| `DEEPAGENTS_DEFAULT_MODEL` | Catalog model ID, for example `openai/gpt-5-4`. |
+| `DEEPAGENTS_AGENT_NAME` | Runtime graph name. |
+| `DEEPAGENTS_BUILTIN_TOOLS` | Optional built-in tool allowlist. |
+| `DEEPAGENTS_DISABLED_BUILTIN_TOOLS` | Optional built-in tool blocklist. |
+| `DEEPAGENTS_SANDBOX_KIND` | `state`, `filesystem`, `local_shell`, or `custom`. |
+| `DEEPAGENTS_SANDBOX_BACKEND_SPEC` | Import spec for custom backend factories. |
 
-For MySQL URLs, the backend first creates the configured database if it does not
-exist, then creates or updates the tables. Developers can run the same bootstrap
-explicitly:
+Auth/session settings:
 
-```bash
-cd backend
-uv run python -m app.db.manage init
-```
+- `ADMIN_AUTH_ENABLED=true` isolates sessions by authenticated username.
+- `ADMIN_AUTH_ENABLED=false` disables the login gate for trusted local use.
+- `ADMIN_USERS` can add multiple users as JSON, for example
+  `{"alice":"alice-secret","bob":"bob-secret"}`.
 
-### Runtime hooks
+Uploads:
 
-Hook entrypoints use the same `path/to/file.py:OBJECT_NAME` import-spec format
-as tools and middleware.
+- `UPLOAD_STORAGE_DIR=./data/uploads` resolves under `backend/data/uploads`.
+- User uploads are attached to user messages.
+- Generated files from the `state` backend are exported as uploads and attached
+  to the final assistant message.
+- `/api/uploads/{upload_id}/content` supports bearer auth and `access_token`
+  query auth so browser download links can work.
 
-Recommended starting config:
+## Agent Hooks
 
-```dotenv
-DEEPAGENTS_RUN_INPUT_HOOK_SPECS=extensions.runtime_hooks:RUN_INPUT_HOOKS
-DEEPAGENTS_UPLOAD_HOOK_SPECS=extensions.runtime_hooks:UPLOAD_HOOKS
-```
+Run-input hooks receive:
 
-Then edit `backend/extensions/runtime_hooks/attachment_hooks.py`.
+- `session_id`
+- `run_id`
+- `role`
+- `content`
+- `attachments`
+- `is_current_run`
 
-- Run-input hooks receive a context with `session_id`, `run_id`, `role`,
-  `content`, `attachments`, and `is_current_run`. Return a string or
-  `{"content": "..."}` to replace the content sent to DeepAgents.
-- Upload hooks receive file metadata and the raw payload after storage. Return a
-  mapping to merge into `UploadRecord.extra`.
+Return a string or `{"content": "..."}` to replace message content, or `None`
+to leave it unchanged.
 
-### Middleware context
+Upload hooks receive metadata only and return a mapping to merge into
+`UploadRecord.extra`.
 
-DeepAgents runs receive a typed runtime context with `session_id`, `run_id`, and
-`current_attachments`. Function-style middleware can read it from
-`runtime.context` in decorators such as `@before_agent`, or from
-`request.runtime.context` in wrappers such as `@wrap_tool_call`.
+Default examples live in `backend/agents/hooks/attachment_hooks.py`.
 
-### Built-in tool filtering
+## Built-in Tool Filtering
 
-DeepAgents injects built-in tools such as `ls`, `read_file`, `write_file`,
-`edit_file`, `grep`, `glob`, `execute`, `task`, and `write_todos`. Operators can
-filter those without removing custom tools:
+DeepAgents built-ins can be filtered without editing source:
 
 ```dotenv
 DEEPAGENTS_BUILTIN_TOOLS=write_todos,ls,read_file,glob,grep,task
 DEEPAGENTS_DISABLED_BUILTIN_TOOLS=execute,write_file,edit_file
 ```
 
-If the allowlist is set, built-in tools outside it are hidden first. The
-blocklist then hides matching built-ins from the remaining tool set. Custom tools
-loaded from `DEEPAGENTS_TOOL_SPECS` pass through unchanged.
+The allowlist is applied first. The blocklist is then applied to the remaining
+built-ins. Custom tools from `backend/agents/tools` pass through unchanged.
+
+## Verification
+
+From the repository root:
+
+```bash
+PYTHONPATH=.:backend backend/.venv/bin/pytest -q
+backend/.venv/bin/ruff check backend tests
+backend/.venv/bin/mypy backend/app backend/deepagents_integration
+```

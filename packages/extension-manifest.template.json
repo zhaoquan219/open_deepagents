@@ -1,13 +1,17 @@
 {
   "version": "1.0",
   "tools": [
-    "backend/extensions/tools/__init__.py:TOOLS"
+    "backend/agents/tools/__init__.py:TOOLS"
   ],
   "middleware": [
-    "backend/extensions/middleware/__init__.py:MIDDLEWARE"
+    "backend/agents/middleware/__init__.py:MIDDLEWARE"
+  ],
+  "hooks": [
+    "backend/agents/hooks/__init__.py:RUN_INPUT_HOOKS",
+    "backend/agents/hooks/__init__.py:UPLOAD_HOOKS"
   ],
   "skills": [
-    "backend/extensions/skills"
+    "backend/agents/skills"
   ],
   "sandbox": {
     "kind": "state",
