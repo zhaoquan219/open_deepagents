@@ -1,6 +1,9 @@
 <script setup>
+import { CopyDocument, Download } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
+import { copyText } from '../lib/clipboard.js'
 import { uiCopy } from '../lib/copy.js'
 import { isNearBottom, scrollMetrics, shouldForceFollowLatest } from '../lib/scroll.js'
 import { formatDateTime } from '../lib/time.js'
@@ -92,6 +95,31 @@ function displayContent(message) {
   return uiCopy.messageThread.empty
 }
 
+function attachmentDownloadUrl(attachment) {
+  if (attachment?.downloadUrl) {
+    return attachment.downloadUrl
+  }
+  const id = String(attachment?.id || '')
+  if (!id || id.startsWith('attachment-')) {
+    return ''
+  }
+  const token = globalThis.localStorage?.getItem?.('deepagents.admin.token') || ''
+  const url = new URL(`/api/uploads/${encodeURIComponent(id)}/content`, globalThis.location?.origin || 'http://localhost')
+  if (token) {
+    url.searchParams.set('access_token', token)
+  }
+  return url.toString()
+}
+
+async function copyMessage(message) {
+  try {
+    await copyText(displayContent(message))
+    ElMessage.success(uiCopy.messageThread.copy.success)
+  } catch {
+    ElMessage.error(uiCopy.messageThread.copy.failure)
+  }
+}
+
 function threadWrap() {
   return threadRef.value?.wrapRef || null
 }
@@ -158,7 +186,12 @@ watch(
   () => props.messages,
   async (messages, previousMessages) => {
     const suppressHistoryLoad = pendingHistoryLoadSessionId.value === props.sessionId
-    if (shouldForceFollowLatest(previousMessages, messages, { suppressUserAppend: suppressHistoryLoad })) {
+    if (
+      shouldForceFollowLatest(previousMessages, messages, {
+        suppressUserAppend: suppressHistoryLoad,
+        forceLiveRun: isLiveRunSession.value,
+      })
+    ) {
       autoFollowLatest.value = true
     }
     if (suppressHistoryLoad) {
@@ -227,11 +260,32 @@ onMounted(async () => {
             <strong>{{ roleLabel(message.role) }}</strong>
             <span class="message-timestamp">{{ formatDateTime(message.createdAt) }}</span>
           </div>
+          <el-button
+            class="message-copy-button"
+            text
+            size="small"
+            :icon="CopyDocument"
+            :aria-label="uiCopy.messageThread.copy.message"
+            @click="copyMessage(message)"
+          />
         </div>
         <MarkdownContent :content="displayContent(message)" @content-rendered="handleRenderedContent" />
         <p v-if="message.streaming" class="streaming-indicator">{{ uiCopy.messageThread.streaming }}</p>
         <ul v-if="message.attachments && message.attachments.length" class="attachment-list">
-          <li v-for="attachment in message.attachments" :key="attachment.id">{{ attachment.name }}</li>
+          <li v-for="attachment in message.attachments" :key="attachment.id">
+            <span>{{ attachment.name }}</span>
+            <el-button
+              v-if="attachmentDownloadUrl(attachment)"
+              class="attachment-download-button"
+              tag="a"
+              text
+              size="small"
+              :href="attachmentDownloadUrl(attachment)"
+              :icon="Download"
+              :aria-label="uiCopy.messageThread.download"
+              :title="uiCopy.messageThread.download"
+            />
+          </li>
         </ul>
       </div>
     </article>

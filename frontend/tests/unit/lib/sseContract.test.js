@@ -99,6 +99,26 @@ describe('normalizeStreamEnvelope', () => {
     })
   })
 
+  it('maps task tool labels into subagent events', () => {
+    const envelope = normalizeStreamEnvelope({
+      event_id: 'evt-4b',
+      type: 'step',
+      run_id: 'run-10b',
+      session_id: 'session-5b',
+      label: 'subagent.started',
+      detail: 'task',
+      data: {
+        name: 'task',
+      },
+    })
+
+    expect(envelope).toMatchObject({
+      eventId: 'evt-4b',
+      type: 'subagent',
+      detail: 'task',
+    })
+  })
+
   it('maps step payloads with message.completed into finalized assistant messages', () => {
     const envelope = normalizeStreamEnvelope({
       event_id: 'evt-5',

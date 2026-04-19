@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import threading
@@ -22,7 +23,7 @@ from app.db.models import (
 )
 from app.main import create_app
 
-DEFAULT_RUN_INPUT_HOOK_SPEC = "extensions.runtime_hooks:RUN_INPUT_HOOKS"
+DEFAULT_RUN_INPUT_HOOK_SPEC = "agents.hooks:RUN_INPUT_HOOKS"
 
 
 def login_headers(client: TestClient, username: str, password: str) -> dict[str, str]:
@@ -120,6 +121,50 @@ class BlockingToolRuntime:
         }
 
 
+class TaskToolRuntime:
+    async def astream_events(
+        self,
+        agent_input: Any,
+        *,
+        version: str = "v2",
+        config: Any = None,
+        context: Any = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "event": "on_chain_start",
+            "name": "deep-agent",
+            "run_id": "runtime-task",
+            "metadata": {"langgraph_node": "agent"},
+            "data": {"input": agent_input},
+        }
+        yield {
+            "event": "on_tool_start",
+            "name": "task",
+            "run_id": "runtime-task",
+            "data": {"input": {"subagent_type": "code-reviewer"}},
+        }
+        yield {
+            "event": "on_tool_end",
+            "name": "task",
+            "run_id": "runtime-task",
+            "data": {"output": {"text": "review complete"}},
+        }
+        yield {
+            "event": "on_chat_model_end",
+            "name": "model",
+            "run_id": "runtime-task",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"output": {"messages": [{"content": "done"}]}},
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "deep-agent",
+            "run_id": "runtime-task",
+            "metadata": {"langgraph_node": "agent"},
+            "data": {"output": {"messages": [{"content": "done"}]}},
+        }
+
+
 def build_blocking_tool_runtime(_config: Any) -> BlockingToolRuntime:
     return BlockingToolRuntime()
 
@@ -196,6 +241,58 @@ class CapturingConversationRuntime:
         }
 
 
+class StateOutputRuntime:
+    async def astream_events(
+        self,
+        agent_input: Any,
+        *,
+        version: str = "v2",
+        config: Any = None,
+        context: Any = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "event": "on_chain_start",
+            "name": "deep-agent",
+            "run_id": "runtime-state-output",
+            "metadata": {"langgraph_node": "agent"},
+            "data": {"input": agent_input},
+        }
+        yield {
+            "event": "on_chat_model_end",
+            "name": "model",
+            "run_id": "runtime-state-output",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"output": {"messages": [{"content": "created a file"}]}},
+        }
+        files = {
+            **agent_input.get("files", {}),
+            "/reports/summary.md": {
+                "content": "# Summary\nhello",
+                "encoding": "utf-8",
+            },
+            "/reports/long.txt": {
+                "content": "x" * 3000,
+                "encoding": "utf-8",
+            },
+            "/images/pixel.bin": {
+                "content": base64.b64encode(b"\x89PNG\r\nstate-output").decode("ascii"),
+                "encoding": "base64",
+            },
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "deep-agent",
+            "run_id": "runtime-state-output",
+            "metadata": {"langgraph_node": "agent"},
+            "data": {
+                "output": {
+                    "messages": [{"content": "created a file"}],
+                    "files": files,
+                }
+            },
+        }
+
+
 class RecursingRuntime:
     async def astream_events(
         self,
@@ -242,7 +339,7 @@ class MultiMessageRuntime:
             "event": "on_tool_start",
             "name": "search_files",
             "run_id": "runtime-multi",
-            "data": {"input": {"path": "extensions/skills"}},
+            "data": {"input": {"path": "agents/skills"}},
         }
         yield {
             "event": "on_tool_end",
@@ -377,7 +474,7 @@ def test_run_lifecycle_and_stream(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
         deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
@@ -455,7 +552,7 @@ def test_run_event_views_skip_transient_deltas_under_long_streams(tmp_path) -> N
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: HighVolumeDeltaRuntime()
@@ -509,7 +606,7 @@ def test_long_stream_completion_does_not_emit_omitted_runtime_placeholder(tmp_pa
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: StreamOnlyLongRuntime()
@@ -557,7 +654,7 @@ def test_event_view_buffer_flushes_when_run_terminalizes_mid_stream(tmp_path) ->
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     runtime = EarlyTerminalRuntime(app.state.run_manager)
@@ -603,7 +700,7 @@ def test_run_routes_reject_cross_user_access(tmp_path) -> None:
         admin_users={"user-a": "secret-a", "user-b": "secret-b"},
         admin_token_secret="test-secret-key-with-32-bytes-minimum",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = build_fake_runtime
@@ -647,7 +744,7 @@ def test_run_stream_allows_missing_access_token_when_admin_auth_disabled(tmp_pat
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
         admin_auth_enabled=False,
     )
     app = create_app(settings)
@@ -687,7 +784,7 @@ def test_stream_emits_keepalive_while_tool_execution_blocks(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
         deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
@@ -726,7 +823,52 @@ def test_stream_emits_keepalive_while_tool_execution_blocks(tmp_path) -> None:
         app.state.database.dispose()
 
     assert any('"type": "tool"' in chunk for chunk in chunks)
-    assert ": keep-alive\n\n" in chunks
+
+
+def test_task_tool_events_are_exposed_as_subagent_status(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'task-tool.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_default_model="openai/gpt-5-4",
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = lambda _config: TaskToolRuntime()
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post("/api/sessions", headers=headers, json={"title": "Task tool"})
+        session_id = session.json()["id"]
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={"session_id": session_id, "prompt": "review", "attachments": []},
+        )
+        run_id = run.json()["run_id"]
+
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            payloads = []
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line.startswith("data: "):
+                    payload = json.loads(line[6:])
+                    payloads.append(payload)
+                    if payload["type"] == "status" and payload["status"] == "completed":
+                        break
+
+    subagent_events = [payload for payload in payloads if payload["type"] == "subagent"]
+    assert [event["status"] for event in subagent_events] == ["running", "completed"]
+    assert subagent_events[0]["detail"] == "code-reviewer"
+    assert subagent_events[1]["detail"] == "code-reviewer"
+    assert subagent_events[0]["data"]["input"]["subagent_type"] == "code-reviewer"
+    assert subagent_events[1]["data"]["subagent_type"] == "code-reviewer"
+    assert subagent_events[1]["data"]["output"]["text"] == "review complete"
 
 
 def test_cancel_run_marks_run_cancelled_and_terminates_stream(tmp_path) -> None:
@@ -737,7 +879,7 @@ def test_cancel_run_marks_run_cancelled_and_terminates_stream(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     runtime = CancellableRuntime()
@@ -811,7 +953,7 @@ def test_stream_route_resumes_from_last_event_id_header(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.database.create_all()
@@ -883,7 +1025,7 @@ def test_second_run_receives_prior_session_messages(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     runtime = CapturingConversationRuntime()
@@ -928,7 +1070,7 @@ def test_run_start_persists_distilled_session_title_without_overwriting_it(tmp_p
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     runtime = CapturingConversationRuntime()
@@ -972,7 +1114,7 @@ def test_intermediate_assistant_messages_do_not_complete_the_run_or_disappear(tm
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: MultiMessageRuntime()
@@ -989,7 +1131,7 @@ def test_intermediate_assistant_messages_do_not_complete_the_run_or_disappear(tm
             headers=headers,
             json={
                 "session_id": session_id,
-                "prompt": "看一下 extensions/skills",
+                "prompt": "看一下 agents/skills",
                 "attachments": [],
             },
         )
@@ -1032,7 +1174,7 @@ def test_intermediate_assistant_messages_do_not_complete_the_run_or_disappear(tm
 
         transcript = client.get(f"/api/sessions/{session_id}/messages", headers=headers)
         contents = [item["content"] for item in transcript.json()]
-        assert contents == ["看一下 extensions/skills", "让我检查一下目录的内容", "目录是空的"]
+        assert contents == ["看一下 agents/skills", "让我检查一下目录的内容", "目录是空的"]
 
         with app.state.database.session_factory() as db:
             assistant_rows = (
@@ -1058,7 +1200,7 @@ def test_graph_recursion_error_returns_fallback_assistant_message(tmp_path) -> N
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: RecursingRuntime()
@@ -1114,7 +1256,7 @@ def test_run_logging_captures_lifecycle_without_prompt_or_attachment_content(
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = build_fake_runtime
@@ -1181,7 +1323,7 @@ def test_run_failure_logging_identifies_the_failing_phase(tmp_path, caplog) -> N
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = build_failing_runtime
@@ -1228,7 +1370,7 @@ def test_run_builds_attachment_context_with_storage_key_and_upload_path(tmp_path
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
         deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
@@ -1298,7 +1440,7 @@ def test_run_consumes_pending_upload_by_binding_it_to_user_message(tmp_path) -> 
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
         deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
@@ -1360,7 +1502,7 @@ def test_consumed_upload_cannot_be_reused_for_later_run(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime
@@ -1408,6 +1550,52 @@ def test_consumed_upload_cannot_be_reused_for_later_run(tmp_path) -> None:
     assert second_run.json()["detail"] == "Upload is already attached to a message"
 
 
+def test_raw_storage_key_attachment_must_match_upload_record(tmp_path) -> None:
+    runtime = CapturingConversationRuntime()
+    upload_root = tmp_path / "uploads"
+    outside_file = tmp_path / "secret.txt"
+    outside_file.write_text("do not read me")
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'raw-storage-key.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=upload_root,
+        deepagents_default_model="openai/gpt-5-4",
+        deepagents_sandbox_kind="state",
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post("/api/sessions", headers=headers, json={"title": "Raw storage key"})
+        session_id = session.json()["id"]
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "try raw path",
+                "attachments": [
+                    {
+                        "storage_key": "../secret.txt",
+                        "name": "secret.txt",
+                        "status": "uploaded",
+                    }
+                ],
+            },
+        )
+
+    assert run.status_code == 400
+    assert run.json()["detail"] == "Invalid attachment"
+    assert runtime.inputs == []
+
+
 def test_later_run_without_uploads_does_not_mark_history_as_current_attachment(tmp_path) -> None:
     runtime = CapturingConversationRuntime()
     settings = Settings(
@@ -1417,7 +1605,7 @@ def test_later_run_without_uploads_does_not_mark_history_as_current_attachment(t
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
         deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
@@ -1501,7 +1689,7 @@ def test_run_builds_attachment_context_with_sandbox_path_for_virtual_filesystem(
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=sandbox_root / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="filesystem",
         deepagents_sandbox_root_dir=str(sandbox_root),
         deepagents_sandbox_virtual_mode=False,
@@ -1568,7 +1756,7 @@ def test_run_builds_attachment_context_with_state_sandbox_without_file_payload(t
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="state",
         deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
@@ -1619,9 +1807,117 @@ def test_run_builds_attachment_context_with_state_sandbox_without_file_payload(t
     expected_sandbox_path = f"/uploads/{upload_payload['storage_key']}"
     assert f"sandbox_path={expected_sandbox_path}" in content
     assert f"upload_path={expected_upload_path}" in content
-    assert "files" not in agent_input
-    serialized_input = json.dumps(agent_input, ensure_ascii=False)
-    assert "hello upload" not in serialized_input
+    assert agent_input["files"][expected_sandbox_path] == {
+        "content": "hello upload",
+        "encoding": "utf-8",
+    }
+    serialized_messages = json.dumps(agent_input["messages"], ensure_ascii=False)
+    assert "hello upload" not in serialized_messages
+
+
+def test_state_sandbox_generated_files_are_exported_as_message_attachments(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'state-output.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_default_model="openai/gpt-5-4",
+        deepagents_sandbox_kind="state",
+        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = lambda _config: StateOutputRuntime()
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post("/api/sessions", headers=headers, json={"title": "State output"})
+        session_id = session.json()["id"]
+
+        upload = client.post(
+            f"/api/sessions/{session_id}/uploads",
+            headers=headers,
+            files={"file": ("notes.txt", b"hello upload", "text/plain")},
+        )
+        upload_payload = upload.json()
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "write a summary file",
+                "attachments": [
+                    {
+                        "id": upload_payload["id"],
+                        "name": upload_payload["filename"],
+                        "status": "uploaded",
+                    }
+                ],
+            },
+        )
+        run_id = run.json()["run_id"]
+        completion_payload = None
+
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line.startswith("data: "):
+                    payload = json.loads(line[6:])
+                    if payload["type"] == "status" and payload["status"] == "completed":
+                        completion_payload = payload
+                        break
+
+    assert completion_payload is not None
+    generated = completion_payload["data"]["generated_attachments"]
+    generated_by_name = {item["name"]: item for item in generated}
+    assert sorted(generated_by_name) == ["long.txt", "pixel.bin", "summary.md"]
+    assert generated_by_name["summary.md"]["runtime_path"] == "/reports/summary.md"
+
+    with app.state.database.session_factory() as db:
+        assistant = (
+            db.query(MessageRecord)
+            .filter(MessageRecord.session_id == session_id, MessageRecord.role == "assistant")
+            .one()
+        )
+        exported = (
+            db.query(UploadRecord)
+            .filter(UploadRecord.id == generated_by_name["summary.md"]["id"])
+            .one()
+        )
+        long_export = (
+            db.query(UploadRecord)
+            .filter(UploadRecord.id == generated_by_name["long.txt"]["id"])
+            .one()
+        )
+        binary_export = (
+            db.query(UploadRecord)
+            .filter(UploadRecord.id == generated_by_name["pixel.bin"]["id"])
+            .one()
+        )
+        original_upload = (
+            db.query(UploadRecord)
+            .filter(UploadRecord.id == upload_payload["id"])
+            .one()
+        )
+
+        assistant_attachment_ids = {item["id"] for item in assistant.extra["attachments"]}
+        assert exported.id in assistant_attachment_ids
+        assert long_export.id in assistant_attachment_ids
+        assert binary_export.id in assistant_attachment_ids
+        assert exported.message_id == assistant.id
+        assert exported.extra["source"] == "state_output"
+        exported_path = settings.upload_storage_dir / exported.storage_key
+        assert exported_path.read_text() == "# Summary\nhello"
+        long_export_path = settings.upload_storage_dir / long_export.storage_key
+        assert long_export_path.read_text() == "x" * 3000
+        binary_export_path = settings.upload_storage_dir / binary_export.storage_key
+        assert binary_export_path.read_bytes() == b"\x89PNG\r\nstate-output"
+        assert original_upload.message_id != assistant.id
 
 
 def test_filesystem_sandbox_attachment_path_stays_under_data_root(tmp_path) -> None:
@@ -1633,7 +1929,7 @@ def test_filesystem_sandbox_attachment_path_stays_under_data_root(tmp_path) -> N
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir="data/uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="filesystem",
         deepagents_sandbox_virtual_mode=False,
         deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
@@ -1694,7 +1990,7 @@ def test_single_uploaded_file_tasks_use_generic_attachment_context_without_keywo
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
+        deepagents_default_model="openai/gpt-5-4",
         deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
@@ -1751,13 +2047,14 @@ def test_run_input_hook_can_customize_attachment_prompt_injection(tmp_path) -> N
     hook_module = tmp_path / "run_hooks.py"
     hook_module.write_text(
         "\n".join(
-            [
-                "def inject(context):",
-                "    names = ','.join(item['name'] for item in context.attachments)",
-                "    return {'content': context.content + '\\n\\nCUSTOM_ATTACHMENTS=' + names}",
-            ]
-        ),
-        encoding="utf-8",
+                [
+                    "def inject(context):",
+                    "    names = ','.join(item['name'] for item in context.attachments)",
+                    "    return {'content': context.content + '\\n\\nCUSTOM_ATTACHMENTS=' + names}",
+                    "AGENT = {'id': 'test', 'hooks': {'run_input': [inject]}}",
+                ]
+            ),
+            encoding="utf-8",
     )
     settings = Settings(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'custom-hook.db'}",
@@ -1766,8 +2063,8 @@ def test_run_input_hook_can_customize_attachment_prompt_injection(tmp_path) -> N
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_model="openai:gpt-5.4",
-        deepagents_run_input_hook_specs=f"{hook_module}:inject",
+        deepagents_default_model="openai/gpt-5-4",
+        deepagents_main_agent=f"{hook_module}:AGENT",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime

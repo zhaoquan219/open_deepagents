@@ -133,6 +133,10 @@ export const messages = {
         failed: '本轮处理失败，先查看运行面板再决定是否重试。',
         idle: '对话区已准备就绪，把目标和上下文一次说清就可以开始。',
       },
+      runtimeSelectors: {
+        model: '选择模型',
+        modelLabel: '模型',
+      },
       loadingDescription: '正在加载会话内容…',
       emptyKicker: '准备开始新的任务',
       emptyTitle: '把目标、背景和限制条件一次交代清楚',
@@ -225,6 +229,7 @@ export const messages = {
         messageFinalUpdated: '回复已更新',
         tool: '工具执行',
         skill: '技能执行',
+        subagent: '子代理执行',
         sandbox: '沙箱执行',
         connection: '连接状态变更',
         status: '状态更新',
@@ -256,6 +261,8 @@ export const messages = {
       detail: {
         deltaAggregate: (count) => `已连续接收 ${count} 段回复内容。`,
         deltaStreaming: '正在持续生成回复。',
+        subagentInput: '输入',
+        subagentOutput: '输出',
       },
     },
     messageThread: {
@@ -266,6 +273,19 @@ export const messages = {
       },
       streaming: '正在生成回复…',
       empty: '（空消息）',
+      copy: {
+        message: '复制消息',
+        success: '已复制',
+        failure: '复制失败',
+      },
+      download: '下载附件',
+    },
+    mermaid: {
+      copySource: '复制 Mermaid 源码',
+      copyImage: '复制 Mermaid PNG 图片',
+      copySourceSuccess: 'Mermaid 源码已复制',
+      copyImageSuccess: 'Mermaid PNG 图片已复制',
+      copyFailure: '复制 Mermaid 内容失败',
     },
     store: {
       session: {
@@ -427,6 +447,10 @@ export const messages = {
         failed: 'This run failed. Check the run panel before retrying.',
         idle: 'The chat area is ready. State the goal and context clearly to begin.',
       },
+      runtimeSelectors: {
+        model: 'Select model',
+        modelLabel: 'Model',
+      },
       loadingDescription: 'Loading session content…',
       emptyKicker: 'Ready for a new task',
       emptyTitle: 'Describe the goal, background, and constraints in one pass',
@@ -519,6 +543,7 @@ export const messages = {
         messageFinalUpdated: 'Reply updated',
         tool: 'Tool call',
         skill: 'Skill call',
+        subagent: 'Subagent call',
         sandbox: 'Sandbox step',
         connection: 'Connection change',
         status: 'Status update',
@@ -550,6 +575,8 @@ export const messages = {
       detail: {
         deltaAggregate: (count) => `${count} reply chunks have been received.`,
         deltaStreaming: 'The reply is still streaming.',
+        subagentInput: 'Input',
+        subagentOutput: 'Output',
       },
     },
     messageThread: {
@@ -560,6 +587,19 @@ export const messages = {
       },
       streaming: 'Generating reply…',
       empty: '(Empty message)',
+      copy: {
+        message: 'Copy message',
+        success: 'Copied',
+        failure: 'Copy failed',
+      },
+      download: 'Download attachment',
+    },
+    mermaid: {
+      copySource: 'Copy Mermaid source',
+      copyImage: 'Copy Mermaid PNG image',
+      copySourceSuccess: 'Mermaid source copied',
+      copyImageSuccess: 'Mermaid PNG image copied',
+      copyFailure: 'Failed to copy Mermaid content',
     },
     store: {
       session: {

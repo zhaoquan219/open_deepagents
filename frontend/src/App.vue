@@ -40,6 +40,9 @@ const isWideLayout = ref(true)
 const stoppingRunId = ref('')
 const timelinePanelOpen = ref(true)
 const messageSendScrollKey = ref(0)
+const runtimeOptions = ref({ models: [], profiles: [], subagents: [], defaultModelId: '', defaultProfileId: '' })
+const runtimeOptionsError = ref('')
+const selectedModelId = ref('')
 let viewportMediaQuery = null
 
 const sessions = computed(() => sessionStore.state.sessions)
@@ -55,7 +58,7 @@ const submitting = computed(() => sessionStore.state.submitting)
 const deletingSessionId = computed(() => sessionStore.state.deletingSessionId)
 const sessionError = computed(() => sessionStore.state.error)
 const combinedError = computed(
-  () => runStore.state.error || sessionStore.state.error || sessionStore.state.uploadError,
+  () => runtimeOptionsError.value || runStore.state.error || sessionStore.state.error || sessionStore.state.uploadError,
 )
 const activeRun = computed(() => runStore.state.activeRun)
 const connectionState = computed(
@@ -106,6 +109,21 @@ let headerResizeObserver = null
 
 function handleLocaleChange(locale) {
   setLocale(locale)
+}
+
+async function loadRuntimeOptions() {
+  try {
+    const options = await apiClient.getRuntimeOptions()
+    runtimeOptionsError.value = ''
+    runtimeOptions.value = options
+    selectedModelId.value = options.models.some((model) => model.id === selectedModelId.value)
+      ? selectedModelId.value
+      : options.defaultModelId
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Runtime options failed'
+    runtimeOptionsError.value = message
+    logRuntime('runtime.options.error', message, {}, 'warn')
+  }
 }
 
 function collectPanelHeaders() {
@@ -243,6 +261,7 @@ async function handleLogin() {
     })
     await apiClient.getAdminProfile()
     isAuthenticated.value = true
+    await loadRuntimeOptions()
     await sessionStore.loadSessions()
     if (sessionStore.state.currentSessionId) {
       await sessionStore.selectSession(sessionStore.state.currentSessionId)
@@ -313,6 +332,14 @@ function connectRunStream(runId, sessionId) {
       }
 
       if (isTerminalEnvelope(envelope)) {
+        if (
+          envelope.type === 'status' &&
+          envelope.status === 'completed' &&
+          Array.isArray(envelope.data?.generated_attachments) &&
+          envelope.data.generated_attachments.length > 0
+        ) {
+          syncSessionTranscript(sessionId)
+        }
         if (
           envelope.type === 'status' &&
           ['failed', 'cancelled'].includes(envelope.status)
@@ -456,6 +483,7 @@ async function handleSubmit({ prompt }) {
       sessionId,
       prompt: text,
       attachments: sessionStore.getPendingUploads(sessionId),
+      modelId: selectedModelId.value,
     })
 
     sessionStore.clearPendingUploads(sessionId)
@@ -549,6 +577,7 @@ onMounted(async () => {
   try {
     await apiClient.getAdminProfile()
     isAuthenticated.value = true
+    await loadRuntimeOptions()
     await sessionStore.loadSessions()
     if (sessionStore.state.currentSessionId) {
       await sessionStore.selectSession(sessionStore.state.currentSessionId)
@@ -659,10 +688,13 @@ watch(
             :active-run="activeRun"
             :run-status="runStatus"
             :run-status-label="runStatusLabel"
+            :runtime-options="runtimeOptions"
+            :selected-model-id="selectedModelId"
             :stopping="stoppingRun"
             :error="combinedError"
             @submit="handleSubmit"
             @stop-run="handleStopRun"
+            @update:selected-model-id="selectedModelId = $event"
             @upload="handleUpload"
             @delete-upload="handleDeletePendingUpload"
           />

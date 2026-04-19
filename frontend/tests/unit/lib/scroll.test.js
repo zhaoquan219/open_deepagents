@@ -78,4 +78,14 @@ describe('scroll helpers', () => {
       ),
     ).toBe(false)
   })
+
+  it('forces follow mode for assistant updates during a live run', () => {
+    expect(
+      shouldForceFollowLatest(
+        [{ id: 'stream:run-1', role: 'assistant', content: 'hello', streaming: true }],
+        [{ id: 'stream:run-1', role: 'assistant', content: 'hello world', streaming: true }],
+        { forceLiveRun: true },
+      ),
+    ).toBe(true)
+  })
 })

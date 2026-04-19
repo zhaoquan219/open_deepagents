@@ -26,6 +26,7 @@ dev = [
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+extend-exclude = ["agents/skills/skill-creator"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]

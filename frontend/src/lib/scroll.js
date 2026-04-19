@@ -27,10 +27,15 @@ export function shouldForceFollowLatest(previousMessages, nextMessages, options 
 
   const previous = Array.isArray(previousMessages) ? previousMessages : []
   const next = Array.isArray(nextMessages) ? nextMessages : []
+  const latest = next.at(-1)
+
+  if (options.forceLiveRun && latest?.role === 'assistant') {
+    return true
+  }
+
   if (next.length <= previous.length) {
     return false
   }
 
-  const latest = next.at(-1)
-  return latest?.role === 'user'
+  return latest?.role === 'user' || (options.forceLiveRun && latest?.role === 'assistant')
 }

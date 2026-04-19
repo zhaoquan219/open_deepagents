@@ -5,6 +5,9 @@ import importlib
 import importlib.util
 import inspect
 import logging
+import pkgutil
+import shutil
+import tempfile
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from types import ModuleType
@@ -65,6 +68,63 @@ def load_tool_extensions(tool_specs: list[str] | tuple[str, ...]) -> list[Any]:
 
 def load_middleware_extensions(middleware_specs: list[str] | tuple[str, ...]) -> list[Any]:
     return _flatten_loaded_specs(middleware_specs)
+
+
+def flatten_components(value: Any) -> list[Any]:
+    """Flatten registry exports while preserving non-list objects."""
+
+    if value is None:
+        return []
+    if isinstance(value, list | tuple):
+        flattened: list[Any] = []
+        for item in value:
+            flattened.extend(flatten_components(item))
+        return flattened
+    return [value]
+
+
+def discover_components(
+    package: str,
+    *,
+    names: tuple[str, ...],
+    recursive: bool = False,
+    exclude: tuple[str, ...] = (),
+) -> list[Any]:
+    """Discover component exports from child modules of a package."""
+
+    module = importlib.import_module(package)
+    package_paths = getattr(module, "__path__", None)
+    if package_paths is None:
+        return _exports_from_module(module, names)
+
+    excluded = set(exclude)
+    discovered: list[Any] = []
+    for module_info in pkgutil.iter_modules(package_paths, f"{package}."):
+        short_name = module_info.name.rsplit(".", maxsplit=1)[-1]
+        if short_name.startswith("_") or short_name in excluded:
+            continue
+        child = importlib.import_module(module_info.name)
+        discovered.extend(_exports_from_module(child, names))
+        if recursive and module_info.ispkg:
+            discovered.extend(
+                discover_components(
+                    module_info.name,
+                    names=names,
+                    recursive=True,
+                    exclude=exclude,
+                )
+            )
+    return discovered
+
+
+def discover_skills(path_or_file: str | Path) -> SelectablePathRegistry:
+    root = _directory_for_registry(path_or_file)
+    return SelectablePathRegistry.from_directory(root, source_prefix="/skills")
+
+
+def discover_memory(path_or_file: str | Path) -> SelectablePathRegistry:
+    root = _directory_for_registry(path_or_file)
+    return SelectablePathRegistry.from_markdown_directory(root)
 
 
 def build_builtin_tool_selection_middleware(
@@ -131,7 +191,7 @@ def route_skill_sources(
 
     for skill_source in skill_sources:
         source_path = _normalize_backend_path(skill_source.source_path, trailing_slash=True)
-        disk_path = Path(skill_source.disk_path).expanduser().resolve()
+        disk_path = _materialize_selected_skill_source(skill_source)
 
         if not disk_path.exists():
             logger.warning(
@@ -194,11 +254,99 @@ def _flatten_loaded_specs(specs: list[str] | tuple[str, ...]) -> list[Any]:
     loaded: list[Any] = []
     for spec in specs:
         value = load_object_from_spec(spec)
-        if isinstance(value, list | tuple):
-            loaded.extend(value)
-        else:
-            loaded.append(value)
+        loaded.extend(flatten_components(value))
     return loaded
+
+
+def _exports_from_module(module: ModuleType, names: tuple[str, ...]) -> list[Any]:
+    exported: list[Any] = []
+    for name in names:
+        if hasattr(module, name):
+            exported.extend(flatten_components(getattr(module, name)))
+    return exported
+
+
+def _directory_for_registry(path_or_file: str | Path) -> Path:
+    path = Path(path_or_file)
+    if path.is_file():
+        return path.parent
+    return path
+
+
+class SelectablePathRegistry:
+    def __init__(
+        self,
+        *,
+        root: Path,
+        ids: tuple[str, ...],
+        source_prefix: str,
+        markdown: bool = False,
+    ) -> None:
+        self.root = root.expanduser().resolve()
+        self.ids = ids
+        self.source_prefix = source_prefix.rstrip("/")
+        self.markdown = markdown
+
+    @classmethod
+    def from_directory(cls, root: Path, *, source_prefix: str) -> SelectablePathRegistry:
+        resolved = root.expanduser().resolve()
+        ids = tuple(
+            sorted(
+                candidate.name
+                for candidate in resolved.iterdir()
+                if candidate.is_dir() and (candidate / "SKILL.md").is_file()
+            )
+        )
+        return cls(root=resolved, ids=ids, source_prefix=source_prefix)
+
+    @classmethod
+    def from_markdown_directory(cls, root: Path) -> SelectablePathRegistry:
+        resolved = root.expanduser().resolve()
+        ids = tuple(
+            sorted(candidate.stem for candidate in resolved.glob("*.md") if candidate.is_file())
+        )
+        return cls(root=resolved, ids=ids, source_prefix="/memory", markdown=True)
+
+    def select(
+        self,
+        ids: list[str] | tuple[str, ...],
+    ) -> tuple[SkillSourceConfig, ...] | tuple[str, ...]:
+        selected = tuple(ids)
+        missing = sorted(set(selected) - set(self.ids))
+        if missing:
+            raise ValueError(f"Unknown registry item(s): {', '.join(missing)}")
+        if self.markdown:
+            return tuple(str(self.root / f"{item}.md") for item in selected)
+        return (
+            SkillSourceConfig(
+                source_path=f"{self.source_prefix}/",
+                disk_path=str(self.root),
+                include=selected,
+            ),
+        )
+
+    def all(self) -> tuple[SkillSourceConfig, ...] | tuple[str, ...]:
+        return self.select(self.ids)
+
+
+def _materialize_selected_skill_source(skill_source: SkillSourceConfig) -> Path:
+    disk_path = Path(skill_source.disk_path).expanduser().resolve()
+    if not skill_source.include:
+        return disk_path
+
+    digest = hashlib.sha256(
+        "|".join([str(disk_path), *skill_source.include]).encode("utf-8")
+    ).hexdigest()[:16]
+    target = Path(tempfile.gettempdir()) / "open_deepagents_skill_sources" / digest
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True, exist_ok=True)
+    for skill_id in skill_source.include:
+        source = disk_path / skill_id
+        if not (source / "SKILL.md").is_file():
+            raise ValueError(f"Selected skill {skill_id!r} does not contain SKILL.md")
+        shutil.copytree(source, target / skill_id)
+    return target
 
 
 class BuiltinToolSelectionMiddleware(AgentMiddleware[Any, Any, Any]):

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-deepagents.local/models.schema.json",
+  "title": "open_deepagents model catalog",
+  "type": "object",
+  "required": ["model", "provider"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "model": {
+      "type": "string",
+      "description": "Default model id in provider/model format."
+    },
+    "provider": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["models"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "options": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "api_key": { "type": "string" },
+              "base_url": { "type": "string" },
+              "default_headers": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+              },
+              "timeout": { "type": ["number", "integer", "null"] },
+              "max_retries": { "type": ["integer", "null"] }
+            }
+          },
+          "models": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+              "type": "object",
+              "required": ["model"],
+              "additionalProperties": false,
+              "properties": {
+                "name": { "type": "string" },
+                "model": { "type": "string" },
+                "temperature": { "type": ["number", "null"] },
+                "extra_body": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

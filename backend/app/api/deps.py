@@ -1,7 +1,7 @@
 from collections.abc import Iterator
 from typing import Annotated, cast
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -34,18 +34,20 @@ def get_storage(request: Request) -> LocalStorage:
 def require_admin(
     request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    access_token: Annotated[str | None, Query()] = None,
 ) -> str:
     settings = get_settings(request)
     if not settings.admin_auth_enabled:
         return settings.admin_username
 
-    if credentials is None:
+    token = credentials.credentials if credentials is not None else access_token
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Admin authentication required",
         )
 
-    return decode_access_token(settings, credentials.credentials)
+    return decode_access_token(settings, token)
 
 
 AdminUserDep = Annotated[str, Depends(require_admin)]

@@ -103,6 +103,7 @@ async def upload_file(
             upload_root=settings.upload_storage_dir,
         ),
         hook_specs=settings.upload_hook_specs(),
+        hooks=settings.upload_hooks(),
     )
     if hook_extra:
         record.extra = {**(record.extra or {}), **hook_extra}

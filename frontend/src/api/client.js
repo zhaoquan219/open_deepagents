@@ -13,6 +13,15 @@ function resolveAccessToken() {
   return window.localStorage.getItem('deepagents.admin.token') || ''
 }
 
+function buildUploadContentUrl(baseUrl, uploadId) {
+  const url = new URL(`${baseUrl}/uploads/${encodeURIComponent(uploadId)}/content`, window.location.origin)
+  const accessToken = resolveAccessToken()
+  if (accessToken) {
+    url.searchParams.set('access_token', accessToken)
+  }
+  return url.toString()
+}
+
 function unwrapCollection(payload, preferredKey) {
   if (Array.isArray(payload)) {
     return payload
@@ -54,19 +63,58 @@ function normalizeContent(value) {
   return String(value)
 }
 
-function normalizeAttachments(attachments) {
+function normalizeAttachments(attachments, baseUrl = '') {
   if (!Array.isArray(attachments)) {
     return []
   }
 
-  return attachments.map((attachment, index) => ({
-    id: String(attachment?.id ?? attachment?.attachment_id ?? attachment?.attachmentId ?? `attachment-${index}`),
-    name: String(
-      attachment?.name ?? attachment?.filename ?? attachment?.title ?? uiCopy.api.unnamedAttachment,
-    ),
-    size: Number(attachment?.size ?? attachment?.size_bytes ?? attachment?.sizeBytes ?? 0),
-    status: String(attachment?.status ?? 'uploaded'),
+  return attachments.map((attachment, index) => {
+    const rawId = attachment?.id ?? attachment?.attachment_id ?? attachment?.attachmentId
+    const id = String(rawId ?? `attachment-${index}`)
+    return {
+      id,
+      name: String(
+        attachment?.name ?? attachment?.filename ?? attachment?.title ?? uiCopy.api.unnamedAttachment,
+      ),
+      size: Number(attachment?.size ?? attachment?.size_bytes ?? attachment?.sizeBytes ?? 0),
+      status: String(attachment?.status ?? 'uploaded'),
+      downloadUrl: baseUrl && rawId ? buildUploadContentUrl(baseUrl, id) : String(attachment?.download_url ?? attachment?.downloadUrl ?? ''),
+    }
+  })
+}
+
+function normalizeRuntimeOptions(payload) {
+  const record = payload?.runtime ?? payload?.data ?? payload ?? {}
+  const models = unwrapCollection(record.models ?? [], 'models').map((model) => ({
+    id: String(model.id ?? ''),
+    name: String(model.name ?? model.label ?? model.id ?? ''),
+    provider: String(model.provider ?? ''),
+    providerName: String(model.provider_name ?? model.providerName ?? model.provider ?? ''),
+  })).filter((model) => model.id).map((model) => ({
+    ...model,
+    displayName: model.provider ? `${model.provider}/${model.id.split('/').at(-1)}` : model.id,
   }))
+  const profiles = unwrapCollection(record.profiles ?? [], 'profiles').map((profile) => ({
+    id: String(profile.id ?? ''),
+    label: String(profile.label ?? profile.name ?? profile.id ?? ''),
+    modelId: String(profile.model_id ?? profile.modelId ?? ''),
+    subagentIds: Array.isArray(profile.subagent_ids) ? profile.subagent_ids.map(String) : [],
+  })).filter((profile) => profile.id)
+  const subagents = unwrapCollection(record.subagents ?? [], 'subagents').map((subagent) => ({
+    id: String(subagent.id ?? subagent.name ?? ''),
+    name: String(subagent.name ?? subagent.id ?? ''),
+    label: String(subagent.label ?? subagent.name ?? subagent.id ?? ''),
+    description: String(subagent.description ?? ''),
+    type: String(subagent.type ?? 'sync'),
+    workspace: String(subagent.workspace ?? ''),
+  })).filter((subagent) => subagent.id)
+  return {
+    defaultModelId: String(record.default_model_id ?? record.defaultModelId ?? models[0]?.id ?? ''),
+    defaultProfileId: String(record.default_profile_id ?? record.defaultProfileId ?? profiles[0]?.id ?? ''),
+    models,
+    profiles,
+    subagents,
+  }
 }
 
 function normalizeSession(session) {
@@ -78,14 +126,14 @@ function normalizeSession(session) {
   }
 }
 
-function normalizeMessage(message) {
+function normalizeMessage(message, baseUrl = '') {
   const extra = message?.extra && typeof message.extra === 'object' ? message.extra : {}
   return {
     id: String(message.id ?? message.message_id ?? message.messageId),
     role: String(message.role ?? 'assistant'),
     content: normalizeContent(message.content ?? message.text ?? extra.content ?? ''),
     createdAt: String(message.created_at ?? message.createdAt ?? ''),
-    attachments: normalizeAttachments(message.attachments ?? extra.attachments),
+    attachments: normalizeAttachments(message.attachments ?? extra.attachments, baseUrl),
     streaming: Boolean(message.streaming),
   }
 }
@@ -198,7 +246,11 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
 
     async getSessionMessages(sessionId) {
       const payload = await fetchJson(`${baseUrl}/sessions/${encodeURIComponent(sessionId)}/messages`)
-      return unwrapCollection(payload, 'messages').map(normalizeMessage)
+      return unwrapCollection(payload, 'messages').map((message) => normalizeMessage(message, baseUrl))
+    },
+
+    async getRuntimeOptions() {
+      return normalizeRuntimeOptions(await fetchJson(`${baseUrl}/runtime/options`))
     },
 
     async uploadFiles(sessionId, files) {
@@ -230,6 +282,7 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
           name: String(record.name ?? record.filename ?? file.name),
           size: Number(record.size ?? file.size ?? 0),
           status: 'uploaded',
+          downloadUrl: buildUploadContentUrl(baseUrl, String(record.id ?? record.attachment_id ?? record.attachmentId ?? file.name)),
         })
       }
 
@@ -242,13 +295,14 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
       })
     },
 
-    async startRun({ sessionId, prompt, attachments }) {
+    async startRun({ sessionId, prompt, attachments, modelId }) {
       const payload = await fetchJson(`${baseUrl}/runs`, {
         method: 'POST',
         body: JSON.stringify({
           session_id: sessionId,
           prompt,
           attachments,
+          model_id: modelId || null,
         }),
       })
       const record = payload.run ?? payload.data ?? payload
@@ -354,3 +408,5 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
     },
   }
 }
+
+export { buildUploadContentUrl, normalizeRuntimeOptions }

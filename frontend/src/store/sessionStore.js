@@ -75,6 +75,7 @@ function normalizeAttachments(attachments) {
     name: String(attachment?.name ?? attachment?.filename ?? attachment?.title ?? uiCopy.api.unnamedAttachment),
     size: Number(attachment?.size ?? attachment?.size_bytes ?? attachment?.sizeBytes ?? 0),
     status: String(attachment?.status ?? 'uploaded'),
+    downloadUrl: String(attachment?.downloadUrl ?? attachment?.download_url ?? ''),
   }))
 }
 

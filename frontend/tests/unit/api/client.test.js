@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createApiClient } from '../../../src/api/client.js'
+import { buildUploadContentUrl, createApiClient, normalizeRuntimeOptions } from '../../../src/api/client.js'
 import { uiCopy } from '../../../src/lib/copy.js'
 
 
@@ -129,6 +129,67 @@ describe('createApiClient.openRunStream', () => {
 })
 
 describe('createApiClient session normalization', () => {
+  it('normalizes runtime options and sends run selections', async () => {
+    const storage = {
+      getItem: vi.fn(() => 'token-123'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          default_model_id: 'openai/gpt-5-4',
+          default_profile_id: 'default',
+          models: [{ id: 'openai/gpt-5-4', name: 'GPT-5.4', provider_name: 'OpenAI' }],
+          profiles: [{ id: 'default', label: 'Default', subagent_ids: ['reviewer'] }],
+          subagents: [{ id: 'reviewer', name: 'reviewer', description: 'Review code' }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({ run_id: 'run-1', session_id: 'session-1', status: 'running' }),
+      })
+
+    vi.stubGlobal('window', {
+      location: { origin: 'http://localhost:5173' },
+      localStorage: storage,
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const client = createApiClient('/api')
+    const options = await client.getRuntimeOptions()
+    await client.startRun({
+      sessionId: 'session-1',
+      prompt: 'hello',
+      attachments: [],
+      modelId: options.defaultModelId,
+    })
+
+    expect(options.models[0]).toEqual(
+      expect.objectContaining({ id: 'openai/gpt-5-4', providerName: 'OpenAI' }),
+    )
+    expect(options.profiles[0].subagentIds).toEqual(['reviewer'])
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      session_id: 'session-1',
+      prompt: 'hello',
+      attachments: [],
+      model_id: 'openai/gpt-5-4',
+    })
+  })
+
+  it('normalizes runtime option fallback payload shapes', () => {
+    expect(normalizeRuntimeOptions({ data: { models: [{ id: 'm1' }] } })).toEqual(
+      expect.objectContaining({
+        defaultModelId: 'm1',
+        models: [expect.objectContaining({ id: 'm1' })],
+      }),
+    )
+  })
+
   it('normalizes default english session titles to chinese', async () => {
     const storage = {
       getItem: vi.fn(() => 'token-123'),
@@ -188,8 +249,26 @@ describe('createApiClient session normalization', () => {
     expect(messages[0].attachments).toEqual([
       expect.objectContaining({
         name: uiCopy.api.unnamedAttachment,
+        downloadUrl: '',
       }),
     ])
+  })
+
+  it('adds authenticated download URLs to returned attachments', async () => {
+    const storage = {
+      getItem: vi.fn(() => 'token-123'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    }
+
+    vi.stubGlobal('window', {
+      location: { origin: 'http://localhost:5173' },
+      localStorage: storage,
+    })
+
+    expect(buildUploadContentUrl('/api', 'upload-1')).toBe(
+      'http://localhost:5173/api/uploads/upload-1/content?access_token=token-123',
+    )
   })
 
   it('sends the bearer token without anonymous actor headers', async () => {

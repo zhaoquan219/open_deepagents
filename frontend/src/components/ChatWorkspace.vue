@@ -58,13 +58,27 @@ const props = defineProps({
     type: Object,
     default: null,
   },
+  runtimeOptions: {
+    type: Object,
+    default: () => ({ models: [], profiles: [] }),
+  },
+  selectedModelId: {
+    type: String,
+    default: '',
+  },
   stopping: {
     type: Boolean,
     default: false,
   },
 })
 
-const emit = defineEmits(['submit', 'upload', 'delete-upload', 'stop-run'])
+const emit = defineEmits([
+  'submit',
+  'upload',
+  'delete-upload',
+  'stop-run',
+  'update:selected-model-id',
+])
 
 const draft = ref('')
 const fileInput = ref(null)
@@ -153,6 +167,7 @@ const primaryActionDisabled = computed(() => {
 const composerHint = computed(() =>
   usesStopAction.value ? uiCopy.workspace.composerHint.stop : uiCopy.workspace.composerHint.send,
 )
+const modelOptions = computed(() => props.runtimeOptions?.models || [])
 
 function handlePrimaryAction() {
   if (usesStopAction.value) {
@@ -259,6 +274,24 @@ function removeUpload(file) {
                   : uiCopy.workspace.uploadHint.idle
             }}
           </span>
+        </div>
+        <div v-if="modelOptions.length" class="composer-model-picker">
+          <span class="composer-model-label">{{ uiCopy.workspace.runtimeSelectors.modelLabel }}</span>
+          <el-select
+            :model-value="props.selectedModelId"
+            class="runtime-select"
+            size="small"
+            :disabled="isRunLocked"
+            :placeholder="uiCopy.workspace.runtimeSelectors.model"
+            @update:model-value="emit('update:selected-model-id', $event)"
+          >
+            <el-option
+              v-for="model in modelOptions"
+              :key="model.id"
+              :label="model.displayName || model.id"
+              :value="model.id"
+            />
+          </el-select>
         </div>
         <input ref="fileInput" class="hidden-input" type="file" multiple @change="handleFileSelection" />
       </div>

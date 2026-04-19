@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from app.api.deps import AdminUserDep, DatabaseSessionDep, DatabaseStateDep
 from app.core.auth import decode_access_token
 from app.core.config import Settings
+from app.core.runtime_catalog import RuntimeSelection
 from app.core.session_scope import get_run_for_user, get_session_for_user
 from app.schemas.run import RunCreate, RunRead
 from app.services.runs import InvalidRunAttachmentError, RunManager, RunService
@@ -44,6 +45,10 @@ async def create_run(
             session_id=payload.session_id,
             prompt=payload.prompt,
             attachments=payload.attachments,
+            runtime_selection=RuntimeSelection(
+                model_id=payload.model_id,
+                subagent_profile_id=payload.subagent_profile_id,
+            ),
         )
     except InvalidRunAttachmentError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

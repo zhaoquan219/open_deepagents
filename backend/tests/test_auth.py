@@ -88,7 +88,6 @@ def test_settings_accept_empty_complex_env_values(tmp_path, monkeypatch) -> None
         "\n".join(
             [
                 "ADMIN_USERS=",
-                "CUSTOM_API_DEFAULT_HEADERS=",
             ]
         ),
         encoding="utf-8",
@@ -103,4 +102,3 @@ def test_settings_accept_empty_complex_env_values(tmp_path, monkeypatch) -> None
         Settings.model_config["env_file"] = original_env_file
 
     assert settings.admin_users == {}
-    assert settings.custom_api_default_headers == {}

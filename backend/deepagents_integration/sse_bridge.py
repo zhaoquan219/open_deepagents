@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 SSE_SCHEMA_VERSION = "2026-04-12"
@@ -34,9 +34,10 @@ class SseEventEnvelope:
     run_id: str
     sequence: int
     data: dict[str, Any]
+    internal_data: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     def to_sse(self) -> str:
-        payload = json.dumps(asdict(self), ensure_ascii=False)
+        payload = json.dumps(_public_envelope_dict(self), ensure_ascii=False)
         return f"id: {self.event_id}\nevent: {self.event}\ndata: {payload}\n\n"
 
 
@@ -118,6 +119,7 @@ def normalize_runtime_event(
                 "canonical_transcript": False,
                 "transient": False,
             },
+            internal_data={"raw_output": data.get("output")},
         )
 
     if event_name == "on_chain_error":
@@ -228,6 +230,7 @@ def _make_envelope(
     sequence: int,
     event: str,
     data: dict[str, Any],
+    internal_data: dict[str, Any] | None = None,
 ) -> SseEventEnvelope:
     envelope = SseEventEnvelope(
         schema_version=SSE_SCHEMA_VERSION,
@@ -236,9 +239,21 @@ def _make_envelope(
         run_id=bridge_run_id,
         sequence=sequence,
         data=data,
+        internal_data=internal_data or {},
     )
-    validate_sse_event(asdict(envelope))
+    validate_sse_event(_public_envelope_dict(envelope))
     return envelope
+
+
+def _public_envelope_dict(envelope: SseEventEnvelope) -> dict[str, Any]:
+    return {
+        "schema_version": envelope.schema_version,
+        "event_id": envelope.event_id,
+        "event": envelope.event,
+        "run_id": envelope.run_id,
+        "sequence": envelope.sequence,
+        "data": envelope.data,
+    }
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -249,7 +264,7 @@ def _tool_category(name: str) -> str:
     if name == "execute":
         return "sandbox"
     if name == "task":
-        return "skill"
+        return "subagent"
     return "tool"
 
 

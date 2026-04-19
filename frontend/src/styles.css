@@ -299,7 +299,7 @@ button {
 .workspace {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 0;
   height: 100%;
 }
 
@@ -489,6 +489,7 @@ button {
 }
 
 .workspace-thread-shell {
+  flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -558,15 +559,31 @@ button {
 }
 
 .message-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 8px;
 }
 
 .message-header-main {
+  flex: 1;
+  min-width: 0;
   justify-content: space-between;
 }
 
 .message-header strong {
   font-size: 0.86rem;
+}
+
+.message-copy-button {
+  flex: 0 0 auto;
+  min-width: 24px;
+  padding: 0;
+}
+
+.message-row[data-role="user"] .message-copy-button {
+  color: rgba(255, 255, 255, 0.86);
 }
 
 .markdown-content,
@@ -673,6 +690,12 @@ button {
   font-size: 0.78rem;
 }
 
+.attachment-download-button {
+  min-width: 20px;
+  padding: 0;
+  color: currentColor;
+}
+
 .upload-list-filename {
   max-width: 220px;
   overflow: hidden;
@@ -711,7 +734,9 @@ button {
 }
 
 .empty-state {
-  flex: 1;
+  flex: 0 1 auto;
+  width: calc(100% - 24px);
+  min-height: 260px;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -728,21 +753,65 @@ button {
 }
 
 .composer-panel {
-  padding: 14px 14px 16px;
+  --composer-side-width: 222px;
+  margin-top: -1px;
+  padding: 12px 14px 16px;
   border-top: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 16px 16px 18px 18px;
   background: rgba(252, 249, 244, 0.9);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .upload-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
   justify-content: space-between;
 }
 
 .upload-row-main {
   min-width: 0;
+}
+
+.composer-model-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 var(--composer-side-width);
+  width: var(--composer-side-width);
+  padding: 4px 6px 4px 10px;
+  border: 1px solid rgba(11, 92, 173, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 1px 2px rgba(26, 44, 65, 0.04);
+}
+
+.composer-model-label {
+  flex: 0 0 auto;
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.runtime-select {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+
+.runtime-select .el-select__wrapper {
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.runtime-select .el-select__wrapper:hover,
+.runtime-select .el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px rgba(11, 92, 173, 0.24) inset;
 }
 
 .composer-label {
@@ -786,7 +855,9 @@ button {
 }
 
 .composer-action-group {
-  display: inline-flex;
+  width: var(--composer-side-width);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.85fr);
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
@@ -941,9 +1012,16 @@ button {
 }
 
 .runtime-copy,
-.runtime-detail {
+.runtime-detail,
+.runtime-meta {
   font-size: 0.84rem;
   line-height: 1.5;
+}
+
+.runtime-meta {
+  margin: 4px 0 0;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
 }
 
 .runtime-summary-grid div {
@@ -983,7 +1061,8 @@ button {
 .composer-primary-button.el-button {
   min-height: 34px;
   height: 34px;
-  min-width: 92px;
+  min-width: 0;
+  width: 100%;
   padding-inline: 15px;
   border-radius: 8px;
   font-weight: 700;
@@ -1003,7 +1082,6 @@ button {
 }
 
 .composer-primary-button.el-button {
-  min-width: 84px;
   box-shadow: 0 8px 16px rgba(11, 92, 173, 0.14);
 }
 
@@ -1046,11 +1124,34 @@ button {
   font-family: "SFMono-Regular", ui-monospace, Monaco, monospace;
 }
 
+.mermaid-shell {
+  position: relative;
+  margin: 0 0 12px;
+}
+
+.mermaid-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  min-height: 28px;
+  margin-bottom: 4px;
+}
+
 .mermaid-block,
 .mermaid-error {
+  width: 100%;
+  max-width: 100%;
+  overflow: auto;
   padding: 10px;
   border-radius: 16px;
   background: rgba(234, 242, 252, 0.92);
+}
+
+.mermaid-block svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
 }
 
 @media (max-width: 1120px) {
@@ -1135,6 +1236,16 @@ button {
   .composer-action-group {
     width: 100%;
     justify-content: flex-end;
+  }
+
+  .composer-model-picker {
+    flex-basis: auto;
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .runtime-select {
+    flex: 0 1 260px;
   }
 
   .sidebar-toolbar-actions {

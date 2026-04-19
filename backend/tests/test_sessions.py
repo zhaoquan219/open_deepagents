@@ -60,6 +60,12 @@ def test_session_message_and_upload_crud(client: TestClient, auth_headers: dict[
     )
     assert upload_content.status_code == 200
     assert upload_content.content == b"backend attachment"
+    token = auth_headers["Authorization"].removeprefix("Bearer ")
+    upload_content_via_query = client.get(
+        f"/api/uploads/{upload_payload['id']}/content?access_token={token}",
+    )
+    assert upload_content_via_query.status_code == 200
+    assert upload_content_via_query.content == b"backend attachment"
 
     update_message = client.patch(
         f"/api/messages/{message_id}",
@@ -119,16 +125,17 @@ def test_upload_hook_can_enrich_upload_metadata(tmp_path) -> None:
     hook_module = tmp_path / "upload_hooks.py"
     hook_module.write_text(
         "\n".join(
-            [
-                "def enrich(context):",
-                "    return {",
-                "        'hooked': True,",
-                "        'payload_size': context.size_bytes,",
-                "        'upload_path': context.upload_path,",
-                "    }",
-            ]
-        ),
-        encoding="utf-8",
+                [
+                    "def enrich(context):",
+                    "    return {",
+                    "        'hooked': True,",
+                    "        'payload_size': context.size_bytes,",
+                    "        'upload_path': context.upload_path,",
+                    "    }",
+                    "AGENT = {'id': 'test', 'hooks': {'upload': [enrich]}}",
+                ]
+            ),
+            encoding="utf-8",
     )
     settings = Settings(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'upload-hook.db'}",
@@ -137,7 +144,7 @@ def test_upload_hook_can_enrich_upload_metadata(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret-key-with-32-bytes-minimum",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_upload_hook_specs=f"{hook_module}:enrich",
+        deepagents_main_agent=f"{hook_module}:AGENT",
     )
     app = create_app(settings)
 

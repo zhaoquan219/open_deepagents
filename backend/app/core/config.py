@@ -1,22 +1,28 @@
 import json
+from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path, PurePath
-from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from typing import Any, cast
 
 from langchain_openai import ChatOpenAI
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import DotEnvSettingsSource, EnvSettingsSource
 
+from app.core.model_catalog import load_model_catalog
+from app.core.runtime_catalog import RuntimeSelection, resolve_runtime, runtime_options
 from deepagents_integration import DeepAgentsRuntimeConfig, SandboxConfig, SkillSourceConfig
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ENV_PATH = BACKEND_ROOT / ".env"
 DEEPAGENTS_SYSTEM_PROMPT_PATH = BACKEND_ROOT / "prompts" / "deepagents-system-prompt.md"
+DEFAULT_AGENT_SYSTEM_PROMPT_PATH = BACKEND_ROOT / "agents" / "prompts" / "system.md"
+DEFAULT_MODEL_CONFIG_PATH = BACKEND_ROOT / "models.json"
+DEFAULT_MODEL_EXAMPLE_PATH = BACKEND_ROOT / "models.example.json"
 DEFAULT_SANDBOX_READ_PATHS = (
     (BACKEND_ROOT / "data").resolve(),
-    (BACKEND_ROOT / "extensions" / "skills").resolve(),
+    (BACKEND_ROOT / "agents" / "skills").resolve(),
+    (BACKEND_ROOT / "agents" / "memory").resolve(),
 )
 DEFAULT_SANDBOX_ROOT = (BACKEND_ROOT / "data").resolve()
 
@@ -29,7 +35,7 @@ class _LenientComplexEmptyMixin:
         value: Any,
         value_is_complex: bool,
     ) -> Any:
-        if field_name in {"admin_users", "custom_api_default_headers"} and value == "":
+        if field_name in {"admin_users"} and value == "":
             value = "{}"
         return super().prepare_field_value(field_name, field, value, value_is_complex)  # type: ignore[misc]
 
@@ -45,7 +51,7 @@ class _LenientDotEnvSettingsSource(_LenientComplexEmptyMixin, DotEnvSettingsSour
 class Settings(BaseSettings):
     app_name: str = "DeepAgents Agent Platform Backend"
     api_prefix: str = "/api"
-    database_url: str | None = None
+    database_url: str | None = "sqlite+pysqlite:///./data/backend.db"
     admin_email: str | None = None
     admin_username: str = "admin"
     admin_password: str = "change-me"
@@ -56,17 +62,13 @@ class Settings(BaseSettings):
     cors_allowed_origins: str | None = "http://127.0.0.1:5173,http://localhost:5173"
     upload_storage_dir: Path = Field(default=Path("./data/uploads"))
     max_upload_size_bytes: int = 10 * 1024 * 1024
-    deepagents_model: str | None = None
+    deepagents_default_model: str | None = "openai/gpt-5-4"
+    deepagents_model_config_path: str | None = "./models.json"
+    deepagents_main_agent: str = "agents:AGENT"
     deepagents_agent_name: str = "deepagents-web"
     deepagents_debug: bool = False
-    deepagents_tool_specs: str | None = None
-    deepagents_middleware_specs: str | None = None
-    deepagents_run_input_hook_specs: str | None = None
-    deepagents_upload_hook_specs: str | None = None
     deepagents_builtin_tools: str | None = None
     deepagents_disabled_builtin_tools: str | None = None
-    deepagents_skills: str | None = None
-    deepagents_memory: str | None = None
     deepagents_recursion_limit: int = 60
     deepagents_sandbox_kind: str = "state"
     deepagents_sandbox_root_dir: str | None = None
@@ -75,13 +77,6 @@ class Settings(BaseSettings):
     deepagents_sandbox_max_output_bytes: int = 100_000
     deepagents_sandbox_inherit_env: bool = False
     deepagents_sandbox_backend_spec: str | None = None
-    custom_api_key: str | None = None
-    custom_api_url: str | None = None
-    custom_api_model: str | None = None
-    custom_api_temperature: float | None = None
-    custom_api_enable_thinking: bool | None = None
-    custom_api_default_headers: dict[str, str] = Field(default_factory=dict)
-
     model_config = SettingsConfigDict(
         env_file=BACKEND_ENV_PATH,
         env_file_encoding="utf-8",
@@ -92,14 +87,11 @@ class Settings(BaseSettings):
     @field_validator(
         "database_url",
         "admin_email",
-        "deepagents_model",
+        "deepagents_default_model",
+        "deepagents_model_config_path",
+        "deepagents_main_agent",
         "deepagents_sandbox_root_dir",
         "deepagents_sandbox_backend_spec",
-        "custom_api_key",
-        "custom_api_url",
-        "custom_api_model",
-        "custom_api_temperature",
-        "custom_api_enable_thinking",
         mode="before",
     )
     @classmethod
@@ -114,33 +106,6 @@ class Settings(BaseSettings):
         if value in ("", None):
             return None
         return value
-
-    @field_validator("custom_api_default_headers", mode="before")
-    @classmethod
-    def parse_custom_api_default_headers(cls, value: object) -> dict[str, str]:
-        if value in ("", None):
-            return {}
-        if isinstance(value, dict):
-            if not all(
-                isinstance(key, str) and isinstance(item, str) for key, item in value.items()
-            ):
-                raise ValueError("custom_api_default_headers must use string keys and values")
-            return dict(value)
-        if not isinstance(value, str):
-            raise ValueError("custom_api_default_headers must be a JSON object")
-
-        text = value.strip()
-        if not text:
-            return {}
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ValueError("custom_api_default_headers JSON is invalid") from exc
-        if not isinstance(parsed, dict) or not all(
-            isinstance(key, str) and isinstance(item, str) for key, item in parsed.items()
-        ):
-            raise ValueError("custom_api_default_headers JSON must be an object of strings")
-        return dict(parsed)
 
     @field_validator("admin_users", mode="before")
     @classmethod
@@ -196,14 +161,6 @@ class Settings(BaseSettings):
             return None
         return str(resolve_runtime_disk_path(value, base_dir=BACKEND_ROOT))
 
-    @model_validator(mode="after")
-    def apply_runtime_defaults(self) -> "Settings":
-        if self.database_url is None:
-            self.database_url = "sqlite+pysqlite:///./data/backend.db"
-        if self.deepagents_model is None and self.custom_api_model is not None:
-            self.deepagents_model = self.custom_api_model
-        return self
-
     @classmethod
     def settings_customise_sources(
         cls,
@@ -244,24 +201,52 @@ class Settings(BaseSettings):
             return None
         return Path(raw_path)
 
-    def to_runtime_config(self) -> DeepAgentsRuntimeConfig:
+    def to_runtime_config(
+        self,
+        selection: RuntimeSelection | None = None,
+    ) -> DeepAgentsRuntimeConfig:
+        model_catalog = self.load_model_catalog_for_runtime(selection)
+        runtime_resolution = self.resolve_runtime(selection=selection, model_catalog=model_catalog)
         resolved_skill_sources = self.deepagents_skill_sources()
+        agent_skill_sources = tuple(runtime_resolution.agent.get("skill_sources") or ())
+        all_skill_sources = (*resolved_skill_sources, *agent_skill_sources)
+        tool_specs: tuple[str, ...] = ()
+        middleware_specs: tuple[str, ...] = ()
+        agent_tools = tuple(runtime_resolution.agent.get("tools") or ())
+        agent_middleware = tuple(runtime_resolution.agent.get("middleware") or ())
+        hooks = runtime_resolution.agent.get("hooks")
+        hook_mapping = hooks if isinstance(hooks, dict) else {}
+        agent_run_input_hooks = tuple(hook_mapping.get("run_input") or ())
+        agent_upload_hooks = tuple(hook_mapping.get("upload") or ())
+        agent_memory = tuple(str(item) for item in (runtime_resolution.agent.get("memory") or ()))
+        selected_model = self.resolve_model(
+            model_catalog=model_catalog,
+            model_id=runtime_resolution.model_id,
+        )
         sandbox_root_dir = self.resolved_sandbox_root_dir()
         return DeepAgentsRuntimeConfig(
-            model=self.resolve_model(),
-            system_prompt=self.load_deepagents_system_prompt(),
+            model=selected_model,
+            system_prompt=self.load_deepagents_system_prompt(runtime_resolution.agent),
             agent_name=self.deepagents_agent_name,
             debug=self.deepagents_debug,
-            tool_specs=self._split_csv(self.deepagents_tool_specs),
-            middleware_specs=self._split_csv(self.deepagents_middleware_specs),
+            tool_specs=tool_specs,
+            tools=agent_tools,
+            middleware_specs=middleware_specs,
+            middleware=agent_middleware,
             run_input_hook_specs=self.run_input_hook_specs(),
+            run_input_hooks=agent_run_input_hooks,
             upload_hook_specs=self.upload_hook_specs(),
+            upload_hooks=agent_upload_hooks,
             builtin_tool_allowlist=self._optional_csv(self.deepagents_builtin_tools),
             builtin_tool_blocklist=self._split_csv(self.deepagents_disabled_builtin_tools),
-            skills=tuple(source.source_path for source in resolved_skill_sources),
-            skill_sources=resolved_skill_sources,
-            memory=self._split_csv(self.deepagents_memory),
+            skills=tuple(source.source_path for source in all_skill_sources),
+            skill_sources=all_skill_sources,
+            memory=agent_memory,
             permissions=self.default_permissions(),
+            subagents=runtime_resolution.subagents,
+            model_id=runtime_resolution.model_id,
+            subagent_profile_id=runtime_resolution.profile_id,
+            runtime_selection=runtime_resolution.safe_selection,
             sandbox=SandboxConfig(
                 kind=self.deepagents_sandbox_kind,  # type: ignore[arg-type]
                 root_dir=sandbox_root_dir,
@@ -273,7 +258,13 @@ class Settings(BaseSettings):
             ),
         )
 
-    def load_deepagents_system_prompt(self) -> str:
+    def load_deepagents_system_prompt(self, agent: Mapping[str, Any] | None = None) -> str:
+        if self._uses_legacy_runtime_config():
+            return DEEPAGENTS_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+        if agent is not None and agent.get("system_prompt_path"):
+            return Path(agent["system_prompt_path"]).read_text(encoding="utf-8").strip()
+        if DEFAULT_AGENT_SYSTEM_PROMPT_PATH.is_file():
+            return DEFAULT_AGENT_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
         return DEEPAGENTS_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
 
     def default_permissions(self) -> tuple[dict[str, object], ...]:
@@ -301,35 +292,78 @@ class Settings(BaseSettings):
             return self.deepagents_sandbox_virtual_mode
         return None
 
-    def resolve_model(self) -> str | ChatOpenAI | None:
-        if self.custom_api_key and self.custom_api_url and self.custom_api_model:
-            base_url = self.custom_api_url.rstrip("/")
-            if base_url.endswith("/chat/completions"):
-                base_url = base_url[: -len("/chat/completions")]
-            elif not base_url.endswith("/v1"):
-                base_url = f"{base_url}/v1"
-            api_key = SecretStr(self.custom_api_key)
-            return ChatOpenAI(
-                model=self.custom_api_model,
-                api_key=api_key,
-                base_url=base_url,
-                **self.custom_api_model_kwargs(),
-            )
-        return self.deepagents_model
+    def model_config_path(self) -> Path | None:
+        if not self.deepagents_model_config_path:
+            return None
+        return resolve_runtime_disk_path(self.deepagents_model_config_path, base_dir=BACKEND_ROOT)
 
-    def custom_api_model_kwargs(self) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {}
-        if self.custom_api_temperature is not None:
-            kwargs["temperature"] = self.custom_api_temperature
-        if self.custom_api_default_headers:
-            kwargs["default_headers"] = self.custom_api_default_headers
-        if self.custom_api_enable_thinking is not None:
-            kwargs["extra_body"] = {
-                "chat_template_kwargs": {
-                    "enable_thinking": self.custom_api_enable_thinking,
+    def load_model_catalog(self) -> Any:
+        return load_model_catalog(
+            self.model_config_path(),
+            fallback_path=DEFAULT_MODEL_EXAMPLE_PATH,
+        )
+
+    def load_model_catalog_for_runtime(self, selection: RuntimeSelection | None = None) -> Any:
+        if (
+            selection is not None
+            and selection.model_id
+            and selection.model_id != self.legacy_model_id()
+        ):
+            return self.load_model_catalog()
+        if self._uses_legacy_runtime_config():
+            return None
+        return self.load_model_catalog()
+
+    def resolve_runtime(
+        self,
+        *,
+        selection: RuntimeSelection | None = None,
+        model_catalog: Any = None,
+    ) -> Any:
+        return resolve_runtime(
+            agent_spec=self.deepagents_main_agent,
+            model_catalog=model_catalog,
+            default_model_id=self.deepagents_default_model,
+            selection=selection,
+        )
+
+    def runtime_options(self) -> dict[str, Any]:
+        model_catalog = self.load_model_catalog_for_runtime()
+        options = runtime_options(
+            agent_spec=self.deepagents_main_agent,
+            model_catalog=model_catalog,
+            default_model_id=self.deepagents_default_model or self.legacy_model_id(),
+        )
+        if model_catalog is None and (legacy_model_id := self.legacy_model_id()):
+            options["default_model_id"] = legacy_model_id
+            options["models"] = [
+                {
+                    "id": legacy_model_id,
+                    "name": legacy_model_id,
+                    "provider": "legacy",
+                    "provider_name": "Legacy",
                 }
-            }
-        return kwargs
+            ]
+        return options
+
+    def resolve_model(
+        self,
+        *,
+        model_catalog: Any = None,
+        model_id: str | None = None,
+    ) -> str | ChatOpenAI | None:
+        if model_catalog is not None:
+            return cast(
+                ChatOpenAI,
+                model_catalog.resolve(model_id or self.deepagents_default_model),
+            )
+        return None
+
+    def _uses_legacy_runtime_config(self) -> bool:
+        return False
+
+    def legacy_model_id(self) -> str:
+        return ""
 
     def deepagents_skill_sources(
         self,
@@ -337,19 +371,6 @@ class Settings(BaseSettings):
         base_dir: Path = BACKEND_ROOT,
     ) -> tuple[SkillSourceConfig, ...]:
         sources: list[SkillSourceConfig] = []
-        for raw_source in self._split_csv(self.deepagents_skills):
-            disk_path = resolve_runtime_disk_path(raw_source, base_dir=base_dir)
-            source_path = normalize_runtime_backend_path(
-                raw_source,
-                base_dir=base_dir,
-                trailing_slash=True,
-            )
-            sources.append(
-                SkillSourceConfig(
-                    source_path=source_path,
-                    disk_path=str(disk_path),
-                )
-            )
         return tuple(sources)
 
     def get_cors_origins(self) -> list[str]:
@@ -359,79 +380,48 @@ class Settings(BaseSettings):
         return {
             "app_name": self.app_name,
             "cors_origin_count": len(self.get_cors_origins()),
-            "custom_api_enabled": bool(
-                self.custom_api_key and self.custom_api_url and self.custom_api_model
-            ),
             "database_backend": (
                 "sqlite" if self.is_sqlite else "mysql" if self.is_mysql else "other"
             ),
             "deepagents_agent_name": self.deepagents_agent_name,
-            "deepagents_model_configured": bool(self.deepagents_model or self.custom_api_model),
+            "deepagents_model_configured": bool(self.deepagents_default_model),
             "admin_auth_enabled": self.admin_auth_enabled,
-            "run_input_hook_count": len(self.run_input_hook_specs()),
             "sandbox_kind": self.deepagents_sandbox_kind,
             "sandbox_root_dir_configured": bool(self.deepagents_sandbox_root_dir),
             "sandbox_root_dir_effective": bool(self.resolved_sandbox_root_dir()),
-            "upload_hook_count": len(self.upload_hook_specs()),
             "upload_storage_dir": str(self.upload_storage_dir),
         }
 
     def run_input_hook_specs(self) -> tuple[str, ...]:
-        return self._split_csv(self.deepagents_run_input_hook_specs)
+        return ()
 
     def upload_hook_specs(self) -> tuple[str, ...]:
-        return self._split_csv(self.deepagents_upload_hook_specs)
+        return ()
+
+    def upload_hooks(self) -> tuple[Any, ...]:
+        if self._uses_legacy_runtime_config():
+            return ()
+        try:
+            agent = self.resolve_runtime(
+                selection=None,
+                model_catalog=self.load_model_catalog_for_runtime(),
+            ).agent
+        except Exception:
+            return ()
+        hooks = agent.get("hooks")
+        if not isinstance(hooks, dict):
+            return ()
+        return tuple(hooks.get("upload") or ())
 
     def runtime_model_logging_summary(self) -> dict[str, object]:
-        model_source = "unset"
-        model_provider = ""
-        model_name = ""
-        custom_model_base_url: str | None = None
-        custom_model_headers_count = 0
-        custom_model_temperature_configured = False
-        custom_model_thinking_configured = False
-
-        if self._uses_custom_api_model():
-            model_source = "custom_api"
-            model_provider = "custom_api"
-            model_name = self.custom_api_model or ""
-            custom_model_base_url = self.normalized_custom_api_base_url()
-            custom_model_headers_count = len(self.custom_api_default_headers)
-            custom_model_temperature_configured = self.custom_api_temperature is not None
-            custom_model_thinking_configured = self.custom_api_enable_thinking is not None
-        elif self.deepagents_model:
-            model_source = "configured_model"
-            model_provider, model_name = describe_model_reference(self.deepagents_model)
+        model_source = "model_catalog" if self.load_model_catalog() is not None else "unset"
+        model_provider, model_name = describe_model_reference(self.deepagents_default_model)
 
         return {
             "selected_model_source": model_source,
             "selected_model_provider": model_provider,
             "selected_model_name": model_name,
-            "custom_model_base_url": custom_model_base_url,
-            "custom_model_headers_count": custom_model_headers_count,
-            "custom_model_temperature_configured": custom_model_temperature_configured,
-            "custom_model_thinking_configured": custom_model_thinking_configured,
         }
-
-    def normalized_custom_api_base_url(self) -> str | None:
-        if not self.custom_api_url:
-            return None
-        parts = urlsplit(self.custom_api_url)
-        path = parts.path.rstrip("/")
-        if path.endswith("/chat/completions"):
-            path = path[: -len("/chat/completions")]
-        elif not path.endswith("/v1"):
-            path = f"{path}/v1"
-        hostname = parts.hostname or parts.netloc
-        if not hostname:
-            return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
-        netloc = hostname
-        if parts.port is not None:
-            netloc = f"{hostname}:{parts.port}"
-        return urlunsplit((parts.scheme, netloc, path, "", ""))
-
-    def _uses_custom_api_model(self) -> bool:
-        return bool(self.custom_api_key and self.custom_api_url and self.custom_api_model)
 
     @staticmethod
     def _split_csv(value: str | None) -> tuple[str, ...]:
@@ -494,6 +484,9 @@ def _path_contains(base_path: Path, candidate: Path) -> bool:
 def describe_model_reference(model: str | None) -> tuple[str, str]:
     if not model:
         return "", ""
+    provider, separator, name = model.partition("/")
+    if separator:
+        return provider or "string", name
     provider, separator, name = model.partition(":")
     if separator:
         return provider or "string", name

@@ -171,6 +171,33 @@ describe('runStore reducer', () => {
     })
   })
 
+  it('keeps subagent payload data for runtime panel details', () => {
+    const started = createInitialRun('run-subagent', 'session-subagent')
+    const afterSubagent = reduceRunState(started, {
+      eventId: 'evt-subagent',
+      type: 'subagent',
+      runId: 'run-subagent',
+      sessionId: 'session-subagent',
+      timestamp: '2026-04-12T14:00:03.000Z',
+      status: 'completed',
+      label: 'subagent.completed',
+      detail: 'code-reviewer',
+      data: {
+        input: { subagent_type: 'code-reviewer', task: 'review the diff' },
+        output: { text: 'looks good' },
+      },
+    })
+
+    expect(afterSubagent.timeline[0]).toMatchObject({
+      kind: 'subagent',
+      detail: 'code-reviewer',
+      data: {
+        input: { subagent_type: 'code-reviewer', task: 'review the diff' },
+        output: { text: 'looks good' },
+      },
+    })
+  })
+
   it('records client-side failures outside the active stream timeline', () => {
     const store = createRunStore()
 

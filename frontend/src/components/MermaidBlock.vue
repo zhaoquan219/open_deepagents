@@ -1,6 +1,10 @@
 <script setup>
+import { CopyDocument, Picture } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { onMounted, ref, watch } from 'vue'
 
+import { copyRenderedSvgAsPng, copyText } from '../lib/clipboard.js'
+import { uiCopy } from '../lib/copy.js'
 import { renderMermaidSvg } from '../lib/markdown.js'
 
 const props = defineProps({
@@ -17,7 +21,27 @@ const props = defineProps({
 const emit = defineEmits(['rendered'])
 
 const container = ref(null)
+const renderIdPrefix = `mermaid-${Math.random().toString(36).slice(2)}`
 let renderSequence = 0
+
+async function copySource() {
+  try {
+    await copyText(props.source)
+    ElMessage.success(uiCopy.mermaid.copySourceSuccess)
+  } catch {
+    ElMessage.error(uiCopy.mermaid.copyFailure)
+  }
+}
+
+async function copyImage() {
+  const svgElement = container.value?.querySelector('svg')
+  try {
+    await copyRenderedSvgAsPng(svgElement)
+    ElMessage.success(uiCopy.mermaid.copyImageSuccess)
+  } catch {
+    ElMessage.error(uiCopy.mermaid.copyFailure)
+  }
+}
 
 function escapeHtml(value) {
   return String(value)
@@ -40,11 +64,12 @@ async function hydrate() {
   const currentSequence = ++renderSequence
 
   try {
-    const svg = await renderMermaidSvg(`${props.diagramKey}-${currentSequence}`, source)
+    const svg = await renderMermaidSvg(`${renderIdPrefix}-${currentSequence}`, source)
     if (!container.value || currentSequence !== renderSequence) {
       return
     }
-    container.value.innerHTML = svg
+    container.value.replaceChildren()
+    container.value.insertAdjacentHTML('beforeend', svg)
     emit('rendered')
   } catch (error) {
     if (!container.value || currentSequence !== renderSequence) {
@@ -72,5 +97,23 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div ref="container" class="mermaid-block" :data-mermaid-key="props.diagramKey"></div>
+  <div class="mermaid-shell">
+    <div class="mermaid-toolbar">
+      <el-button
+        text
+        size="small"
+        :icon="CopyDocument"
+        :aria-label="uiCopy.mermaid.copySource"
+        @click="copySource"
+      />
+      <el-button
+        text
+        size="small"
+        :icon="Picture"
+        :aria-label="uiCopy.mermaid.copyImage"
+        @click="copyImage"
+      />
+    </div>
+    <div ref="container" class="mermaid-block" :data-mermaid-key="props.diagramKey"></div>
+  </div>
 </template>

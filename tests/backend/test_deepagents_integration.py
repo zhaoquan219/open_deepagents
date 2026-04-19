@@ -166,9 +166,9 @@ class DeepAgentsConfigTests(unittest.TestCase):
 
     def test_runtime_hook_template_entrypoints_are_loadable(self):
         run_hooks = load_object_from_spec(
-            "extensions.runtime_hooks:RUN_INPUT_HOOKS"
+            "agents.hooks:RUN_INPUT_HOOKS"
         )
-        upload_hooks = load_object_from_spec("extensions.runtime_hooks:UPLOAD_HOOKS")
+        upload_hooks = load_object_from_spec("agents.hooks:UPLOAD_HOOKS")
 
         self.assertTrue(run_hooks)
         self.assertTrue(upload_hooks)
@@ -378,7 +378,7 @@ class DeepAgentsConfigTests(unittest.TestCase):
 
     def test_functional_audit_middleware_can_access_runtime_context(self):
         before_agent_middleware, tool_middleware = load_middleware_extensions(
-            ("extensions.middleware.audit_middleware:MIDDLEWARE",)
+            ("agents.middleware.audit_middleware:MIDDLEWARE",)
         )
         runtime = SimpleNamespace(
             context={
@@ -478,10 +478,12 @@ class DeepAgentsSseBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(envelopes[2].data["text"], "Hello")
         self.assertFalse(envelopes[2].data["canonical_transcript"])
         self.assertEqual(envelopes[3].event, "sandbox.started")
-        self.assertEqual(envelopes[4].event, "skill.completed")
+        self.assertEqual(envelopes[4].event, "subagent.completed")
         self.assertEqual(envelopes[5].event, "message.completed")
         self.assertTrue(envelopes[5].data["canonical_transcript"])
         self.assertEqual(envelopes[6].event, "run.completed")
+        self.assertEqual(envelopes[6].internal_data["raw_output"]["messages"][0]["content"], "Hello world")
+        self.assertNotIn("internal_data", envelopes[6].to_sse())
 
         for sequence, envelope in enumerate(envelopes, start=1):
             self.assertEqual(envelope.sequence, sequence)

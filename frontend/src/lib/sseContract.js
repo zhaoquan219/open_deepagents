@@ -7,6 +7,7 @@ const allowedTypes = new Set([
   'step',
   'tool',
   'skill',
+  'subagent',
   'sandbox',
   'error',
 ])
@@ -40,6 +41,9 @@ function normalizeStepLikeType(label, detail, data) {
   }
   if (normalizedLabel.startsWith('skill.') || normalizedDetail.includes('skill')) {
     return 'skill'
+  }
+  if (normalizedLabel.startsWith('subagent.') || normalizedDetail.includes('subagent')) {
+    return 'subagent'
   }
   if (normalizedLabel.startsWith('sandbox.') || normalizedDetail.includes('sandbox')) {
     return 'sandbox'

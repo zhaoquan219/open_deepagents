@@ -71,6 +71,7 @@ function entryLabel(entry) {
   }
   if (entry?.kind === 'tool') return uiCopy.timeline.labels.tool
   if (entry?.kind === 'skill') return uiCopy.timeline.labels.skill
+  if (entry?.kind === 'subagent') return uiCopy.timeline.labels.subagent
   if (entry?.kind === 'sandbox') return uiCopy.timeline.labels.sandbox
   if (entry?.kind === 'connection') return uiCopy.timeline.labels.connection
   if (entry?.kind === 'status') return uiCopy.timeline.labels.status
@@ -85,6 +86,50 @@ function entryDetail(entry) {
     return entry?.detail || uiCopy.timeline.detail.deltaStreaming
   }
   return entry?.detail || ''
+}
+
+function extractText(value) {
+  if (value === undefined || value === null) {
+    return ''
+  }
+  if (typeof value === 'string') {
+    return value
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => extractText(item)).join('')
+  }
+  if (typeof value === 'object') {
+    if ('content' in value) {
+      return extractText(value.content)
+    }
+    if (typeof value.text === 'string') {
+      return value.text
+    }
+    if ('output' in value) {
+      return extractText(value.output)
+    }
+  }
+  return ''
+}
+
+function subagentType(data) {
+  const input = data?.input && typeof data.input === 'object' ? data.input : {}
+  return String(input.subagent_type || input.subagent || input.agent || data?.subagent_type || '').trim()
+}
+
+function entryMeta(entry) {
+  if (entry?.kind !== 'subagent') {
+    return ''
+  }
+  const data = entry.data && typeof entry.data === 'object' ? entry.data : {}
+  const agentType = subagentType(data)
+  const input = extractText(data.input?.description ?? data.input?.prompt ?? data.input?.task ?? '').trim()
+  const output = extractText(data.output).trim()
+  const parts = []
+  if (agentType) parts.push(agentType)
+  if (input) parts.push(`${uiCopy.timeline.detail.subagentInput}: ${input.slice(0, 90)}`)
+  if (output) parts.push(`${uiCopy.timeline.detail.subagentOutput}: ${output.slice(0, 120)}`)
+  return parts.join(' · ')
 }
 
 const mergedEntries = computed(() => {
@@ -274,6 +319,7 @@ onMounted(async () => {
             <div class="runtime-entry-main">
               <p class="runtime-label">{{ entryLabel(entry) }}</p>
               <p v-if="entryDetail(entry)" class="runtime-detail">{{ entryDetail(entry) }}</p>
+              <p v-if="entryMeta(entry)" class="runtime-meta">{{ entryMeta(entry) }}</p>
             </div>
             <el-tag size="small" effect="plain" :type="statusTagType(entry.status)">
               {{ statusLabel(entry.status) }}

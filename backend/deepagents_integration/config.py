@@ -59,6 +59,7 @@ class SkillSourceConfig:
 
     source_path: str
     disk_path: str
+    include: tuple[str, ...] = ()
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> SkillSourceConfig:
@@ -66,7 +67,11 @@ class SkillSourceConfig:
         disk_path = raw.get("disk_path")
         if not isinstance(source_path, str) or not isinstance(disk_path, str):
             raise ValueError("skill_sources entries must define string source_path and disk_path")
-        return cls(source_path=source_path, disk_path=disk_path)
+        return cls(
+            source_path=source_path,
+            disk_path=disk_path,
+            include=_string_tuple(raw.get("include")),
+        )
 
 
 @dataclass(frozen=True)
@@ -78,15 +83,23 @@ class DeepAgentsRuntimeConfig:
     agent_name: str | None = None
     debug: bool = False
     tool_specs: tuple[str, ...] = ()
+    tools: tuple[Any, ...] = ()
     middleware_specs: tuple[str, ...] = ()
+    middleware: tuple[Any, ...] = ()
     run_input_hook_specs: tuple[str, ...] = ()
+    run_input_hooks: tuple[Any, ...] = ()
     upload_hook_specs: tuple[str, ...] = ()
+    upload_hooks: tuple[Any, ...] = ()
     builtin_tool_allowlist: tuple[str, ...] | None = None
     builtin_tool_blocklist: tuple[str, ...] = ()
     skills: tuple[str, ...] = ()
     skill_sources: tuple[SkillSourceConfig, ...] = ()
     memory: tuple[str, ...] = ()
     permissions: tuple[Mapping[str, Any], ...] = ()
+    subagents: tuple[Mapping[str, Any], ...] = ()
+    model_id: str | None = None
+    subagent_profile_id: str | None = None
+    runtime_selection: Mapping[str, Any] | None = None
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
 
     def logging_summary(self) -> dict[str, Any]:
@@ -96,10 +109,13 @@ class DeepAgentsRuntimeConfig:
             "debug": self.debug,
             "memory_count": len(self.memory),
             "middleware_count": len(self.middleware_specs),
+            "middleware_object_count": len(self.middleware),
             "model_kind": model_kind,
+            "model_id": self.model_id or "",
             "model_name": model_name,
             "permission_count": len(self.permissions),
             "run_input_hook_count": len(self.run_input_hook_specs),
+            "run_input_hook_object_count": len(self.run_input_hooks),
             "sandbox_backend_spec_configured": bool(self.sandbox.backend_spec),
             "sandbox_kind": self.sandbox.kind,
             "sandbox_root_dir_configured": bool(self.sandbox.root_dir),
@@ -107,6 +123,8 @@ class DeepAgentsRuntimeConfig:
             "sandbox_virtual_mode": self.sandbox.virtual_mode,
             "skill_count": len(self.skills),
             "skill_source_count": len(self.skill_sources),
+            "subagent_count": len(self.subagents),
+            "subagent_profile_id": self.subagent_profile_id or "",
             "builtin_tool_allowlist_count": (
                 len(self.builtin_tool_allowlist)
                 if self.builtin_tool_allowlist is not None
@@ -114,7 +132,9 @@ class DeepAgentsRuntimeConfig:
             ),
             "builtin_tool_blocklist_count": len(self.builtin_tool_blocklist),
             "tool_count": len(self.tool_specs),
+            "tool_object_count": len(self.tools),
             "upload_hook_count": len(self.upload_hook_specs),
+            "upload_hook_object_count": len(self.upload_hooks),
         }
 
     @classmethod
@@ -125,15 +145,23 @@ class DeepAgentsRuntimeConfig:
             agent_name=_optional_str(raw.get("agent_name")),
             debug=bool(raw.get("debug", False)),
             tool_specs=_string_tuple(raw.get("tool_specs")),
+            tools=tuple(raw.get("tools") or ()),
             middleware_specs=_string_tuple(raw.get("middleware_specs")),
+            middleware=tuple(raw.get("middleware") or ()),
             run_input_hook_specs=_string_tuple(raw.get("run_input_hook_specs")),
+            run_input_hooks=tuple(raw.get("run_input_hooks") or ()),
             upload_hook_specs=_string_tuple(raw.get("upload_hook_specs")),
+            upload_hooks=tuple(raw.get("upload_hooks") or ()),
             builtin_tool_allowlist=_optional_string_tuple(raw.get("builtin_tool_allowlist")),
             builtin_tool_blocklist=_string_tuple(raw.get("builtin_tool_blocklist")),
             skills=_string_tuple(raw.get("skills")),
             skill_sources=_skill_source_tuple(raw.get("skill_sources")),
             memory=_string_tuple(raw.get("memory")),
             permissions=_mapping_tuple(raw.get("permissions")),
+            subagents=_mapping_tuple(raw.get("subagents")),
+            model_id=_optional_str(raw.get("model_id")),
+            subagent_profile_id=_optional_str(raw.get("subagent_profile_id")),
+            runtime_selection=raw.get("runtime_selection"),
             sandbox=SandboxConfig.from_mapping(raw.get("sandbox")),
         )
 
@@ -193,5 +221,5 @@ def _describe_model(model: Any) -> tuple[str, str]:
         or getattr(model, "model_id", None)
         or ""
     )
-    model_kind = "custom_api" if model.__class__.__name__ == "ChatOpenAI" else type(model).__name__
+    model_kind = "chat_openai" if model.__class__.__name__ == "ChatOpenAI" else type(model).__name__
     return str(model_kind), str(model_name)

@@ -60,7 +60,7 @@ def tag_uploaded_file(context: UploadHookContext) -> dict[str, object]:
     """Example upload hook for adding searchable metadata to UploadRecord.extra."""
 
     return {
-        "runtime_hook": "extensions.runtime_hooks.tag_uploaded_file",
+        "runtime_hook": "agents.hooks.tag_uploaded_file",
         "original_filename": context.filename,
         "upload_path": context.upload_path,
     }

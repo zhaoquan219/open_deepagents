@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
+import mimetypes
 import threading
 import time
 from collections import Counter
@@ -19,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.core.database import DatabaseState
 from app.core.logging import format_log_message
+from app.core.runtime_catalog import RuntimeSelection
 from app.db.models import (
     AgentRunRecord,
     MessageRecord,
@@ -28,6 +32,7 @@ from app.db.models import (
     UploadRecord,
 )
 from app.services.session_titles import sync_session_title_from_source
+from app.storage import LocalStorage
 from deepagents_integration import DeepAgentsRuntimeConfig, SseEventEnvelope, stream_sse_envelopes
 from deepagents_integration.run_hooks import RunInputHookContext, apply_run_input_hooks
 
@@ -244,7 +249,14 @@ class RunService:
         session_id: str,
         prompt: str,
         attachments: list[dict[str, Any]],
+        runtime_selection: RuntimeSelection | None = None,
     ) -> RunState:
+        try:
+            safe_runtime_selection = dict(
+                settings.to_runtime_config(selection=runtime_selection).runtime_selection or {}
+            )
+        except ValueError as exc:
+            raise InvalidRunAttachmentError(str(exc), status_code=400) from exc
         with self.database.session_factory() as db:
             session = _require_session(db, session_id)
             resolved_attachments = _resolve_run_attachments(
@@ -274,7 +286,10 @@ class RunService:
                     session_id=session_id,
                     status="queued",
                     prompt=prompt,
-                    extra={"attachments": resolved_attachments},
+                    extra={
+                        "attachments": resolved_attachments,
+                        "runtime_selection": safe_runtime_selection,
+                    },
                 )
             )
             db.add(user_message)
@@ -313,6 +328,7 @@ class RunService:
             session_id=session_id,
             prompt=prompt,
             attachments=resolved_attachments,
+            runtime_selection=runtime_selection,
         )
         return state
 
@@ -324,6 +340,7 @@ class RunService:
         session_id: str,
         prompt: str,
         attachments: list[dict[str, Any]],
+        runtime_selection: RuntimeSelection | None,
     ) -> None:
         def runner() -> None:
             state = self.manager.get(run_id)
@@ -336,6 +353,7 @@ class RunService:
                     session_id=session_id,
                     prompt=prompt,
                     attachments=attachments,
+                    runtime_selection=runtime_selection,
                 )
             )
             if state is not None:
@@ -392,6 +410,7 @@ class RunService:
         session_id: str,
         prompt: str,
         attachments: list[dict[str, Any]],
+        runtime_selection: RuntimeSelection | None,
     ) -> None:
         state = self.manager.get(run_id)
         if state is None:
@@ -420,7 +439,7 @@ class RunService:
                 session_id=session_id,
             )
             phase = "resolving runtime config"
-            runtime_config = settings.to_runtime_config()
+            runtime_config = settings.to_runtime_config(selection=runtime_selection)
             runtime_summary_message, runtime_summary_fields = _runtime_config_log_summary(settings)
             runtime_log_fields: dict[str, Any] = {
                 "recursion_limit": settings.deepagents_recursion_limit,
@@ -437,7 +456,9 @@ class RunService:
                 **runtime_log_fields,
             )
             if runtime_config.model is None:
-                raise RuntimeError("DEEPAGENTS_MODEL is not configured in backend/.env")
+                raise RuntimeError(
+                    "DEEPAGENTS_DEFAULT_MODEL is not configured or cannot be resolved"
+                )
 
             phase = "building agent"
             _log_run(
@@ -465,6 +486,7 @@ class RunService:
                 prompt=prompt,
                 attachments=attachments,
                 hook_specs=runtime_config.run_input_hook_specs,
+                hooks=runtime_config.run_input_hooks,
             )
             phase = "streaming"
             _log_run(
@@ -488,6 +510,8 @@ class RunService:
             last_assistant_message = ""
             last_assistant_record_id: str | None = None
             pending_completion_event: dict[str, Any] | None = None
+            raw_completion_output: Any = None
+            subagent_names_by_runtime_run: dict[str, str] = {}
             sequence = 1
             async for envelope in stream_sse_envelopes(
                 agent,
@@ -504,12 +528,19 @@ class RunService:
                 if state.status == "cancelled" or state.completed:
                     return
                 runtime_event_counts[envelope.event] += 1
+                if envelope.event == "run.completed":
+                    raw_completion_output = getattr(envelope, "internal_data", {}).get("raw_output")
                 sequence += 1
                 ui_event = _bridge_to_ui(
                     envelope=envelope,
                     session_id=session_id,
                     sequence=sequence,
                 )
+                if ui_event["type"] == "subagent":
+                    _restore_subagent_detail(
+                        ui_event,
+                        subagent_names_by_runtime_run=subagent_names_by_runtime_run,
+                    )
                 if state.status == "cancelled" or state.completed:
                     return
                 if ui_event["type"] == "status" and ui_event["status"] == "completed":
@@ -556,6 +587,28 @@ class RunService:
             if not final_message and streamed_message_parts:
                 final_message = "".join(streamed_message_parts)
             event_view_buffer.flush()
+            completion_data: dict[str, Any] = (
+                dict(pending_completion_event.get("data") or {})
+                if pending_completion_event is not None
+                else {}
+            )
+            generated_attachments: list[dict[str, Any]] = []
+            if settings.deepagents_sandbox_kind == "state":
+                generated_state_files = _generated_state_output_files(
+                    raw_completion_output if raw_completion_output is not None else completion_data,
+                    initial_files=agent_input.get("files", {}),
+                )
+                if generated_state_files:
+                    generated_attachments = self._persist_generated_state_outputs(
+                        settings=settings,
+                        session_id=session_id,
+                        run_id=run_id,
+                        files=generated_state_files,
+                    )
+                    completion_data = {
+                        **completion_data,
+                        "generated_attachments": generated_attachments,
+                    }
 
             _log_run(
                 logging.INFO,
@@ -615,7 +668,7 @@ class RunService:
                         "role": "assistant",
                         "content": final_message,
                         "createdAt": utc_now().isoformat(),
-                        "attachments": [],
+                        "attachments": generated_attachments,
                     },
                 )
                 event_view_buffer.add(final_event)
@@ -639,16 +692,28 @@ class RunService:
                         )
                         if existing_record is not None:
                             existing_record.is_final = True
+                            _append_message_attachments(existing_record, generated_attachments)
+                            _link_uploads_to_message(
+                                db,
+                                attachments=generated_attachments,
+                                message_id=existing_record.id,
+                            )
                             db.add(existing_record)
                     else:
-                        db.add(
-                            MessageRecord(
-                                session_id=session_id,
-                                role="assistant",
-                                content=final_message,
-                                run_id=run_id,
-                                is_final=True,
-                            )
+                        assistant_record = MessageRecord(
+                            session_id=session_id,
+                            role="assistant",
+                            content=final_message,
+                            run_id=run_id,
+                            is_final=True,
+                        )
+                        _append_message_attachments(assistant_record, generated_attachments)
+                        db.add(assistant_record)
+                        db.flush()
+                        _link_uploads_to_message(
+                            db,
+                            attachments=generated_attachments,
+                            message_id=assistant_record.id,
                         )
                 session.last_run_id = run_id
                 run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
@@ -657,6 +722,11 @@ class RunService:
                     run_record.final_output_text = final_message or None
                     run_record.event_count = len(state.envelopes)
                     run_record.completed_at = utc_now()
+                    if generated_attachments:
+                        run_record.extra = {
+                            **(run_record.extra or {}),
+                            "generated_attachments": generated_attachments,
+                        }
                     db.add(run_record)
                 db.add(session)
                 db.commit()
@@ -664,13 +734,11 @@ class RunService:
             phase = "finalizing completion"
             completion_label = "Run completed"
             completion_detail = "DeepAgents run finished successfully."
-            completion_data: dict[str, Any] = {}
             if pending_completion_event is not None:
                 completion_label = str(pending_completion_event.get("label") or completion_label)
                 completion_detail = str(
                     pending_completion_event.get("detail") or completion_detail
                 )
-                completion_data = dict(pending_completion_event.get("data") or {})
             completion_envelope = _ui_envelope(
                 run_id=run_id,
                 session_id=session_id,
@@ -944,6 +1012,7 @@ class RunService:
         prompt: str,
         attachments: list[dict[str, Any]],
         hook_specs: tuple[str, ...] = (),
+        hooks: tuple[Any, ...] = (),
     ) -> dict[str, Any]:
         with self.database.session_factory() as db:
             records = (
@@ -974,6 +1043,7 @@ class RunService:
                         is_current_run=record.run_id == run_id,
                     ),
                     hook_specs=hook_specs,
+                    hooks=hooks,
                 )
             if not content.strip():
                 continue
@@ -993,11 +1063,19 @@ class RunService:
                             is_current_run=True,
                         ),
                         hook_specs=hook_specs,
+                        hooks=hooks,
                     ),
                 }
             ]
 
         agent_input: dict[str, Any] = {"messages": messages}
+        state_files = (
+            _state_backend_files(attachments=attachments)
+            if settings.deepagents_sandbox_kind == "state"
+            else {}
+        )
+        if state_files:
+            agent_input["files"] = state_files
         return agent_input
 
     def _persist_event(self, *, run_id: str, session_id: str, envelope: dict[str, Any]) -> None:
@@ -1067,6 +1145,46 @@ class RunService:
             db.refresh(record)
             return str(record.id)
 
+    def _persist_generated_state_outputs(
+        self,
+        *,
+        settings: Settings,
+        session_id: str,
+        run_id: str,
+        files: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        storage = LocalStorage(settings.upload_storage_dir)
+        attachments: list[dict[str, Any]] = []
+        with self.database.session_factory() as db:
+            for runtime_path, file_data in sorted(files.items()):
+                payload = _state_file_payload_bytes(file_data)
+                filename = _state_output_filename(runtime_path)
+                storage_key, digest = storage.save_bytes(
+                    session_id=session_id,
+                    filename=filename,
+                    payload=payload,
+                )
+                content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                record = UploadRecord(
+                    session_id=session_id,
+                    message_id=None,
+                    filename=filename,
+                    content_type=content_type,
+                    size_bytes=len(payload),
+                    storage_key=storage_key,
+                    sha256=digest,
+                    extra={
+                        "source": "state_output",
+                        "runtime_path": runtime_path,
+                        "run_id": run_id,
+                    },
+                )
+                db.add(record)
+                db.flush()
+                attachments.append(_upload_attachment_manifest(record))
+            db.commit()
+        return attachments
+
 
 def _log_run(
     level: int,
@@ -1104,14 +1222,6 @@ def _count_phrase(count: int, singular: str, plural: str | None = None) -> str:
 
 def _runtime_config_log_summary(settings: Settings) -> tuple[str, dict[str, object]]:
     fields = settings.runtime_model_logging_summary()
-    if fields["selected_model_source"] == "custom_api":
-        base_url = fields.get("custom_model_base_url") or "configured base URL"
-        return (
-            "resolved custom model config using "
-            f"{fields.get('selected_model_provider') or 'custom_api'} base URL {base_url} with "
-            f"{fields.get('custom_model_headers_count', 0)} default headers",
-            fields,
-        )
     if fields["selected_model_name"]:
         provider = fields.get("selected_model_provider") or "configured"
         return (
@@ -1166,7 +1276,15 @@ def _should_persist_event_view(envelope: dict[str, Any]) -> bool:
     data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
     if data.get("transient") is True:
         return False
-    return event_type in {"status", "message.final", "tool", "skill", "sandbox", "error"}
+    return event_type in {
+        "status",
+        "message.final",
+        "tool",
+        "skill",
+        "subagent",
+        "sandbox",
+        "error",
+    }
 
 
 def _persist_event_views(
@@ -1297,6 +1415,10 @@ def _bridge_to_ui(*, envelope: SseEventEnvelope, session_id: str, sequence: int)
         event_type = "skill"
         status = "completed" if event.endswith("completed") else "running"
         detail = str(data.get("name") or "Skill event")
+    elif event.startswith("subagent."):
+        event_type = "subagent"
+        status = "completed" if event.endswith("completed") else "running"
+        detail = _subagent_event_detail(data)
     elif event.startswith("sandbox."):
         event_type = "sandbox"
         status = "completed" if event.endswith("completed") else "running"
@@ -1338,6 +1460,41 @@ def _extract_message_text(payload: Any) -> str:
         if "text" in payload and isinstance(payload["text"], str):
             return payload["text"]
     return ""
+
+
+def _subagent_event_detail(data: dict[str, Any]) -> str:
+    raw_input = data.get("input")
+    input_data = raw_input if isinstance(raw_input, dict) else {}
+    subagent_type = str(
+        input_data.get("subagent_type")
+        or input_data.get("subagent")
+        or input_data.get("agent")
+        or data.get("subagent_type")
+        or ""
+    ).strip()
+    return subagent_type or str(data.get("name") or "Subagent event")
+
+
+def _restore_subagent_detail(
+    ui_event: dict[str, Any],
+    *,
+    subagent_names_by_runtime_run: dict[str, str],
+) -> None:
+    raw_data = ui_event.get("data")
+    data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
+    runtime_run_id = str(data.get("runtime_run_id") or ui_event.get("run_id") or "")
+    detail = str(ui_event.get("detail") or "")
+    if ui_event.get("status") == "running":
+        if detail and detail not in {"task", "Subagent event"}:
+            subagent_names_by_runtime_run[runtime_run_id] = detail
+        return
+    if detail not in {"task", "Subagent event"}:
+        return
+    restored = subagent_names_by_runtime_run.get(runtime_run_id)
+    if not restored:
+        return
+    ui_event["detail"] = restored
+    ui_event["data"] = {**data, "subagent_type": restored}
 
 
 def _is_runtime_placeholder_text(value: str) -> bool:
@@ -1395,6 +1552,8 @@ def _resolve_run_attachments(
         storage_key = str(item.get("storage_key") or "").strip()
         if record is None and storage_key:
             record = records_by_storage_key.get(storage_key)
+            if record is None:
+                raise InvalidRunAttachmentError("Invalid attachment")
         if record is not None:
             if record.message_id is not None:
                 raise InvalidRunAttachmentError(
@@ -1485,6 +1644,132 @@ def _resolve_attachment_disk_path(*, upload_root: Path, storage_key: str) -> Pat
     if not storage_key:
         return None
     return (upload_root / storage_key).resolve()
+
+
+def _state_backend_files(*, attachments: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
+    files: dict[str, dict[str, str]] = {}
+    for attachment in attachments:
+        sandbox_path = str(attachment.get("sandbox_path") or "").strip()
+        upload_path = str(attachment.get("upload_path") or "").strip()
+        if not sandbox_path or not upload_path:
+            continue
+        disk_path = Path(upload_path)
+        if not disk_path.is_file():
+            continue
+        payload = disk_path.read_bytes()
+        try:
+            files[sandbox_path] = {
+                "content": payload.decode("utf-8"),
+                "encoding": "utf-8",
+            }
+        except UnicodeDecodeError:
+            files[sandbox_path] = {
+                "content": base64.b64encode(payload).decode("ascii"),
+                "encoding": "base64",
+            }
+    return files
+
+
+def _generated_state_output_files(
+    completion_output: Any,
+    *,
+    initial_files: Any,
+) -> dict[str, dict[str, Any]]:
+    output = (
+        completion_output.get("output")
+        if isinstance(completion_output, dict) and "output" in completion_output
+        else completion_output
+    )
+    if not isinstance(output, dict):
+        return {}
+    raw_files = output.get("files")
+    if not isinstance(raw_files, dict):
+        return {}
+    initial = initial_files if isinstance(initial_files, dict) else {}
+    generated: dict[str, dict[str, Any]] = {}
+    for path, file_data in raw_files.items():
+        runtime_path = str(path or "").strip()
+        if not runtime_path or not isinstance(file_data, dict):
+            continue
+        if runtime_path in initial and _state_file_payload_equal(file_data, initial[runtime_path]):
+            continue
+        generated[runtime_path] = file_data
+    return generated
+
+
+def _state_file_payload_equal(left: dict[str, Any], right: Any) -> bool:
+    if not isinstance(right, dict):
+        return False
+    return (
+        str(left.get("encoding") or "utf-8") == str(right.get("encoding") or "utf-8")
+        and _state_file_content_string(left) == _state_file_content_string(right)
+    )
+
+
+def _state_file_payload_bytes(file_data: dict[str, Any]) -> bytes:
+    content = _state_file_content_string(file_data)
+    encoding = str(file_data.get("encoding") or "utf-8")
+    if encoding == "base64":
+        try:
+            return base64.standard_b64decode(content)
+        except (binascii.Error, ValueError):
+            return content.encode("utf-8")
+    return content.encode("utf-8")
+
+
+def _state_file_content_string(file_data: dict[str, Any]) -> str:
+    content = file_data.get("content", "")
+    if isinstance(content, list):
+        return "\n".join(str(item) for item in content)
+    return str(content)
+
+
+def _state_output_filename(runtime_path: str) -> str:
+    name = Path(runtime_path).name.strip()
+    return name or "state-output.txt"
+
+
+def _upload_attachment_manifest(record: UploadRecord) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "name": record.filename,
+        "filename": record.filename,
+        "size": record.size_bytes,
+        "size_bytes": record.size_bytes,
+        "status": "generated",
+        "content_type": record.content_type,
+        "storage_key": record.storage_key,
+        "source": "state_output",
+        "runtime_path": (record.extra or {}).get("runtime_path", ""),
+    }
+
+
+def _append_message_attachments(record: MessageRecord, attachments: list[dict[str, Any]]) -> None:
+    if not attachments:
+        return
+    extra = dict(record.extra or {})
+    existing = extra.get("attachments")
+    extra["attachments"] = [
+        *(existing if isinstance(existing, list) else []),
+        *attachments,
+    ]
+    record.extra = extra
+
+
+def _link_uploads_to_message(
+    db: Session,
+    *,
+    attachments: list[dict[str, Any]],
+    message_id: str,
+) -> None:
+    if not attachments:
+        return
+    upload_ids = [str(item.get("id") or "") for item in attachments if item.get("id")]
+    if not upload_ids:
+        return
+    for record in db.query(UploadRecord).filter(UploadRecord.id.in_(upload_ids)).all():
+        record.message_id = message_id
+        db.add(record)
 
 
 def _resolve_sandbox_attachment_path(*, upload_path: Path | None, settings: Settings) -> str:

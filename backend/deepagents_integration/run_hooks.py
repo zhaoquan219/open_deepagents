@@ -41,10 +41,11 @@ def apply_run_input_hooks(
     *,
     context: RunInputHookContext,
     hook_specs: tuple[str, ...] = (),
+    hooks: tuple[Any, ...] = (),
 ) -> str:
-    hooks = _load_hooks(hook_specs) if hook_specs else ()
+    active_hooks = (*hooks, *(_load_hooks(hook_specs) if hook_specs else ()))
     content = context.content
-    for hook in hooks:
+    for hook in active_hooks:
         result = hook(replace(context, content=content))
         if result is None:
             continue
@@ -56,9 +57,10 @@ def apply_upload_hooks(
     *,
     context: UploadHookContext,
     hook_specs: tuple[str, ...] = (),
+    hooks: tuple[Any, ...] = (),
 ) -> dict[str, Any]:
     extra: dict[str, Any] = {}
-    for hook in _load_hooks(hook_specs):
+    for hook in (*hooks, *_load_hooks(hook_specs)):
         result = hook(context)
         if result is None:
             continue

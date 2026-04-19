@@ -68,6 +68,7 @@ function appendTimeline(activeRun, envelope, fallbackLabel) {
     kind: envelope.type,
     label: envelope.label || fallbackLabel,
     detail: envelope.detail,
+    data: envelope.data && typeof envelope.data === 'object' ? envelope.data : {},
     status: envelope.status || 'in_progress',
     timestamp: envelope.timestamp || new Date().toISOString(),
     aggregateCount: 1,
