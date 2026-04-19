@@ -385,7 +385,7 @@ button {
 
 .session-list {
   min-height: 0;
-  padding: 10px 10px 12px;
+  padding: 0px 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -504,7 +504,7 @@ button {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 14px 16px;
+  padding: 12px 16px;
 }
 
 .message-thread .el-scrollbar__view {
