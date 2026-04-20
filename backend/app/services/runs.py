@@ -38,6 +38,7 @@ from deepagents_integration.run_hooks import RunInputHookContext, apply_run_inpu
 
 RunBuilder = Callable[[DeepAgentsRuntimeConfig], Any]
 logger = logging.getLogger(__name__)
+MAX_REPLAY_BACKLOG_EVENTS = 500
 
 
 class InvalidRunAttachmentError(ValueError):
@@ -73,13 +74,15 @@ class RunState:
     cancel_requested: bool = False
     execution_loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
     execution_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    last_sequence: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def publish(self, envelope: dict[str, Any]) -> bool:
         with self.lock:
             if self.completed:
                 return False
-            self.envelopes.append(envelope)
+            self._remember_sequence(envelope)
+            self._append_replay_envelope(envelope)
             if envelope.get("type") == "status":
                 self.status = str(envelope.get("status") or self.status)
             elif envelope.get("type") == "error":
@@ -97,7 +100,8 @@ class RunState:
             if self.completed:
                 return False
             if envelope is not None:
-                self.envelopes.append(envelope)
+                self._remember_sequence(envelope)
+                self._append_replay_envelope(envelope)
             self.status = status
             self.completed = True
             subscribers = tuple(self.subscribers)
@@ -111,6 +115,21 @@ class RunState:
     def backlog_after(self, last_event_id: str | None) -> list[dict[str, Any]]:
         with self.lock:
             return _backlog_after(list(self.envelopes), last_event_id)
+
+    def _append_replay_envelope(self, envelope: dict[str, Any]) -> None:
+        data = envelope.get("data")
+        if isinstance(data, dict) and data.get("transient") is True:
+            return
+        self.envelopes.append(envelope)
+        if len(self.envelopes) > MAX_REPLAY_BACKLOG_EVENTS:
+            self.envelopes = self.envelopes[-MAX_REPLAY_BACKLOG_EVENTS:]
+
+    def _remember_sequence(self, envelope: dict[str, Any]) -> None:
+        try:
+            sequence = int(str(envelope.get("event_id") or "").rsplit(":", maxsplit=1)[-1])
+        except ValueError:
+            return
+        self.last_sequence = max(self.last_sequence, sequence)
 
     def add_subscriber(self, subscriber: RunSubscriber) -> None:
         with self.lock:
@@ -154,7 +173,7 @@ class RunState:
 
     def next_sequence(self) -> int:
         with self.lock:
-            return len(self.envelopes) + 1
+            return self.last_sequence + 1
 
 
 class RunEventViewBuffer:

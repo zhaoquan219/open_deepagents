@@ -21,13 +21,20 @@ export async function copyBlob(blob, mimeType) {
   const ClipboardItemCtor = globalThis.ClipboardItem
   if (navigator.clipboard?.write && typeof ClipboardItemCtor !== 'undefined') {
     try {
-      await navigator.clipboard.write([new ClipboardItemCtor({ [mimeType]: blob })])
+      if (mimeType === 'image/png') {
+        await copyPngBlobWithClipboard(blob, ClipboardItemCtor)
+      } else {
+        await navigator.clipboard.write([new ClipboardItemCtor({ [mimeType]: blob })])
+      }
       return 'clipboard'
     } catch (error) {
-      if (mimeType !== 'image/png') {
+      if (mimeType !== 'image/png' || isWindowsPlatform()) {
         throw error
       }
     }
+  }
+  if (mimeType === 'image/png' && isWindowsPlatform()) {
+    throw new Error('Image clipboard is not supported.')
   }
   if (mimeType === 'image/png') {
     return copyPngBlobWithExecCommand(blob)
@@ -107,6 +114,26 @@ async function copyPngBlobWithExecCommand(blob) {
   return 'fallback'
 }
 
+async function copyPngBlobWithClipboard(blob, ClipboardItemCtor) {
+  if (typeof ClipboardItemCtor.supports === 'function' && !ClipboardItemCtor.supports('image/png')) {
+    throw new Error('PNG clipboard is not supported.')
+  }
+
+  const pngBlob = blob.type === 'image/png' ? blob : blob.slice(0, blob.size, 'image/png')
+  try {
+    const dataUrl = await blobToDataUrl(pngBlob)
+    const htmlBlob = new globalThis.Blob([`<img alt="" src="${dataUrl}">`], { type: 'text/html' })
+    await navigator.clipboard.write([
+      new ClipboardItemCtor({
+        'image/png': pngBlob,
+        'text/html': htmlBlob,
+      }),
+    ])
+  } catch {
+    await navigator.clipboard.write([new ClipboardItemCtor({ 'image/png': pngBlob })])
+  }
+}
+
 function blobToDataUrl(blob) {
   return new Promise((resolve, reject) => {
     const reader = new globalThis.FileReader()
@@ -114,6 +141,14 @@ function blobToDataUrl(blob) {
     reader.onerror = () => reject(new Error('Unable to prepare PNG image.'))
     reader.readAsDataURL(blob)
   })
+}
+
+function isWindowsPlatform() {
+  const userAgentData = navigator['userAgentData'] || {}
+  const platform = String(
+    userAgentData.platform || navigator.platform || '',
+  ).toLowerCase()
+  return platform.includes('win')
 }
 
 function loadImage(url) {

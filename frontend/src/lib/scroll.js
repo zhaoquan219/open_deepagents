@@ -21,6 +21,9 @@ export function isNearBottom(metrics, threshold = BOTTOM_SCROLL_THRESHOLD) {
 }
 
 export function shouldForceFollowLatest(previousMessages, nextMessages, options = {}) {
+  if (options.userScrollLocked) {
+    return false
+  }
   if (options.suppressUserAppend) {
     return false
   }

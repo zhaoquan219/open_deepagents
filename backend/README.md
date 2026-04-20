@@ -1,26 +1,37 @@
-# Backend
+# open_deepagents Backend
 
-FastAPI backend for the open_deepagents workspace. This lane owns auth,
-session/message/upload persistence, run orchestration, schema initialization,
+The backend is a FastAPI service that owns authentication, users, sessions,
+messages, uploads, run orchestration, event streaming, generated-file export,
 and the bridge into DeepAgents.
 
-## Current Architecture
+## Main Responsibilities
 
-The runtime is configured through an agent package plus a model catalog:
+- Load application settings from `backend/.env`.
+- Load model/provider choices from `backend/models.json`.
+- Resolve the main agent package from `DEEPAGENTS_MAIN_AGENT`.
+- Persist sessions, messages, uploads, runs, runtime links, and event views.
+- Start and cancel DeepAgents runs.
+- Normalize runtime events into the UI SSE contract.
+- Export generated files from the `state` backend into downloadable uploads.
+- Serve authenticated upload download links.
 
-- Main agent: `backend/agents:AGENT`
-- Main prompt: `backend/agents/prompts/system.md`
-- Tools: `backend/agents/tools`
-- Middleware: `backend/agents/middleware`
-- Run/upload hooks: `backend/agents/hooks`
-- Skills: `backend/agents/skills`
-- Memory: `backend/agents/memory`
-- Subagents: `backend/agents/subagents`
-- Models: `backend/models.json`
+## Directory Map
 
-The previous extension-directory and environment-only model configuration have
-been retired. Keep runtime customization in `backend/agents/` and model/provider
-selection in `backend/models.json`.
+```text
+backend/
+├── agents/                    Default recursive agent package
+├── app/
+│   ├── api/                   FastAPI routes and dependencies
+│   ├── core/                  Settings, runtime catalog, database bootstrap
+│   ├── db/                    SQLAlchemy models and schema management
+│   ├── schemas/               API response/request schemas
+│   ├── services/              Run/session orchestration
+│   └── storage.py             Local upload storage
+├── deepagents_integration/    DeepAgents adapter layer
+├── models.example.json        Model catalog template
+├── pyproject.toml             Python project and tooling
+└── tests/                     Backend test suite
+```
 
 ## Local Development
 
@@ -33,79 +44,134 @@ uv run python -m app.db.manage init
 uv run uvicorn app.main:app --reload
 ```
 
-The app also initializes the schema on startup. The explicit `init` command is
-useful for MySQL deployments and harmless for SQLite.
+The service is available at:
 
-## Environment
+- API root: `http://127.0.0.1:8000/api`
+- Health check: `http://127.0.0.1:8000/health`
+
+The app initializes the schema on startup. The explicit `init` command is useful
+for MySQL and harmless for SQLite.
+
+## Configuration
 
 The backend reads `backend/.env`.
 
-Core runtime settings:
+### Application and Auth
 
-| Variable | Purpose |
+| Setting | Purpose |
+| --- | --- |
+| `DATABASE_URL` | SQLAlchemy database URL. SQLite and MySQL are supported by the included dependencies. |
+| `ADMIN_AUTH_ENABLED` | Enables the login gate and per-user session isolation. |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | Default login credentials. |
+| `ADMIN_USERS` | Optional JSON map or comma-separated `username=password` pairs. |
+| `ADMIN_TOKEN_SECRET` | JWT signing secret. Use a long random value outside local dev. |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated frontend origins. |
+
+### Uploads
+
+| Setting | Purpose |
+| --- | --- |
+| `UPLOAD_STORAGE_DIR` | Directory for user uploads and exported generated files. |
+| `MAX_UPLOAD_SIZE_BYTES` | Per-file upload limit. |
+
+Uploads are stored on disk and tracked in the database. Browser download links
+use bearer auth or an `access_token` query parameter.
+
+### DeepAgents Runtime
+
+| Setting | Purpose |
 | --- | --- |
 | `DEEPAGENTS_MAIN_AGENT` | Import spec for the main agent. Default: `agents:AGENT`. |
 | `DEEPAGENTS_MODEL_CONFIG_PATH` | Model catalog path. Default: `./models.json`. |
-| `DEEPAGENTS_DEFAULT_MODEL` | Catalog model ID, for example `openai/gpt-5-4`. |
-| `DEEPAGENTS_AGENT_NAME` | Runtime graph name. |
-| `DEEPAGENTS_BUILTIN_TOOLS` | Optional built-in tool allowlist. |
-| `DEEPAGENTS_DISABLED_BUILTIN_TOOLS` | Optional built-in tool blocklist. |
-| `DEEPAGENTS_SANDBOX_KIND` | `state`, `filesystem`, `local_shell`, or `custom`. |
-| `DEEPAGENTS_SANDBOX_BACKEND_SPEC` | Import spec for custom backend factories. |
+| `DEEPAGENTS_DEFAULT_MODEL` | Model ID selected from the catalog. |
+| `DEEPAGENTS_AGENT_NAME` | Name passed to `create_deep_agent`. |
+| `DEEPAGENTS_DEBUG` | Enables DeepAgents debug behavior. |
+| `DEEPAGENTS_RECURSION_LIMIT` | LangGraph recursion limit for runs. |
 
-Auth/session settings:
+Model providers and model-specific options belong in `models.json`.
 
-- `ADMIN_AUTH_ENABLED=true` isolates sessions by authenticated username.
-- `ADMIN_AUTH_ENABLED=false` disables the login gate for trusted local use.
-- `ADMIN_USERS` can add multiple users as JSON, for example
-  `{"alice":"alice-secret","bob":"bob-secret"}`.
+## Agent Package Loading
 
-Uploads:
+The backend loads `backend/agents:AGENT` by default. The mapping can define:
 
-- `UPLOAD_STORAGE_DIR=./data/uploads` resolves under `backend/data/uploads`.
-- User uploads are attached to user messages.
-- Generated files from the `state` backend are exported as uploads and attached
-  to the final assistant message.
-- `/api/uploads/{upload_id}/content` supports bearer auth and `access_token`
-  query auth so browser download links can work.
+- `system_prompt`
+- `model`
+- `workspace`
+- `tools`
+- `builtin_tools`
+- `disabled_builtin_tools`
+- `middleware`
+- `hooks`
+- `skills`
+- `memory`
+- `permissions`
+- `subagents`
 
-## Agent Hooks
+Subagents are resolved recursively and support the same runtime-facing controls.
+See [agents/README.md](agents/README.md).
 
-Run-input hooks receive:
+## Built-in Tools and Permissions
 
-- `session_id`
-- `run_id`
-- `role`
-- `content`
-- `attachments`
-- `is_current_run`
+Use built-in tool filtering to decide what the model can see:
 
-Return a string or `{"content": "..."}` to replace message content, or `None`
-to leave it unchanged.
-
-Upload hooks receive metadata only and return a mapping to merge into
-`UploadRecord.extra`.
-
-Default examples live in `backend/agents/hooks/attachment_hooks.py`.
-
-## Built-in Tool Filtering
-
-DeepAgents built-ins can be filtered without editing source:
-
-```dotenv
-DEEPAGENTS_BUILTIN_TOOLS=write_todos,ls,read_file,glob,grep,task
-DEEPAGENTS_DISABLED_BUILTIN_TOOLS=execute,write_file,edit_file
+```python
+"builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
+"disabled_builtin_tools": ("execute", "write_file", "edit_file"),
 ```
 
-The allowlist is applied first. The blocklist is then applied to the remaining
-built-ins. Custom tools from `backend/agents/tools` pass through unchanged.
+Use permissions to decide what visible file tools may access:
 
-## Verification
+```python
+"permissions": [
+    {"operations": ["read"], "paths": ["/workspace/main"]},
+    {"operations": ["write"], "paths": ["/workspace/main/output"]},
+]
+```
 
-From the repository root:
+`read` covers `ls`, `read_file`, `glob`, and `grep`.
+`write` covers `write_file` and `edit_file`.
+
+When permission specs are configured, unmatched read/write paths are denied.
+
+## Sandbox Backends
+
+| Kind | Setting | Behavior |
+| --- | --- | --- |
+| `state` | `DEEPAGENTS_SANDBOX_KIND=state` | Virtual in-memory file state. |
+| `filesystem` | `DEEPAGENTS_SANDBOX_KIND=filesystem` | File tools operate under `DEEPAGENTS_SANDBOX_ROOT_DIR`. |
+| `local_shell` | `DEEPAGENTS_SANDBOX_KIND=local_shell` | File tools plus host command execution through `execute`. |
+| `custom` | `DEEPAGENTS_SANDBOX_KIND=custom` | Loads `DEEPAGENTS_SANDBOX_BACKEND_SPEC`. |
+
+For `filesystem` and `local_shell`, the app uses virtual path semantics so `/`
+inside file tools maps to the configured sandbox root. See
+[../docs/sandbox.md](../docs/sandbox.md).
+
+## Run Events
+
+DeepAgents runtime events are normalized before they reach the UI. The backend:
+
+- streams transient assistant deltas without persisting every token;
+- persists concise event views for status, tool, skill, subagent, sandbox, final
+  message, and error events;
+- redacts oversized strings and base64-like payloads before SSE serialization;
+- caps in-memory replay backlog for long-running sessions;
+- preserves terminal status events for reconnect and cancellation flows.
+
+## Generated Files
+
+In `state` sandbox mode, the run input can contain virtual files under
+`/uploads/...`. When the runtime returns changed or new virtual files, the
+backend exports them to `UPLOAD_STORAGE_DIR`, creates upload records, and attaches
+them to the final assistant message.
+
+## Useful Commands
 
 ```bash
-PYTHONPATH=.:backend backend/.venv/bin/pytest -q
-backend/.venv/bin/ruff check backend tests
-backend/.venv/bin/mypy backend/app backend/deepagents_integration
+cd backend
+uv run python -m app.db.manage init
+uv run uvicorn app.main:app --reload
+uv run pytest
+uv run ruff check .
+uv run mypy app/core/config.py app/core/runtime_catalog.py app/services/runs.py deepagents_integration
+uv run pytest ../tests/backend/test_deepagents_integration.py
 ```

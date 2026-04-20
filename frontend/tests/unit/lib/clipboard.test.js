@@ -87,4 +87,37 @@ describe('clipboard helpers', () => {
     expect(body.appendChild).toHaveBeenCalled()
     expect(body.removeChild).toHaveBeenCalled()
   })
+
+  it('copies PNG blobs with the native Clipboard API when supported', async () => {
+    const write = vi.fn(async () => {})
+    class FakeClipboardItem {
+      constructor(items) {
+        this.items = items
+      }
+    }
+    class FakeFileReader {
+      readAsDataURL() {
+        this.result = 'data:image/png;base64,eA=='
+        this.onload()
+      }
+    }
+    vi.stubGlobal('navigator', { clipboard: { write }, platform: 'Win32' })
+    vi.stubGlobal('ClipboardItem', FakeClipboardItem)
+    vi.stubGlobal('FileReader', FakeFileReader)
+
+    await expect(copyBlob(new globalThis.Blob(['x']), 'image/png')).resolves.toBe('clipboard')
+
+    expect(write).toHaveBeenCalledWith([expect.any(FakeClipboardItem)])
+    expect(write.mock.calls[0][0][0].items['image/png']).toBeInstanceOf(globalThis.Blob)
+    expect(write.mock.calls[0][0][0].items['text/html']).toBeInstanceOf(globalThis.Blob)
+  })
+
+  it('does not report PNG copy success from the execCommand fallback on Windows', async () => {
+    vi.stubGlobal('navigator', { clipboard: {}, platform: 'Win32' })
+    vi.stubGlobal('ClipboardItem', undefined)
+
+    await expect(copyBlob(new globalThis.Blob(['x']), 'image/png')).rejects.toThrow(
+      'Image clipboard is not supported.',
+    )
+  })
 })

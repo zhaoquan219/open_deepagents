@@ -22,8 +22,35 @@ from app.db.models import (
     UploadRecord,
 )
 from app.main import create_app
+from app.services.runs import MAX_REPLAY_BACKLOG_EVENTS, RunState
 
 DEFAULT_RUN_INPUT_HOOK_SPEC = "agents.hooks:RUN_INPUT_HOOKS"
+
+
+def test_run_state_drops_transient_events_and_caps_replay_backlog() -> None:
+    state = RunState(run_id="run-long", session_id="session-long")
+
+    assert state.publish(
+        {
+            "event_id": "run-long:000001",
+            "type": "message.delta",
+            "data": {"transient": True},
+        }
+    )
+    for index in range(MAX_REPLAY_BACKLOG_EVENTS + 20):
+        state.publish(
+            {
+                "event_id": f"run-long:{index + 2:06d}",
+                "type": "tool",
+                "data": {"transient": False},
+            }
+        )
+
+    backlog = state.backlog_after(None)
+
+    assert len(backlog) == MAX_REPLAY_BACKLOG_EVENTS
+    assert all(envelope["type"] != "message.delta" for envelope in backlog)
+    assert backlog[0]["event_id"] == "run-long:000022"
 
 
 def login_headers(client: TestClient, username: str, password: str) -> dict[str, str]:

@@ -2,6 +2,8 @@ import { reactive } from 'vue'
 
 import { uiCopy } from '../lib/copy.js'
 
+const MAX_TIMELINE_ENTRIES = 300
+
 function createClientId() {
   return globalThis.crypto?.randomUUID?.() || `run-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
@@ -91,15 +93,13 @@ function appendTimeline(activeRun, envelope, fallbackLabel) {
   }
 
   activeRun.timeline.push(entry)
+  if (activeRun.timeline.length > MAX_TIMELINE_ENTRIES) {
+    activeRun.timeline.splice(0, activeRun.timeline.length - MAX_TIMELINE_ENTRIES)
+  }
 }
 
 export function reduceRunState(activeRun, envelope) {
-  const next = activeRun
-    ? {
-        ...activeRun,
-        timeline: [...activeRun.timeline],
-      }
-    : createInitialRun(envelope.runId, envelope.sessionId)
+  const next = activeRun ? { ...activeRun } : createInitialRun(envelope.runId, envelope.sessionId)
 
   next.lastEventId = envelope.eventId
 

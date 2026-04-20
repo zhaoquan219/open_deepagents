@@ -1,57 +1,22 @@
-# Sandbox Configuration
+# Sandbox Guide
 
-Use `DEEPAGENTS_SANDBOX_KIND` and the related `DEEPAGENTS_SANDBOX_*`
-settings to select the DeepAgents backend that matches your deployment
-boundary.
+The sandbox configuration controls where DeepAgents file tools read and write,
+and whether shell execution is available. Choose the narrowest backend that fits
+your deployment.
 
 ## Backend Kinds
 
-| Kind | What it means | Typical use |
+| Kind | Best for | Behavior |
 | --- | --- | --- |
-| `state` | DeepAgents keeps a virtual in-memory file state. | Safest default for chat and tool-only runs. |
-| `filesystem` | DeepAgents file tools operate under `DEEPAGENTS_SANDBOX_ROOT_DIR`. | Read/write a controlled backend directory. |
-| `local_shell` | File tools plus `execute` can run on the host through DeepAgents. | Trusted local/operator environments only. |
-| `custom` | A backend instance or factory loaded from `DEEPAGENTS_SANDBOX_BACKEND_SPEC`. | Bring your own isolation backend. |
+| `state` | Default chat and file-processing runs. | Virtual in-memory file state. No host shell. |
+| `filesystem` | File tools over a controlled directory. | Reads/writes through DeepAgents file tools under a configured root. |
+| `local_shell` | Trusted local automation. | File tools plus host command execution through `execute`. |
+| `custom` | External isolation service or custom policy. | Loads a backend instance or factory from an import spec. |
 
-`local_shell` is not process isolation. If you expose it, pair it with careful
-permissions, tool filtering, and trusted users.
+`local_shell` is not process isolation. Only enable it for trusted users and
+pair it with strict built-in tool filtering and permissions.
 
-## Path Model
-
-Upload records may carry three path-like fields:
-
-- `storage_key`: relative to `UPLOAD_STORAGE_DIR`, for example
-  `session-id/uuid-notes.txt`.
-- `upload_path`: absolute host path, for example
-  `/repo/backend/data/uploads/session-id/uuid-notes.txt`.
-- `sandbox_path`: path to use from inside the configured sandbox root when the
-  upload file is under that root.
-
-For `filesystem` and `local_shell`, the app forces virtual path semantics so `/`
-inside file tools maps to `DEEPAGENTS_SANDBOX_ROOT_DIR`, not the host filesystem
-root. In this mode, `sandbox_path` is formatted as a virtual path with a leading
-slash, for example `/uploads/session-id/uuid-notes.txt`. For the default `state`
-backend, uploads are copied into the run's virtual file state and `sandbox_path`
-is always a leading-slash virtual path under `/uploads/`.
-
-When the `state` backend produces new or changed files, the app exports those
-files after the run completes. Exported files become `UploadRecord` rows under
-`UPLOAD_STORAGE_DIR` and are attached to the final assistant message so users can
-download them from the UI.
-
-## Upload Visibility
-
-- User uploads are persisted before the agent run starts.
-- Each upload is stored at `UPLOAD_STORAGE_DIR/<session_id>/<uuid>-<filename>`.
-- The default `UPLOAD_STORAGE_DIR=./data/uploads` resolves to
-  `backend/data/uploads`, and default read-only runtime permissions include
-  `backend/data`.
-- If `UPLOAD_STORAGE_DIR` points outside `backend/data`, the backend
-  automatically adds that upload directory to read permissions.
-- The run-input hook receives the resolved attachment metadata, so you can change
-  how paths are described to the model without editing `app/services/runs.py`.
-
-## Examples
+## Recommended Defaults
 
 Safe default:
 
@@ -63,18 +28,16 @@ Filesystem backend rooted under backend data:
 
 ```dotenv
 DEEPAGENTS_SANDBOX_KIND=filesystem
+DEEPAGENTS_SANDBOX_ROOT_DIR=./data
 DEEPAGENTS_SANDBOX_VIRTUAL_MODE=true
 ```
 
-If `DEEPAGENTS_SANDBOX_ROOT_DIR` is omitted for `filesystem` or `local_shell`,
-the backend defaults it to `backend/data`.
-
-Trusted local shell, usually with write/execute tools filtered unless needed:
+Trusted local shell:
 
 ```dotenv
 DEEPAGENTS_SANDBOX_KIND=local_shell
 DEEPAGENTS_SANDBOX_ROOT_DIR=./data
-DEEPAGENTS_DISABLED_BUILTIN_TOOLS=execute,write_file,edit_file
+DEEPAGENTS_SANDBOX_VIRTUAL_MODE=true
 ```
 
 Custom backend:
@@ -84,6 +47,122 @@ DEEPAGENTS_SANDBOX_KIND=custom
 DEEPAGENTS_SANDBOX_BACKEND_SPEC=path/to/custom_sandbox.py:build_backend
 ```
 
-Custom backend specs can point to an importable module or a Python file path.
-The default agent package lives in `backend/agents`; sandbox backend factories do
-not need to live inside that package.
+Custom specs can point to an importable module or a Python file path.
+
+## Virtual Paths
+
+For `filesystem` and `local_shell`, the app uses virtual path semantics. Inside
+DeepAgents file tools, `/` maps to `DEEPAGENTS_SANDBOX_ROOT_DIR`, not to the host
+filesystem root.
+
+Example:
+
+```dotenv
+DEEPAGENTS_SANDBOX_ROOT_DIR=./data
+```
+
+A tool path like `/uploads/session/file.txt` maps to:
+
+```text
+backend/data/uploads/session/file.txt
+```
+
+This path model keeps prompts and tools stable across macOS, Linux, and Windows.
+
+## Upload Paths
+
+Upload records include:
+
+- `storage_key`: path relative to `UPLOAD_STORAGE_DIR`;
+- `upload_path`: absolute host path;
+- `sandbox_path`: path the model should use with file tools.
+
+For `state`, uploads are copied into virtual files under `/uploads/...`.
+For `filesystem` and `local_shell`, `sandbox_path` is emitted only when the file
+is inside the configured sandbox root.
+
+The default `UPLOAD_STORAGE_DIR=./data/uploads` keeps uploads under
+`backend/data/uploads`, which is inside the default sandbox root.
+
+## Generated Files
+
+When the `state` backend finishes a run, the backend compares final virtual file
+state with the initial uploaded files. New or changed files are exported to
+`UPLOAD_STORAGE_DIR`, inserted as upload records, and attached to the final
+assistant message.
+
+Large or binary state payloads are summarized or redacted in runtime events so
+logs and UI event storage remain responsive.
+
+## Built-in Tools and Permissions
+
+Sandbox safety uses two layers.
+
+Tool visibility:
+
+```python
+"builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
+"disabled_builtin_tools": ("execute", "write_file", "edit_file"),
+```
+
+Path permissions:
+
+```python
+"permissions": [
+    {"operations": ["read"], "paths": ["/workspace/main"]},
+    {"operations": ["write"], "paths": ["/workspace/main/output"]},
+]
+```
+
+`read` covers `ls`, `read_file`, `glob`, and `grep`.
+`write` covers `write_file` and `edit_file`.
+
+Both layers must allow an action. If a tool is hidden, the model cannot call it.
+If a visible tool targets an unpermitted path, the call is denied.
+
+When permission specs are configured, unmatched read/write paths are denied.
+
+## Practical Profiles
+
+### Read-only assistant
+
+```python
+"builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
+"disabled_builtin_tools": ("execute", "write_file", "edit_file"),
+"permissions": [
+    {"operations": ["read"], "paths": ["/workspace/main", "/uploads"]},
+],
+```
+
+### Controlled writer
+
+```python
+"builtin_tools": ("write_todos", "ls", "read_file", "write_file", "edit_file", "glob", "grep", "task"),
+"disabled_builtin_tools": ("execute",),
+"permissions": [
+    {"operations": ["read"], "paths": ["/workspace/main", "/uploads"]},
+    {"operations": ["write"], "paths": ["/workspace/main/output"]},
+],
+```
+
+### Trusted local shell
+
+```python
+"builtin_tools": ("write_todos", "ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute", "task"),
+"permissions": [
+    {"operations": ["read"], "paths": ["/workspace/main", "/uploads"]},
+    {"operations": ["write"], "paths": ["/workspace/main/output"]},
+],
+```
+
+Only use this profile when the deployment boundary already trusts the operator.
+
+## Checklist Before Enabling Host Access
+
+- Keep `ADMIN_AUTH_ENABLED=true` unless the deployment is trusted local only.
+- Use long random admin passwords and token secrets.
+- Keep uploads inside the sandbox root when models need file-tool access.
+- Hide `execute` unless command execution is required.
+- Hide `write_file` and `edit_file` unless writes are required.
+- Add explicit read/write permissions for the smallest useful paths.
+- Prefer `state` for general chat and upload analysis.

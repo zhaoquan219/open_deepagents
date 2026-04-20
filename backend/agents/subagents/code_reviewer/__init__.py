@@ -9,6 +9,14 @@ from agents.subagents.code_reviewer.subagents import SUBAGENTS
 from agents.subagents.code_reviewer.tools import TOOLS
 
 ROOT = Path(__file__).parent
+READ_ONLY_BUILTIN_TOOLS = (
+    "write_todos",
+    "ls",
+    "read_file",
+    "glob",
+    "grep",
+    "task",
+)
 
 SUBAGENT = {
     "id": "code-reviewer",
@@ -19,6 +27,8 @@ SUBAGENT = {
     "model": None,
     "workspace": "/workspace/reviews",
     "tools": TOOLS,
+    "builtin_tools": READ_ONLY_BUILTIN_TOOLS,
+    "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
     "middleware": MIDDLEWARE,
     "skills": SKILLS,
     "memory": MEMORY,

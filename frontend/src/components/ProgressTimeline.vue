@@ -236,7 +236,7 @@ watch(
     }
     await scrollToLatest()
   },
-  { deep: true, flush: 'post' },
+  { flush: 'post' },
 )
 
 onMounted(async () => {

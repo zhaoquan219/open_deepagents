@@ -1,59 +1,52 @@
 # open_deepagents
 
-`open_deepagents` 是一个可运行的 DeepAgents Web 工作台脚手架。它提供
-Agent 应用外壳：管理员登录、会话历史、文件上传、流式运行事件、Vue
-聊天界面、模型选择、subagent 状态展示，以及可以直接改造的 agent 包。
+`open_deepagents` 是一个可直接运行的 DeepAgents Web 工作台。它包含 FastAPI
+后端、Vue 聊天界面、持久化会话、文件上传和生成文件下载、流式运行事件、模型
+选择、Mermaid 渲染、sandbox 控制，以及一个可递归扩展的 `backend/agents/`
+agent 包。
 
 English documentation: [README.md](README.md)
 
 ![DeepAgents 工作台截图](docs/images/workspace-zh.png)
 
+## 功能一览
+
+- 管理员登录，可配置多个用户。
+- 会话历史和消息持久化。
+- 文件上传，附件信息会进入 agent run。
+- SSE 流式回复。
+- 运行时间线展示 run、tool、skill、sandbox、subagent 状态。
+- Markdown 和 Mermaid 渲染。
+- 浏览器支持图片剪贴板时，可复制 Mermaid PNG 图片。
+- `models.json` 模型目录，支持 OpenAI-compatible provider。
+- `backend/agents/` 递归 agent 包，可配置提示词、工具、中间件、钩子、技能、
+  记忆和 subagent。
+- 支持 `state`、`filesystem`、`local_shell`、`custom` sandbox backend。
+
 ## 架构一眼看懂
 
 ```text
-frontend/  Vue 3 控制台：登录、会话、聊天、附件、Mermaid、运行面板
-backend/   FastAPI 服务：认证、持久化、上传、运行编排
-agents/    Agent 包：提示词、工具、中间件、钩子、技能、记忆、subagent
-models.json 模型目录：provider、模型 ID、OpenAI-compatible 参数
+frontend/                 Vue 3 UI：登录、会话、聊天、上传、运行时间线
+backend/                  FastAPI API：认证、持久化、上传、运行编排
+backend/agents/           后端加载的递归 agent 包
+backend/models.json       前端模型选择器读取的模型目录
+docs/                     用户指南和截图
+packages/contracts/       共享事件契约样例
+tests/                    仓库级后端集成测试
+verification/             脚手架和契约审计工具
 ```
 
-请求流程：
+一次运行的大致流程：
 
-1. 前端登录并保存 bearer token。
-2. 用户打开会话、上传文件、发送问题。
-3. 后端保存用户消息并启动 DeepAgents run。
-4. `backend/agents:AGENT` 被解析为 tools、hooks、skills、memory、subagents。
-5. 运行事件被转换成前端 SSE 事件格式。
-6. 前端更新聊天记录和运行面板。
-7. `state` backend 中生成的新文件会导出到 `backend/data/uploads`，并作为
-   助手回复附件展示和下载。
-
-## 目录结构
-
-```text
-.
-├── backend/
-│   ├── agents/                       当前 agent 包
-│   │   ├── prompts/system.md          主系统提示词
-│   │   ├── tools/                     工具
-│   │   ├── middleware/                中间件
-│   │   ├── hooks/                     run-input / upload hooks
-│   │   ├── skills/                    DeepAgents skills
-│   │   ├── memory/                    Markdown memory
-│   │   └── subagents/                 子 Agent 包
-│   ├── app/                          FastAPI 应用
-│   ├── deepagents_integration/       DeepAgents 适配层
-│   ├── models.example.json           模型目录模板
-│   └── tests/                        后端测试
-├── frontend/src/                     Vue UI、API client、store、copy
-├── packages/contracts/               共享事件契约
-├── docs/                             文档和截图
-├── tests/                            仓库级测试
-└── verification/                     审计与契约校验
-```
-
-当前架构已经没有 `backend/extensions/`。自定义逻辑请放在
-`backend/agents/` 下，或放到可 import 的模块后从 agent 包引用。
+1. 前端登录并保存 API token。
+2. 用户选择或创建会话。
+3. 用户上传文件并发送消息。
+4. 后端保存用户消息并启动 DeepAgents run。
+5. `backend/agents:AGENT` 解析出提示词、工具、中间件、钩子、技能、记忆、
+   permissions 和 subagents。
+6. 运行事件转换为前端 SSE 事件并推送到浏览器。
+7. 前端更新聊天记录和运行时间线。
+8. `state` backend 生成的文件会导出为上传记录，并挂到最终助手回复上。
 
 ## 快速开始
 
@@ -64,30 +57,24 @@ cp backend/.env.example backend/.env
 cp backend/models.example.json backend/models.json
 ```
 
-编辑 `backend/models.json`，填入真实 provider 凭据。推荐用环境变量占位，
-例如 `${OPENAI_API_KEY}`。应用配置只读取 `backend/.env`。
+编辑 `backend/models.json`，通过 `${OPENAI_API_KEY}` 这类环境变量占位配置真实
+凭据。应用配置读取 `backend/.env`。
 
-关键配置：
+常用 `.env` 配置：
 
-| 变量 | 说明 |
+| 配置 | 用途 |
 | --- | --- |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | 默认登录账号。 |
+| `ADMIN_USERS` | 多用户 JSON 映射。 |
+| `UPLOAD_STORAGE_DIR` | 上传文件和生成文件存储目录。 |
 | `DEEPAGENTS_MAIN_AGENT` | 主 agent import spec，默认 `agents:AGENT`。 |
 | `DEEPAGENTS_MODEL_CONFIG_PATH` | 模型目录路径，默认 `./models.json`。 |
-| `DEEPAGENTS_DEFAULT_MODEL` | 模型目录中的模型 ID，例如 `openai/gpt-5-4`。 |
-| `DEEPAGENTS_AGENT_NAME` | 传给 DeepAgents graph 的名称。 |
-| `DEEPAGENTS_BUILTIN_TOOLS` | DeepAgents 内置工具 allowlist。 |
-| `DEEPAGENTS_DISABLED_BUILTIN_TOOLS` | DeepAgents 内置工具 blocklist。 |
-| `DEEPAGENTS_SANDBOX_*` | sandbox backend 和安全边界配置。 |
-| `UPLOAD_STORAGE_DIR` | 上传和生成附件目录，默认 `backend/data/uploads`。 |
+| `DEEPAGENTS_DEFAULT_MODEL` | 模型目录中的模型 ID。 |
+| `DEEPAGENTS_SANDBOX_KIND` | `state`、`filesystem`、`local_shell` 或 `custom`。 |
+| `DEEPAGENTS_SANDBOX_ROOT_DIR` | filesystem/local-shell 文件工具的根目录。 |
+| `DEEPAGENTS_SANDBOX_BACKEND_SPEC` | 自定义 backend factory 的 import spec。 |
 
-旧配置 `DEEPAGENTS_MODEL`、`CUSTOM_API_*`、`DEEPAGENTS_TOOL_SPECS`、
-`DEEPAGENTS_MIDDLEWARE_SPECS`、`DEEPAGENTS_RUN_INPUT_HOOK_SPECS`、
-`DEEPAGENTS_UPLOAD_HOOK_SPECS` 已不属于当前架构。模型放进 `models.json`，
-工具/中间件/钩子放进 `backend/agents/`。
-
-### 2. 启动
-
-后端：
+### 2. 启动后端
 
 ```bash
 cd backend
@@ -96,7 +83,12 @@ uv run python -m app.db.manage init
 uv run uvicorn app.main:app --reload
 ```
 
-前端：
+默认地址：
+
+- `http://127.0.0.1:8000/api`
+- `http://127.0.0.1:8000/health`
+
+### 3. 启动前端
 
 ```bash
 cd frontend
@@ -104,17 +96,42 @@ npm install
 npm run dev
 ```
 
-默认地址：
+前端默认地址是 `http://127.0.0.1:5173`。
 
-- API: `http://127.0.0.1:8000/api`
-- 健康检查: `http://127.0.0.1:8000/health`
-- 前端: `http://127.0.0.1:5173`
+## 模型目录
 
-默认登录账号来自 `backend/.env` 的 `ADMIN_USERNAME` / `ADMIN_PASSWORD`。
+`backend/models.json` 控制前端输入框里的模型选择器。
 
-## Agent 包怎么改
+示例：
 
-主入口是 `backend/agents:AGENT`：
+```json
+{
+  "model": "openai/gpt-5-4",
+  "provider": {
+    "openai": {
+      "name": "OpenAI",
+      "options": {
+        "api_key": "${OPENAI_API_KEY}",
+        "base_url": "https://api.openai.com/v1"
+      },
+      "models": {
+        "gpt-5-4": {
+          "name": "GPT-5.4",
+          "model": "gpt-5.4",
+          "temperature": null,
+          "extra_body": {}
+        }
+      }
+    }
+  }
+}
+```
+
+`provider.options` 和模型字段会传给 `ChatOpenAI`。每个模型条目的参数保持扁平。
+
+## Agent 包
+
+默认主 agent 是 `backend/agents:AGENT`。
 
 ```python
 AGENT = {
@@ -122,7 +139,10 @@ AGENT = {
     "name": "deepagents-web",
     "system_prompt": ROOT / "prompts" / "system.md",
     "model": None,
+    "workspace": "/workspace/main",
     "tools": TOOLS,
+    "builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
+    "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
     "middleware": MIDDLEWARE,
     "hooks": {"run_input": RUN_INPUT_HOOKS, "upload": UPLOAD_HOOKS},
     "skills": SKILLS,
@@ -131,9 +151,9 @@ AGENT = {
 }
 ```
 
-`model=None` 表示使用 `DEEPAGENTS_DEFAULT_MODEL`。subagent 可以配置自己的
-`model`，也可以继承默认模型。Sandbox 是全局配置，agent/subagent 不再定义
-自己的 sandbox。
+`model=None` 表示使用 `DEEPAGENTS_DEFAULT_MODEL`。Subagent 支持同样的字段，也
+可以配置自己的 `model`、`workspace`、工具、内置工具过滤、permissions、技能、
+记忆和嵌套 subagents。
 
 常改文件：
 
@@ -141,70 +161,80 @@ AGENT = {
 - 工具：[backend/agents/tools](backend/agents/tools)
 - 中间件：[backend/agents/middleware](backend/agents/middleware)
 - 钩子：[backend/agents/hooks](backend/agents/hooks)
-- 技能选择：[backend/agents/skills/__init__.py](backend/agents/skills/__init__.py)
-- 记忆选择：[backend/agents/memory/__init__.py](backend/agents/memory/__init__.py)
-- 子 Agent：[backend/agents/subagents](backend/agents/subagents)
+- 技能：[backend/agents/skills](backend/agents/skills)
+- 记忆：[backend/agents/memory](backend/agents/memory)
+- Subagents：[backend/agents/subagents](backend/agents/subagents)
 
-选择规则支持 `*`、单个字符串或列表。示例见
-[backend/agents/README.md](backend/agents/README.md)。
+Agent 包示例见 [backend/agents/README.md](backend/agents/README.md)。
 
-## 模型目录
+## 工具可见性和权限
 
-`backend/models.json` 定义 provider 和可选模型，前端通过
-`GET /api/runtime/options` 读取并展示在输入框模型选择器里。
+内置工具和文件权限是两层控制：
 
-模型目录大致结构：
+- `builtin_tools` / `disabled_builtin_tools` 决定模型能看到哪些 DeepAgents 内置工具名。
+- `permissions` 决定可见文件工具被调用后，实际能操作哪些路径。
 
-```json
-{
-  "model": "openai/gpt-5-4",
-  "provider": {
-    "openai": {
-      "options": {"api_key": "${OPENAI_API_KEY}"},
-      "models": {
-        "gpt-5-4": {"model": "gpt-5.4", "temperature": null}
-      }
-    }
-  }
-}
+`operations=["read"]` 覆盖 `ls`、`read_file`、`glob`、`grep`。
+`operations=["write"]` 覆盖 `write_file`、`edit_file`。
+
+示例：
+
+```python
+"builtin_tools": ("ls", "read_file", "glob", "grep", "task"),
+"disabled_builtin_tools": ("execute", "write_file", "edit_file"),
+"permissions": [
+    {"operations": ["read"], "paths": ["/workspace/main"]},
+],
 ```
 
-`provider.options` 会传给 `ChatOpenAI`，密钥从环境变量解析。模型级参数保持
-扁平，不再使用旧的 `CUSTOM_API_*` 环境变量。
+## 上传与生成文件
 
-## 上传、state 文件与下载
-
-- 用户上传文件会保存到 `UPLOAD_STORAGE_DIR`。
-- 发送消息时，附件会绑定到用户消息。
-- `state` sandbox 会把上传文件复制进虚拟 `/uploads/...` 文件。
-- Agent 在 `state` backend 写出的新增/变更文件，会在完成后导出为上传记录。
-- 助手回复里的附件会显示下载按钮。
+- 上传文件存储在 `UPLOAD_STORAGE_DIR`。
+- 上传元数据会传给 run-input hook。
+- `state` sandbox 会把上传文件复制为虚拟 `/uploads/...` 文件。
+- Agent 在 `state` backend 里新增或修改的文件，会在 run 完成后导出。
+- 导出的文件会作为助手回复附件展示和下载。
 
 ## Sandbox
 
-| 类型 | 用途 | 说明 |
+| 类型 | 适合场景 | 说明 |
 | --- | --- | --- |
-| `state` | 默认虚拟文件状态。 | 不暴露主机 shell；生成文件完成后导出。 |
-| `filesystem` | 文件工具需要真实目录。 | 默认根目录是 `backend/data`，强制 virtual path。 |
-| `local_shell` | 可信本地命令执行。 | 会执行主机命令，务必配合工具过滤。 |
-| `custom` | 自定义 backend factory。 | 设置 `DEEPAGENTS_SANDBOX_BACKEND_SPEC`。 |
+| `state` | 默认安全虚拟文件状态。 | 不暴露主机 shell，完成后导出生成文件。 |
+| `filesystem` | 文件工具需要访问受控目录。 | 使用以 `DEEPAGENTS_SANDBOX_ROOT_DIR` 为根的虚拟路径。 |
+| `local_shell` | 可信本地命令执行。 | 会执行主机命令，需要严格限制工具和用户。 |
+| `custom` | 自定义 backend。 | 设置 `DEEPAGENTS_SANDBOX_BACKEND_SPEC`。 |
 
-更多路径行为见 [docs/sandbox.md](docs/sandbox.md)。
+给非可信用户开放 filesystem 或 shell 前，请先阅读 [docs/sandbox.md](docs/sandbox.md)。
+
+## 前端行为
+
+- 用户停在底部时，会话会跟随最新输出。
+- 用户向上滚动后，流式输出不会再强制拉到底部。
+- 用户发送新消息时，会话会跳到底部。
+- Runtime timeline 会批量处理并限制条目数量，长时间工具调用也保持响应。
+- Mermaid 代码块会渲染成图。浏览器支持图片剪贴板时，可复制 PNG 图片。
 
 ## 验证
 
-仓库根目录：
+后端：
 
 ```bash
-PYTHONPATH=.:backend backend/.venv/bin/pytest -q
-backend/.venv/bin/ruff check backend tests
-cd frontend && npm run check
+cd backend
+uv run ruff check .
+uv run pytest
+uv run mypy app/core/config.py app/core/runtime_catalog.py app/services/runs.py deepagents_integration
 ```
 
-生产后端代码类型检查：
+前端：
 
 ```bash
-backend/.venv/bin/mypy backend/app backend/deepagents_integration
+cd frontend
+npm run check
 ```
 
-`mypy backend` 会额外检查测试和内置 skill 脚本，目前比项目的正式验证目标更严格。
+仓库级集成测试：
+
+```bash
+cd backend
+uv run pytest ../tests/backend/test_deepagents_integration.py
+```

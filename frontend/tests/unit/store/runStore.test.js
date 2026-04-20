@@ -198,6 +198,26 @@ describe('runStore reducer', () => {
     })
   })
 
+  it('caps timeline entries so long tool runs do not get slower over time', () => {
+    let run = createInitialRun('run-long', 'session-long')
+    for (let index = 0; index < 350; index += 1) {
+      run = reduceRunState(run, {
+        eventId: `evt-${index}`,
+        type: 'tool',
+        runId: 'run-long',
+        sessionId: 'session-long',
+        timestamp: '2026-04-12T14:00:03.000Z',
+        status: 'completed',
+        label: `tool.${index}`,
+        detail: `Tool ${index}`,
+      })
+    }
+
+    expect(run.timeline).toHaveLength(300)
+    expect(run.timeline[0].label).toBe('tool.50')
+    expect(run.timeline.at(-1).label).toBe('tool.349')
+  })
+
   it('records client-side failures outside the active stream timeline', () => {
     const store = createRunStore()
 

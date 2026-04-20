@@ -179,6 +179,12 @@ def _build_subagent_spec(
             raw.get("middleware_specs"),
             load_middleware_extensions,
         ),
+        "builtin_tools": _string_tuple(
+            raw.get("builtin_tools") or raw.get("builtin_tool_allowlist")
+        ),
+        "disabled_builtin_tools": _string_tuple(
+            raw.get("disabled_builtin_tools") or raw.get("builtin_tool_blocklist")
+        ),
         "skills": tuple(source.source_path for source in raw.get("skill_sources", ())),
         "permissions": tuple(raw.get("permissions") or ()),
         "workspace": raw.get("workspace") or "",
@@ -212,6 +218,16 @@ def _resolve_component_list(
     if specs:
         resolved.extend(loader(tuple(specs)))
     return resolved
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return tuple(item.strip() for item in value.split(",") if item.strip())
+    if not isinstance(value, list | tuple) or not all(isinstance(item, str) for item in value):
+        raise ValueError("Expected a string or list of strings")
+    return tuple(item.strip() for item in value if item.strip())
 
 
 def _resolve_agent_package(raw: Mapping[str, Any]) -> Mapping[str, Any]:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import re
@@ -327,7 +329,13 @@ def _looks_like_base64(value: str) -> bool:
         return False
     if not BASE64_LIKE_RE.match(value):
         return False
-    return any(char in compact for char in "+/=")
+    try:
+        decoded = base64.b64decode(compact, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    if not decoded:
+        return False
+    return base64.b64encode(decoded).decode("ascii").rstrip("=") == compact.rstrip("=")
 
 
 def _extract_text(value: Any) -> str:

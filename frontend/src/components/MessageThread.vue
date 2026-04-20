@@ -38,6 +38,7 @@ const props = defineProps({
 
 const threadRef = ref(null)
 const autoFollowLatest = ref(false)
+const userScrollLocked = ref(false)
 const lastSessionId = ref('')
 const pendingHistoryLoadSessionId = ref('')
 
@@ -147,7 +148,9 @@ function syncAutoFollowState(scrollTopOverride) {
   if (!wrap) {
     return
   }
-  autoFollowLatest.value = isNearBottom(scrollMetrics(wrap, scrollTopOverride))
+  const nearBottom = isNearBottom(scrollMetrics(wrap, scrollTopOverride))
+  autoFollowLatest.value = nearBottom
+  userScrollLocked.value = !nearBottom
 }
 
 function handleThreadScroll({ scrollTop }) {
@@ -169,6 +172,7 @@ watch(
     }
     lastSessionId.value = sessionId
     autoFollowLatest.value = isLiveRunSession.value
+    userScrollLocked.value = false
     pendingHistoryLoadSessionId.value = isLiveRunSession.value ? '' : sessionId
     if (isLiveRunSession.value) {
       await scrollToLatest()
@@ -190,6 +194,7 @@ watch(
       shouldForceFollowLatest(previousMessages, messages, {
         suppressUserAppend: suppressHistoryLoad,
         forceLiveRun: isLiveRunSession.value,
+        userScrollLocked: userScrollLocked.value,
       })
     ) {
       autoFollowLatest.value = true
@@ -204,7 +209,7 @@ watch(
     }
     await scrollToLatest()
   },
-  { deep: true, flush: 'post' },
+  { flush: 'post' },
 )
 
 watch(
@@ -214,6 +219,7 @@ watch(
       return
     }
     pendingHistoryLoadSessionId.value = ''
+    userScrollLocked.value = false
     autoFollowLatest.value = true
     await scrollToLatest()
   },
@@ -229,6 +235,7 @@ watch(
     pendingHistoryLoadSessionId.value = ''
     if (!isLiveRunSession.value) {
       autoFollowLatest.value = false
+      userScrollLocked.value = false
       await scrollToTop()
     }
   },
@@ -238,6 +245,7 @@ watch(
 onMounted(async () => {
   if (isLiveRunSession.value) {
     autoFollowLatest.value = true
+    userScrollLocked.value = false
     await scrollToLatest()
     return
   }

@@ -159,6 +159,8 @@ def test_agent_package_supports_star_single_and_list_selections(tmp_path, monkey
         "  'id': 'main',\n"
         "  'system_prompt': ROOT / 'prompts' / 'system.md',\n"
         "  'tools': '*',\n"
+        "  'builtin_tools': ['ls', 'read_file'],\n"
+        "  'disabled_builtin_tools': ['write_file'],\n"
         "  'skills': ['alpha'],\n"
         "  'memory': 'project',\n"
         "  'subagents': ['child'],\n"
@@ -175,9 +177,55 @@ def test_agent_package_supports_star_single_and_list_selections(tmp_path, monkey
     )
 
     assert resolution.agent["tools"] == ["tool-one"]
+    assert resolution.agent["builtin_tools"] == ["ls", "read_file"]
+    assert resolution.agent["disabled_builtin_tools"] == ["write_file"]
     assert resolution.agent["skill_sources"][0].include == ("alpha",)
     assert resolution.agent["memory"] == (str(package / "memory" / "project.md"),)
     assert resolution.subagents[0]["name"] == "child"
+
+
+def test_subagent_package_preserves_builtin_tool_selection(tmp_path, monkeypatch) -> None:
+    package = tmp_path / "demo_builtin_agent"
+    prompts = package / "prompts"
+    subagent = package / "subagents" / "reviewer"
+    prompts.mkdir(parents=True)
+    subagent.mkdir(parents=True)
+    (prompts / "system.md").write_text("main", encoding="utf-8")
+    (package / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        "ROOT = Path(__file__).parent\n"
+        "AGENT = {\n"
+        "  'id': 'main', 'system_prompt': ROOT / 'prompts' / 'system.md',\n"
+        "  'subagents': ['reviewer'],\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (package / "subagents" / "__init__.py").write_text("", encoding="utf-8")
+    (subagent / "__init__.py").write_text(
+        "SUBAGENT = {\n"
+        "  'id': 'reviewer', 'name': 'reviewer', 'description': 'reviewer',\n"
+        "  'system_prompt': 'reviewer',\n"
+        "  'builtin_tools': ['ls', 'read_file'],\n"
+        "  'disabled_builtin_tools': ['write_file', 'edit_file'],\n"
+        "  'permissions': [{'operations': ['read'], 'paths': ['/workspace/reviews']}],\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    resolution = resolve_runtime(
+        agent_spec="demo_builtin_agent:AGENT",
+        model_catalog=None,
+        default_model_id="openai:gpt-5.4",
+        selection=RuntimeSelection(),
+    )
+
+    reviewer = resolution.subagents[0]
+    assert reviewer["builtin_tools"] == ("ls", "read_file")
+    assert reviewer["disabled_builtin_tools"] == ("write_file", "edit_file")
+    assert reviewer["permissions"] == (
+        {"operations": ["read"], "paths": ["/workspace/reviews"]},
+    )
 
 
 def test_runtime_resolution_rejects_agent_level_sandbox(tmp_path, monkeypatch) -> None:

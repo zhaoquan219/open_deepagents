@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from deepagents.backends import FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.protocol import BackendProtocol
+from deepagents.middleware.permissions import _check_fs_permission
 from deepagents.middleware.skills import _list_skills
 
 from deepagents_integration import (
@@ -26,6 +27,7 @@ from deepagents_integration import (
     apply_run_input_hooks,
     apply_upload_hooks,
     build_deep_agent,
+    build_permissions,
     build_upload_hook_context,
     load_middleware_extensions,
     load_object_from_spec,
@@ -376,6 +378,48 @@ class DeepAgentsConfigTests(unittest.TestCase):
             )
         )
 
+    def test_build_deep_agent_adds_subagent_builtin_tool_selection_middleware(self):
+        config = DeepAgentsRuntimeConfig.from_mapping(
+            {
+                "model": "openai:gpt-5.4",
+                "subagents": [
+                    {
+                        "name": "reviewer",
+                        "description": "reviewer",
+                        "system_prompt": "reviewer",
+                        "builtin_tools": ["ls", "read_file"],
+                        "disabled_builtin_tools": ["write_file"],
+                    }
+                ],
+            }
+        )
+
+        with patch("deepagents_integration.agent_factory.create_deep_agent") as mocked_create:
+            mocked_create.return_value = object()
+            build_deep_agent(config)
+
+        _, kwargs = mocked_create.call_args
+        subagent = kwargs["subagents"][0]
+        self.assertTrue(
+            any(
+                isinstance(middleware, BuiltinToolSelectionMiddleware)
+                for middleware in subagent["middleware"]
+            )
+        )
+
+    def test_build_permissions_makes_configured_rules_restrictive(self):
+        rules = build_permissions(
+            (
+                {"operations": ["read"], "paths": ["/workspace"]},
+                {"operations": ["write"], "paths": ["/workspace/out"]},
+            )
+        )
+
+        self.assertEqual(_check_fs_permission(rules, "read", "/workspace/input.txt"), "allow")
+        self.assertEqual(_check_fs_permission(rules, "read", "/etc/passwd"), "deny")
+        self.assertEqual(_check_fs_permission(rules, "write", "/workspace/out/result.txt"), "allow")
+        self.assertEqual(_check_fs_permission(rules, "write", "/workspace/input.txt"), "deny")
+
     def test_functional_audit_middleware_can_access_runtime_context(self):
         before_agent_middleware, tool_middleware = load_middleware_extensions(
             ("agents.middleware.audit_middleware:MIDDLEWARE",)
@@ -482,7 +526,10 @@ class DeepAgentsSseBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(envelopes[5].event, "message.completed")
         self.assertTrue(envelopes[5].data["canonical_transcript"])
         self.assertEqual(envelopes[6].event, "run.completed")
-        self.assertEqual(envelopes[6].internal_data["raw_output"]["messages"][0]["content"], "Hello world")
+        self.assertEqual(
+            envelopes[6].internal_data["raw_output"]["messages"][0]["content"],
+            "Hello world",
+        )
         self.assertNotIn("internal_data", envelopes[6].to_sse())
 
         for sequence, envelope in enumerate(envelopes, start=1):
@@ -521,6 +568,24 @@ class DeepAgentsSseBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["raw"]["omitted"], "binary")
         self.assertEqual(output["raw"]["size_bytes"], 512)
         self.assertTrue(output["encoded"].startswith("[redacted base64-like runtime string"))
+        self.assertNotIn(encoded, json.dumps(envelope.data))
+
+    def test_runtime_event_normalization_redacts_base64_without_symbols(self):
+        encoded = "A" * 512
+        envelope = normalize_runtime_event(
+            {
+                "event": "on_tool_start",
+                "name": "read_file",
+                "run_id": "runtime-1",
+                "data": {"input": {"content": encoded}},
+            },
+            bridge_run_id="run-1",
+            sequence=2,
+        )
+
+        self.assertIsNotNone(envelope)
+        assert envelope is not None
+        self.assertTrue(envelope.data["input"]["content"].startswith("[redacted base64-like"))
         self.assertNotIn(encoded, json.dumps(envelope.data))
 
     def test_validator_rejects_invalid_payload(self):

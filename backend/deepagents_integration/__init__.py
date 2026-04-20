@@ -6,6 +6,7 @@ from .context import DeepAgentsRunContext
 from .extensions import (
     BuiltinToolSelectionMiddleware,
     build_builtin_tool_selection_middleware,
+    build_permissions,
     discover_components,
     discover_memory,
     discover_skills,
@@ -41,6 +42,7 @@ __all__ = [
     "BuiltinToolSelectionMiddleware",
     "build_deep_agent",
     "build_builtin_tool_selection_middleware",
+    "build_permissions",
     "discover_components",
     "discover_memory",
     "discover_skills",

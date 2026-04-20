@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     deepagents_debug: bool = False
     deepagents_builtin_tools: str | None = None
     deepagents_disabled_builtin_tools: str | None = None
-    deepagents_recursion_limit: int = 60
+    deepagents_recursion_limit: int = 500
     deepagents_sandbox_kind: str = "state"
     deepagents_sandbox_root_dir: str | None = None
     deepagents_sandbox_virtual_mode: bool | None = None
@@ -222,6 +222,17 @@ class Settings(BaseSettings):
             model_id=runtime_resolution.model_id,
         )
         sandbox_root_dir = self.resolved_sandbox_root_dir()
+        agent_builtin_allowlist = _optional_string_tuple(
+            runtime_resolution.agent.get("builtin_tools")
+            or runtime_resolution.agent.get("builtin_tool_allowlist")
+        )
+        env_builtin_allowlist = self._optional_csv(self.deepagents_builtin_tools)
+        agent_builtin_blocklist = _string_tuple(
+            runtime_resolution.agent.get("disabled_builtin_tools")
+            or runtime_resolution.agent.get("builtin_tool_blocklist")
+        )
+        env_builtin_blocklist = self._split_csv(self.deepagents_disabled_builtin_tools)
+        agent_permissions = _mapping_tuple(runtime_resolution.agent.get("permissions"))
         return DeepAgentsRuntimeConfig(
             model=selected_model,
             system_prompt=self.load_deepagents_system_prompt(runtime_resolution.agent),
@@ -235,12 +246,18 @@ class Settings(BaseSettings):
             run_input_hooks=agent_run_input_hooks,
             upload_hook_specs=self.upload_hook_specs(),
             upload_hooks=agent_upload_hooks,
-            builtin_tool_allowlist=self._optional_csv(self.deepagents_builtin_tools),
-            builtin_tool_blocklist=self._split_csv(self.deepagents_disabled_builtin_tools),
+            builtin_tool_allowlist=(
+                env_builtin_allowlist
+                if env_builtin_allowlist is not None
+                else agent_builtin_allowlist
+            ),
+            builtin_tool_blocklist=_dedupe_tuple(
+                (*agent_builtin_blocklist, *env_builtin_blocklist)
+            ),
             skills=tuple(source.source_path for source in all_skill_sources),
             skill_sources=all_skill_sources,
             memory=agent_memory,
-            permissions=self.default_permissions(),
+            permissions=(*self.default_permissions(), *agent_permissions),
             subagents=runtime_resolution.subagents,
             model_id=runtime_resolution.model_id,
             subagent_profile_id=runtime_resolution.profile_id,
@@ -421,6 +438,41 @@ def normalize_sandbox_permission_path(path: str | Path | PurePath) -> str:
     if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/":
         return f"/{normalized}"
     return normalized
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return tuple(item.strip() for item in value.split(",") if item.strip())
+    if not isinstance(value, list | tuple) or not all(isinstance(item, str) for item in value):
+        raise ValueError("Expected a string or list of strings")
+    return tuple(item.strip() for item in value if item.strip())
+
+
+def _optional_string_tuple(value: Any) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    return _string_tuple(value)
+
+
+def _mapping_tuple(value: Any) -> tuple[Mapping[str, Any], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list | tuple) or not all(isinstance(item, Mapping) for item in value):
+        raise ValueError("Expected a list of mappings")
+    return tuple(value)
+
+
+def _dedupe_tuple(values: tuple[str, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return tuple(deduped)
 
 
 def normalize_runtime_backend_path(

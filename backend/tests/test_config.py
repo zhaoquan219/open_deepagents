@@ -1,5 +1,8 @@
 from pathlib import Path, PureWindowsPath
 
+import pytest
+from deepagents.middleware.permissions import _check_fs_permission
+
 from app.core.config import (
     BACKEND_ROOT,
     DEFAULT_SANDBOX_READ_PATHS,
@@ -8,7 +11,7 @@ from app.core.config import (
     normalize_runtime_backend_path,
     normalize_sandbox_permission_path,
 )
-from deepagents_integration.extensions import resolve_backend
+from deepagents_integration.extensions import build_permissions, resolve_backend
 
 
 def test_runtime_config_loads_system_prompt_from_project_file() -> None:
@@ -173,3 +176,76 @@ def test_runtime_permissions_include_custom_upload_dir_outside_default_data_root
     assert list(settings.to_runtime_config().permissions[0]["paths"]) == [
         normalize_sandbox_permission_path(path) for path in DEFAULT_SANDBOX_READ_PATHS
     ] + [normalize_sandbox_permission_path(custom_upload_dir)]
+
+
+def test_runtime_config_uses_agent_builtin_tool_allowlist_without_env() -> None:
+    settings = Settings(
+        deepagents_default_model="openai/gpt-5-4",
+        deepagents_builtin_tools=None,
+        deepagents_disabled_builtin_tools=None,
+    )
+
+    runtime_config = settings.to_runtime_config()
+
+    assert runtime_config.builtin_tool_allowlist == (
+        "write_todos",
+        "ls",
+        "read_file",
+        "glob",
+        "grep",
+        "task",
+    )
+    assert runtime_config.builtin_tool_blocklist == ("execute", "write_file", "edit_file")
+
+
+def test_env_builtin_tool_allowlist_overrides_agent_default() -> None:
+    settings = Settings(
+        deepagents_default_model="openai/gpt-5-4",
+        deepagents_builtin_tools="ls,read_file",
+        deepagents_disabled_builtin_tools="execute",
+    )
+
+    runtime_config = settings.to_runtime_config()
+
+    assert runtime_config.builtin_tool_allowlist == ("ls", "read_file")
+    assert runtime_config.builtin_tool_blocklist == (
+        "execute",
+        "write_file",
+        "edit_file",
+    )
+
+
+def test_runtime_config_rejects_invalid_agent_permissions(monkeypatch, tmp_path) -> None:
+    package = tmp_path / "invalid_permissions_agent"
+    package.mkdir()
+    (package / "__init__.py").write_text(
+        "AGENT = {'id': 'demo', 'system_prompt': 'demo', 'permissions': {'bad': True}}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    settings = Settings(
+        deepagents_default_model="openai/gpt-5-4",
+        deepagents_main_agent="invalid_permissions_agent:AGENT",
+    )
+
+    with pytest.raises(ValueError, match="Expected a list of mappings"):
+        settings.to_runtime_config()
+
+
+def test_runtime_permissions_default_deny_unmatched_write_paths() -> None:
+    settings = Settings(
+        deepagents_default_model="openai/gpt-5-4",
+        deepagents_sandbox_kind="filesystem",
+        deepagents_sandbox_root_dir="/tmp/sandbox",
+    )
+
+    permissions = settings.to_runtime_config().permissions
+    built_permissions = build_permissions(permissions)
+
+    assert _check_fs_permission(built_permissions, "write", "/uploads/out.txt") == "deny"
+    assert _check_fs_permission(
+        built_permissions,
+        "read",
+        normalize_sandbox_permission_path(DEFAULT_SANDBOX_ROOT / "uploads" / "in.txt"),
+    ) == "allow"

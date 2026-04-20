@@ -144,15 +144,32 @@ def build_permissions(
     permission_specs: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
 ) -> list[FilesystemPermission]:
     permissions: list[FilesystemPermission] = []
+    if not permission_specs:
+        return permissions
     for spec in permission_specs:
         permissions.append(
             FilesystemPermission(
                 operations=list(spec["operations"]),
-                paths=list(spec["paths"]),
+                paths=_expand_permission_paths(list(spec["paths"])),
                 mode=spec.get("mode", "allow"),
             )
         )
+    permissions.append(FilesystemPermission(operations=["read"], paths=["/**"], mode="deny"))
+    permissions.append(FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"))
     return permissions
+
+
+def _expand_permission_paths(paths: list[str]) -> list[str]:
+    expanded: list[str] = []
+    for path in paths:
+        normalized = _normalize_backend_path(str(path), trailing_slash=path.endswith("/"))
+        expanded.append(normalized)
+        if any(char in normalized for char in "*?["):
+            continue
+        child_glob = f"{normalized.rstrip('/')}/**"
+        if child_glob not in expanded:
+            expanded.append(child_glob)
+    return expanded
 
 
 def resolve_backend(config: SandboxConfig) -> BackendProtocol | Any:

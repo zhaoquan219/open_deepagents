@@ -15,6 +15,13 @@ function logRuntime(scope, detail, payload, level = 'debug') {
   if (level === 'debug' && !import.meta.env.DEV) {
     return
   }
+  if (
+    level === 'debug' &&
+    scope === 'sse.event' &&
+    import.meta.env.VITE_DEEPAGENTS_VERBOSE_STREAM !== 'true'
+  ) {
+    return
+  }
 
   const logger = console[level] || console.log
   logger(`[deepagents-ui] ${scope}: ${detail}`, payload ?? '')
@@ -30,6 +37,8 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
   }
 }
 const activeStream = ref(null)
+const pendingSessionDeltas = new Map()
+let pendingSessionDeltaFlush = 0
 const authUsername = ref('admin')
 const authPassword = ref('')
 const authError = ref('')
@@ -44,6 +53,45 @@ const runtimeOptions = ref({ models: [], profiles: [], subagents: [], defaultMod
 const runtimeOptionsError = ref('')
 const selectedModelId = ref('')
 let viewportMediaQuery = null
+
+function scheduleSessionDeltaFlush() {
+  if (pendingSessionDeltaFlush) {
+    return
+  }
+  const scheduler = globalThis.requestAnimationFrame || ((callback) => globalThis.setTimeout(callback, 16))
+  pendingSessionDeltaFlush = scheduler(() => {
+    pendingSessionDeltaFlush = 0
+    flushSessionDeltas()
+  })
+}
+
+function flushSessionDeltas(key = '') {
+  const entries = key
+    ? [[key, pendingSessionDeltas.get(key)]]
+    : [...pendingSessionDeltas.entries()]
+  for (const [entryKey, envelope] of entries) {
+    if (!envelope) {
+      continue
+    }
+    pendingSessionDeltas.delete(entryKey)
+    sessionStore.consumeRunEvent(envelope)
+  }
+}
+
+function consumeSessionRunEvent(envelope) {
+  const key = `${envelope.sessionId}:${envelope.runId}`
+  if (envelope.type !== 'message.delta' || !envelope.delta) {
+    flushSessionDeltas(key)
+    sessionStore.consumeRunEvent(envelope)
+    return
+  }
+  const previous = pendingSessionDeltas.get(key)
+  pendingSessionDeltas.set(key, {
+    ...envelope,
+    delta: `${previous?.delta || ''}${envelope.delta}`,
+  })
+  scheduleSessionDeltaFlush()
+}
 
 const sessions = computed(() => sessionStore.state.sessions)
 const currentSessionId = computed(() => sessionStore.state.currentSessionId)
@@ -227,6 +275,7 @@ function closeTimelinePanel() {
 }
 
 function closeStream({ markDisconnected = false, detail = '' } = {}) {
+  flushSessionDeltas()
   const runId = runStore.state.activeRun?.runId || ''
   if (activeStream.value) {
     activeStream.value.close()
@@ -301,7 +350,12 @@ function connectRunStream(runId, sessionId) {
         return
       }
 
-      logRuntime('sse.event', `${envelope.type}`, envelope)
+      logRuntime('sse.event', `${envelope.type}`, {
+        eventId: envelope.eventId,
+        label: envelope.label,
+        status: envelope.status,
+        type: envelope.type,
+      })
 
       const accepted = runStore.consume(envelope)
       if (!accepted) {
@@ -326,7 +380,7 @@ function connectRunStream(runId, sessionId) {
         return
       }
 
-      sessionStore.consumeRunEvent(envelope)
+      consumeSessionRunEvent(envelope)
       if (envelope.type === 'message.final' && !String(envelope.message?.content || '').trim()) {
         syncSessionTranscript(sessionId)
       }

@@ -10,6 +10,14 @@ from agents.subagents import SUBAGENTS
 from agents.tools import TOOLS
 
 ROOT = Path(__file__).parent
+READ_ONLY_BUILTIN_TOOLS = (
+    "write_todos",
+    "ls",
+    "read_file",
+    "glob",
+    "grep",
+    "task",
+)
 
 AGENT = {
     "id": "main",
@@ -19,6 +27,8 @@ AGENT = {
     "model": None,
     "workspace": "/workspace/main",
     "tools": TOOLS,
+    "builtin_tools": READ_ONLY_BUILTIN_TOOLS,
+    "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
     "middleware": MIDDLEWARE,
     "hooks": {
         "run_input": RUN_INPUT_HOOKS,

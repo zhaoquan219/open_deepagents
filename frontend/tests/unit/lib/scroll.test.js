@@ -70,6 +70,19 @@ describe('scroll helpers', () => {
     ).toBe(false)
   })
 
+  it('does not force follow mode while the user has scrolled away from the bottom', () => {
+    expect(
+      shouldForceFollowLatest(
+        [{ id: 'assistant-1', role: 'assistant', content: 'older' }],
+        [
+          { id: 'assistant-1', role: 'assistant', content: 'older' },
+          { id: 'user-2', role: 'user', content: 'new prompt' },
+        ],
+        { userScrollLocked: true },
+      ),
+    ).toBe(false)
+  })
+
   it('does not force follow mode for assistant streaming updates', () => {
     expect(
       shouldForceFollowLatest(
