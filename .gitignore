@@ -1,7 +1,7 @@
 .idea/
 .omx/
 .DS_Store
-.venv/
+*venv/
 .env
 __pycache__/
 *.py[cod]
@@ -9,5 +9,4 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .uv-cache/
-node_modules/
-**/node_modules/
+*node_modules/
