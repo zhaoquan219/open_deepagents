@@ -17,8 +17,7 @@ class LocalStorage:
     def save_bytes(self, *, session_id: str, filename: str, payload: bytes) -> tuple[str, str]:
         safe_name = _safe_filename(filename)
         session_token = _short_session_token(session_id)
-        upload_token = uuid4().hex[:_UPLOAD_TOKEN_LENGTH]
-        relative_path = Path(session_token) / f"{upload_token}-{safe_name}"
+        relative_path = Path(session_token) / safe_name
         destination = self.root / relative_path
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(payload)
@@ -34,10 +33,7 @@ class LocalStorage:
 
 def _safe_filename(filename: str) -> str:
     raw_name = Path(filename).name or "upload.bin"
-    normalized = _FILENAME_SAFE_CHARS.sub("-", raw_name).strip(".-_")
-    if not normalized:
-        return "upload.bin"
-    return normalized
+    return raw_name
 
 
 def _short_session_token(session_id: str) -> str:
