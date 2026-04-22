@@ -28,13 +28,10 @@ export async function copyBlob(blob, mimeType) {
       }
       return 'clipboard'
     } catch (error) {
-      if (mimeType !== 'image/png' || isWindowsPlatform()) {
+      if (mimeType !== 'image/png') {
         throw error
       }
     }
-  }
-  if (mimeType === 'image/png' && isWindowsPlatform()) {
-    throw new Error('Image clipboard is not supported.')
   }
   if (mimeType === 'image/png') {
     return copyPngBlobWithExecCommand(blob)
@@ -141,14 +138,6 @@ function blobToDataUrl(blob) {
     reader.onerror = () => reject(new Error('Unable to prepare PNG image.'))
     reader.readAsDataURL(blob)
   })
-}
-
-function isWindowsPlatform() {
-  const userAgentData = navigator['userAgentData'] || {}
-  const platform = String(
-    userAgentData.platform || navigator.platform || '',
-  ).toLowerCase()
-  return platform.includes('win')
 }
 
 function loadImage(url) {
