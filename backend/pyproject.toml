@@ -2,7 +2,7 @@
 name = "deepagents-agent-platform-backend"
 version = "0.1.0"
 description = "FastAPI backend foundation for the DeepAgents agent platform scaffold"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "deepagents>=0.5.2,<0.6",
     "fastapi>=0.116.1,<0.117",
@@ -24,7 +24,7 @@ dev = [
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 100
 extend-exclude = ["agents/skills/skill-creator"]
 
@@ -36,7 +36,7 @@ pythonpath = ["."]
 testpaths = ["tests"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 warn_unused_ignores = true
 warn_redundant_casts = true
