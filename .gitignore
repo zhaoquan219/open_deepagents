@@ -1,5 +1,6 @@
 .idea/
 .omx/
+.langgraph_api/
 .DS_Store
 *venv/
 .env
@@ -10,3 +11,4 @@ __pycache__/
 .ruff_cache/
 .uv-cache/
 *node_modules/
+/data/*.db
