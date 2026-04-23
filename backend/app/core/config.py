@@ -262,6 +262,10 @@ class Settings(BaseSettings):
             model_id=runtime_resolution.model_id,
             subagent_profile_id=runtime_resolution.profile_id,
             runtime_selection=runtime_resolution.safe_selection,
+            checkpointer=runtime_resolution.agent.get("checkpointer"),
+            store=runtime_resolution.agent.get("store"),
+            interrupt_on=_mapping_or_none(runtime_resolution.agent.get("interrupt_on")),
+            cache=runtime_resolution.agent.get("cache"),
             sandbox=SandboxConfig(
                 kind=self.deepagents_sandbox_kind,  # type: ignore[arg-type]
                 root_dir=sandbox_root_dir,
@@ -473,6 +477,14 @@ def _dedupe_tuple(values: tuple[str, ...]) -> tuple[str, ...]:
         seen.add(value)
         deduped.append(value)
     return tuple(deduped)
+
+
+def _mapping_or_none(value: Any) -> Mapping[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("Expected a mapping")
+    return value
 
 
 def normalize_runtime_backend_path(

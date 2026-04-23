@@ -11,17 +11,13 @@ from app.core.config import Settings
 from app.core.runtime_catalog import RuntimeSelection
 from app.core.session_scope import get_run_for_user, get_session_for_user
 from app.schemas.run import RunCreate, RunRead
-from app.services.runs import InvalidRunAttachmentError, RunManager, RunService
+from app.services.runs import InvalidRunAttachmentError, RunService
 
 router = APIRouter()
 
 
 def get_run_service(request: Request) -> RunService:
     return cast(RunService, request.app.state.run_service)
-
-
-def get_run_manager(request: Request) -> RunManager:
-    return cast(RunManager, request.app.state.run_manager)
 
 
 @router.post("/runs", response_model=RunRead, status_code=status.HTTP_201_CREATED)
@@ -69,9 +65,10 @@ def get_run(
 ) -> RunRead:
     settings = cast(Settings, request.app.state.settings)
     get_run_for_user(db, run_id=run_id, username=username, settings=settings)
-    run_state = get_run_manager(request).get(run_id)
-    if run_state is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    try:
+        run_state = get_run_service(request).get_run(run_id=run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found") from exc
     return RunRead(
         run_id=run_state.run_id,
         session_id=run_state.session_id,
@@ -129,14 +126,10 @@ async def stream_run(
             settings=settings,
         )
 
-    run_state = get_run_manager(request).get(run_id)
-    if run_state is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
-
     resume_from = last_event_id or last_event_id_header
 
     return StreamingResponse(
-        get_run_manager(request).stream(run_id, last_event_id=resume_from),
+        get_run_service(request).stream(run_id=run_id, last_event_id=resume_from),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

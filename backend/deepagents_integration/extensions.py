@@ -14,19 +14,9 @@ from types import ModuleType
 from typing import Any
 
 from deepagents import FilesystemPermission
-from deepagents.backends import FilesystemBackend, LocalShellBackend, StateBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.protocol import (
     BackendProtocol,
-    EditResult,
-    ExecuteResponse,
-    FileDownloadResponse,
-    FileUploadResponse,
-    GlobResult,
-    GrepResult,
-    LsResult,
-    ReadResult,
-    SandboxBackendProtocol,
-    WriteResult,
 )
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 
@@ -203,7 +193,7 @@ def route_skill_sources(
     backend: BackendProtocol | Any,
     skill_sources: tuple[SkillSourceConfig, ...],
 ) -> tuple[BackendProtocol | Any, tuple[str, ...]]:
-    route_backends: dict[str, FilesystemBackend] = {}
+    route_backends: dict[str, BackendProtocol] = {}
     active_sources: list[str] = []
 
     for skill_source in skill_sources:
@@ -253,18 +243,7 @@ def route_skill_sources(
 
     if not route_backends:
         return backend, ()
-
-    if isinstance(backend, SandboxBackendProtocol):
-        routed_backend: BackendProtocol | Any = SkillRoutingSandboxBackend(
-            primary_backend=backend,
-            route_backends=route_backends,
-        )
-    else:
-        routed_backend = SkillRoutingBackend(
-            primary_backend=backend,
-            route_backends=route_backends,
-        )
-    return routed_backend, tuple(active_sources)
+    return CompositeBackend(default=backend, routes=route_backends), tuple(active_sources)
 
 
 def _flatten_loaded_specs(specs: list[str] | tuple[str, ...]) -> list[Any]:
@@ -408,187 +387,6 @@ def _tool_name(tool: Any) -> str:
     return str(getattr(tool, "name", "") or getattr(tool, "__name__", "") or "")
 
 
-class SkillRoutingBackend(BackendProtocol):
-    def __init__(
-        self,
-        *,
-        primary_backend: BackendProtocol,
-        route_backends: Mapping[str, FilesystemBackend],
-    ) -> None:
-        self._primary_backend = primary_backend
-        self._route_backends = {
-            _normalize_backend_path(source_path, trailing_slash=True): backend
-            for source_path, backend in route_backends.items()
-        }
-        self._ordered_route_paths = tuple(
-            sorted(self._route_backends.keys(), key=len, reverse=True)
-        )
-
-    def ls(self, path: str) -> LsResult:
-        matched = self._match_backend(path)
-        if matched is None:
-            return self._primary_backend.ls(path)
-        route_path, backend_path, route_backend = matched
-        result = route_backend.ls(backend_path)
-        if result.entries is None:
-            return result
-        return LsResult(
-            entries=[
-                {
-                    **entry,
-                    "path": _restore_route_path(route_path, str(entry["path"])),
-                }
-                for entry in result.entries
-            ],
-            error=result.error,
-        )
-
-    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
-        matched = self._match_backend(file_path)
-        if matched is None:
-            return self._primary_backend.read(file_path, offset=offset, limit=limit)
-        _, backend_path, route_backend = matched
-        return route_backend.read(backend_path, offset=offset, limit=limit)
-
-    def grep(
-        self,
-        pattern: str,
-        path: str | None = None,
-        glob: str | None = None,
-    ) -> GrepResult:
-        if path is None:
-            return self._primary_backend.grep(pattern, path=path, glob=glob)
-        matched = self._match_backend(path)
-        if matched is None:
-            return self._primary_backend.grep(pattern, path=path, glob=glob)
-        route_path, backend_path, route_backend = matched
-        result = route_backend.grep(pattern, path=backend_path, glob=glob)
-        if result.matches is None:
-            return result
-        return GrepResult(
-            matches=[
-                {
-                    **match,
-                    "path": _restore_route_path(route_path, str(match["path"])),
-                }
-                for match in result.matches
-            ],
-            error=result.error,
-        )
-
-    def glob(self, pattern: str, path: str = "/") -> GlobResult:
-        matched = self._match_backend(path)
-        if matched is None:
-            return self._primary_backend.glob(pattern, path=path)
-        route_path, backend_path, route_backend = matched
-        result = route_backend.glob(pattern, path=backend_path)
-        if result.matches is None:
-            return result
-        return GlobResult(
-            matches=[
-                {
-                    **match,
-                    "path": _restore_route_path(route_path, str(match["path"])),
-                }
-                for match in result.matches
-            ],
-            error=result.error,
-        )
-
-    def write(self, file_path: str, content: str) -> WriteResult:
-        matched = self._match_backend(file_path)
-        if matched is None:
-            return self._primary_backend.write(file_path, content)
-        _, backend_path, route_backend = matched
-        return route_backend.write(backend_path, content)
-
-    def edit(
-        self,
-        file_path: str,
-        old_string: str,
-        new_string: str,
-        replace_all: bool = False,
-    ) -> EditResult:
-        matched = self._match_backend(file_path)
-        if matched is None:
-            return self._primary_backend.edit(
-                file_path,
-                old_string,
-                new_string,
-                replace_all=replace_all,
-            )
-        _, backend_path, route_backend = matched
-        return route_backend.edit(
-            backend_path,
-            old_string,
-            new_string,
-            replace_all=replace_all,
-        )
-
-    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        responses: list[FileUploadResponse] = []
-        for path, content in files:
-            matched = self._match_backend(path)
-            if matched is None:
-                responses.extend(self._primary_backend.upload_files([(path, content)]))
-                continue
-            route_path, backend_path, route_backend = matched
-            [response] = route_backend.upload_files([(backend_path, content)])
-            response_path = getattr(response, "path", None)
-            if isinstance(response_path, str):
-                response.path = _restore_route_path(route_path, response_path)
-            responses.append(response)
-        return responses
-
-    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        responses: list[FileDownloadResponse] = []
-        for path in paths:
-            matched = self._match_backend(path)
-            if matched is None:
-                responses.extend(self._primary_backend.download_files([path]))
-                continue
-            _, backend_path, route_backend = matched
-            responses.extend(route_backend.download_files([backend_path]))
-        return responses
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._primary_backend, name)
-
-    def _match_backend(
-        self,
-        path: str,
-    ) -> tuple[str, str, FilesystemBackend] | None:
-        normalized = _normalize_backend_path(path)
-        for route_path in self._ordered_route_paths:
-            route_prefix = route_path.rstrip("/")
-            if normalized == route_prefix or normalized.startswith(f"{route_prefix}/"):
-                suffix = normalized[len(route_prefix) :] or "/"
-                if not suffix.startswith("/"):
-                    suffix = f"/{suffix}"
-                return route_path, suffix, self._route_backends[route_path]
-        return None
-
-
-class SkillRoutingSandboxBackend(SkillRoutingBackend, SandboxBackendProtocol):
-    def __init__(
-        self,
-        *,
-        primary_backend: SandboxBackendProtocol,
-        route_backends: Mapping[str, FilesystemBackend],
-    ) -> None:
-        super().__init__(primary_backend=primary_backend, route_backends=route_backends)
-        self._primary_sandbox_backend = primary_backend
-
-    @property
-    def id(self) -> str:
-        return self._primary_sandbox_backend.id
-
-    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        if timeout is None:
-            return self._primary_sandbox_backend.execute(command)
-        return self._primary_sandbox_backend.execute(command, timeout=timeout)
-
-
 def _import_module_or_file(module_name: str) -> ModuleType:
     potential_path = Path(module_name)
     if potential_path.suffix == ".py" and potential_path.exists():
@@ -635,13 +433,3 @@ def _normalize_backend_path(path: str, *, trailing_slash: bool = False) -> str:
     if trailing_slash and not normalized.endswith("/"):
         return f"{normalized}/"
     return normalized.rstrip("/") if normalized != "/" and not trailing_slash else normalized
-
-
-def _restore_route_path(route_path: str, delegated_path: str) -> str:
-    normalized = _normalize_backend_path(
-        delegated_path,
-        trailing_slash=delegated_path.endswith("/"),
-    )
-    if normalized == "/":
-        return route_path
-    return f"{route_path.rstrip('/')}{normalized}"

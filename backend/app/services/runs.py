@@ -1,18 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
-import json
 import logging
-import mimetypes
 import threading
 import time
 from collections import Counter
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from pathlib import Path
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -29,28 +24,75 @@ from app.db.models import (
     RunEventViewRecord,
     SessionRecord,
     SessionRuntimeLinkRecord,
-    UploadRecord,
+)
+from app.services.run_attachments import (
+    InvalidRunAttachmentError,
+    persist_generated_state_outputs,
+)
+from app.services.run_attachments import (
+    append_message_attachments as _append_message_attachments,
+)
+from app.services.run_attachments import (
+    generated_state_output_files as _generated_state_output_files,
+)
+from app.services.run_attachments import (
+    link_uploads_to_message as _link_uploads_to_message,
+)
+from app.services.run_attachments import (
+    message_attachments as _message_attachments,
+)
+from app.services.run_attachments import (
+    pending_upload_records_for_attachments as _pending_upload_records_for_attachments,
+)
+from app.services.run_attachments import (
+    resolve_run_attachments as _resolve_run_attachments,
+)
+from app.services.run_attachments import (
+    state_backend_files as _state_backend_files,
+)
+from app.services.run_events import (
+    RunEventViewBuffer,
+    utc_now,
+)
+from app.services.run_events import (
+    backlog_after as _backlog_after,
+)
+from app.services.run_events import (
+    bridge_to_ui as _bridge_to_ui,
+)
+from app.services.run_events import (
+    count_runtime_events as _count_runtime_events,
+)
+from app.services.run_events import (
+    extract_message_text as _extract_message_text,
+)
+from app.services.run_events import (
+    is_runtime_placeholder_text as _is_runtime_placeholder_text,
+)
+from app.services.run_events import (
+    persist_event_views as _persist_event_views,
+)
+from app.services.run_events import (
+    restore_subagent_detail as _restore_subagent_detail,
+)
+from app.services.run_events import (
+    to_sse as _to_sse,
+)
+from app.services.run_events import (
+    ui_envelope as _ui_envelope,
+)
+from app.services.run_history import (
+    PersistedRunState,
+    load_persisted_run_state,
+    stream_persisted_run,
 )
 from app.services.session_titles import sync_session_title_from_source
-from app.storage import LocalStorage
-from deepagents_integration import DeepAgentsRuntimeConfig, SseEventEnvelope, stream_sse_envelopes
+from deepagents_integration import DeepAgentsRuntimeConfig, stream_sse_envelopes
 from deepagents_integration.run_hooks import RunInputHookContext, apply_run_input_hooks
 
 RunBuilder = Callable[[DeepAgentsRuntimeConfig], Any]
 logger = logging.getLogger(__name__)
 MAX_REPLAY_BACKLOG_EVENTS = 500
-
-
-class InvalidRunAttachmentError(ValueError):
-    def __init__(self, detail: str, *, status_code: int = 400) -> None:
-        super().__init__(detail)
-        self.detail = detail
-        self.status_code = status_code
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
-
 
 def new_run_id() -> str:
     return f"run-{uuid4()}"
@@ -174,47 +216,6 @@ class RunState:
     def next_sequence(self) -> int:
         with self.lock:
             return self.last_sequence + 1
-
-
-class RunEventViewBuffer:
-    def __init__(
-        self,
-        database: DatabaseState,
-        *,
-        run_id: str,
-        session_id: str,
-        batch_size: int = 16,
-    ) -> None:
-        self.database = database
-        self.run_id = run_id
-        self.session_id = session_id
-        self.batch_size = batch_size
-        self.pending: list[dict[str, Any]] = []
-        self.persisted_count = 0
-        self.skipped_count = 0
-
-    def add(self, envelope: dict[str, Any]) -> None:
-        if not _should_persist_event_view(envelope):
-            self.skipped_count += 1
-            return
-        self.pending.append(envelope)
-        if len(self.pending) >= self.batch_size:
-            self.flush()
-
-    def flush(self) -> None:
-        if not self.pending:
-            return
-        envelopes = self.pending
-        self.pending = []
-        self.persisted_count += len(envelopes)
-        _persist_event_views(
-            self.database,
-            run_id=self.run_id,
-            session_id=self.session_id,
-            envelopes=envelopes,
-        )
-
-
 class RunManager:
     def __init__(self, keepalive_interval: float = 15.0) -> None:
         self._runs: dict[str, RunState] = {}
@@ -385,14 +386,8 @@ class RunService:
                 if state is not None:
                     state.clear_execution(task)
                 loop.close()
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            thread = threading.Thread(target=runner, daemon=True)
-            thread.start()
-            return
-        loop.run_in_executor(None, runner)
+        thread = threading.Thread(target=runner, daemon=True)
+        thread.start()
 
     def cancel_run(self, *, run_id: str) -> RunState:
         state = self.manager.get(run_id)
@@ -420,6 +415,28 @@ class RunService:
                 status="cancelled",
             )
         return state
+
+    def get_run(self, *, run_id: str) -> RunState | PersistedRunState:
+        state = self.manager.get(run_id)
+        if state is not None:
+            return state
+        persisted = load_persisted_run_state(self.database, run_id=run_id)
+        if persisted is None:
+            raise KeyError(run_id)
+        return persisted
+
+    async def stream(self, *, run_id: str, last_event_id: str | None = None) -> AsyncIterator[str]:
+        state = self.manager.get(run_id)
+        if state is not None:
+            async for event in self.manager.stream(run_id, last_event_id=last_event_id):
+                yield event
+            return
+        async for event in stream_persisted_run(
+            self.database,
+            run_id=run_id,
+            last_event_id=last_event_id,
+        ):
+            yield event
 
     async def _execute_run(
         self,
@@ -618,7 +635,8 @@ class RunService:
                     initial_files=agent_input.get("files", {}),
                 )
                 if generated_state_files:
-                    generated_attachments = self._persist_generated_state_outputs(
+                    generated_attachments = persist_generated_state_outputs(
+                        database=self.database,
                         settings=settings,
                         session_id=session_id,
                         run_id=run_id,
@@ -798,7 +816,7 @@ class RunService:
             )
         except asyncio.CancelledError:
             event_view_buffer.flush()
-            if state.status != "cancelled":
+            if not state.cancel_requested and state.status != "cancelled":
                 self._finalize_cancelled(
                     run_id=run_id,
                     session_id=session_id,
@@ -1164,47 +1182,6 @@ class RunService:
             db.refresh(record)
             return str(record.id)
 
-    def _persist_generated_state_outputs(
-        self,
-        *,
-        settings: Settings,
-        session_id: str,
-        run_id: str,
-        files: dict[str, dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        storage = LocalStorage(settings.upload_storage_dir)
-        attachments: list[dict[str, Any]] = []
-        with self.database.session_factory() as db:
-            for runtime_path, file_data in sorted(files.items()):
-                payload = _state_file_payload_bytes(file_data)
-                filename = _state_output_filename(runtime_path)
-                storage_key, digest = storage.save_bytes(
-                    session_id=session_id,
-                    filename=filename,
-                    payload=payload,
-                )
-                content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-                record = UploadRecord(
-                    session_id=session_id,
-                    message_id=None,
-                    filename=filename,
-                    content_type=content_type,
-                    size_bytes=len(payload),
-                    storage_key=storage_key,
-                    sha256=digest,
-                    extra={
-                        "source": "state_output",
-                        "runtime_path": runtime_path,
-                        "run_id": run_id,
-                    },
-                )
-                db.add(record)
-                db.flush()
-                attachments.append(_upload_attachment_manifest(record))
-            db.commit()
-        return attachments
-
-
 def _log_run(
     level: int,
     summary: str,
@@ -1273,569 +1250,6 @@ def _require_session(db: Session, session_id: str) -> SessionRecord:
     return session
 
 
-def _backlog_after(
-    envelopes: list[dict[str, Any]],
-    last_event_id: str | None,
-) -> list[dict[str, Any]]:
-    if not last_event_id:
-        return envelopes
-    for index, envelope in enumerate(envelopes):
-        if envelope["event_id"] == last_event_id:
-            return envelopes[index + 1 :]
-    return envelopes
-
-
-def _to_sse(envelope: dict[str, Any]) -> str:
-    return f"id: {envelope['event_id']}\ndata: {json.dumps(envelope, ensure_ascii=False)}\n\n"
-
-
-def _should_persist_event_view(envelope: dict[str, Any]) -> bool:
-    event_type = str(envelope.get("type") or "")
-    raw_data = envelope.get("data")
-    data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
-    if data.get("transient") is True:
-        return False
-    return event_type in {
-        "status",
-        "message.final",
-        "tool",
-        "skill",
-        "subagent",
-        "sandbox",
-        "error",
-    }
-
-
-def _persist_event_views(
-    database: DatabaseState,
-    *,
-    run_id: str,
-    session_id: str,
-    envelopes: list[dict[str, Any]],
-) -> None:
-    if not envelopes:
-        return
-
-    max_sequence = 0
-    latest_status = ""
-    records: list[RunEventViewRecord] = []
-    for envelope in envelopes:
-        event_id = str(envelope["event_id"])
-        sequence = int(event_id.rsplit(":", maxsplit=1)[-1])
-        max_sequence = max(max_sequence, sequence)
-        latest_status = str(envelope.get("status") or latest_status)
-        message_payload = envelope.get("message")
-        records.append(
-            RunEventViewRecord(
-                id=event_id,
-                run_id=run_id,
-                session_id=session_id,
-                sequence=sequence,
-                event_type=str(envelope.get("type") or ""),
-                status=str(envelope.get("status") or "in_progress"),
-                message_id=message_payload.get("id")
-                if isinstance(message_payload, dict)
-                else None,
-                step_id=str(envelope.get("step_id") or "") or None,
-                payload=dict(envelope),
-            )
-        )
-
-    with database.session_factory() as db:
-        for record in records:
-            db.merge(record)
-        run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
-        if run_record is not None:
-            current_status = str(run_record.status or "")
-            terminal_statuses = {"completed", "failed", "cancelled"}
-            if latest_status in terminal_statuses or current_status not in terminal_statuses:
-                run_record.status = latest_status or run_record.status
-            run_record.event_count = max(run_record.event_count, max_sequence)
-            db.add(run_record)
-        db.commit()
-
-
-def _ui_envelope(
-    *,
-    run_id: str,
-    session_id: str,
-    sequence: int,
-    event_type: str,
-    status: str,
-    label: str,
-    detail: str,
-    data: dict[str, Any],
-    step_id: str = "",
-    delta: str = "",
-    message: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    return {
-        "version": "deepagents-ui.v1",
-        "event_id": f"{run_id}:{sequence:06d}",
-        "type": event_type,
-        "run_id": run_id,
-        "session_id": session_id,
-        "timestamp": utc_now().isoformat(),
-        "status": status,
-        "step_id": step_id,
-        "label": label,
-        "detail": detail,
-        "delta": delta,
-        "message": message,
-        "data": data,
-    }
-
-
-def _bridge_to_ui(*, envelope: SseEventEnvelope, session_id: str, sequence: int) -> dict[str, Any]:
-    event = envelope.event
-    data = envelope.data
-    status = "running"
-    event_type = "step"
-    detail = ""
-    delta = ""
-    message: dict[str, Any] | None = None
-
-    if event == "run.started":
-        event_type = "status"
-        detail = "DeepAgents run started."
-    elif event == "run.completed":
-        event_type = "status"
-        status = "completed"
-        detail = "DeepAgents run completed."
-    elif event == "run.failed":
-        event_type = "error"
-        status = "failed"
-        detail = str(data.get("error") or "DeepAgents run failed.")
-    elif event == "message.delta":
-        event_type = "message.delta"
-        delta = str(data.get("text") or "")
-        detail = "Streaming assistant response."
-    elif event == "message.completed":
-        event_type = "message.final"
-        content = _extract_message_text(data)
-        if not content:
-            event_type = "step"
-            detail = "Model completed without a direct text payload."
-        else:
-            data = {**data, "final": False}
-            message = {
-                "id": f"message:{envelope.event_id}",
-                "role": "assistant",
-                "content": content,
-                "createdAt": utc_now().isoformat(),
-                "attachments": [],
-            }
-            detail = "Assistant response updated."
-    elif event.startswith("tool."):
-        event_type = "tool"
-        status = "completed" if event.endswith("completed") else "running"
-        detail = str(data.get("name") or "Tool event")
-    elif event.startswith("skill."):
-        event_type = "skill"
-        status = "completed" if event.endswith("completed") else "running"
-        detail = str(data.get("name") or "Skill event")
-    elif event.startswith("subagent."):
-        event_type = "subagent"
-        status = "completed" if event.endswith("completed") else "running"
-        detail = _subagent_event_detail(data)
-    elif event.startswith("sandbox."):
-        event_type = "sandbox"
-        status = "completed" if event.endswith("completed") else "running"
-        detail = str(data.get("name") or "Sandbox event")
-    else:
-        event_type = "step"
-        status = "completed" if event.endswith("completed") else "running"
-        detail = str(data.get("node") or data.get("name") or event)
-
-    return _ui_envelope(
-        run_id=envelope.run_id,
-        session_id=session_id,
-        sequence=sequence,
-        event_type=event_type,
-        status=status,
-        label=event,
-        detail=detail,
-        data=data,
-        step_id=str(data.get("step_id") or ""),
-        delta=delta,
-        message=message,
-    )
-
-
-def _extract_message_text(payload: Any) -> str:
-    if payload is None:
-        return ""
-    if isinstance(payload, str):
-        return payload
-    if isinstance(payload, list):
-        return _extract_message_text(payload[-1]) if payload else ""
-    if isinstance(payload, dict):
-        if "messages" in payload and isinstance(payload["messages"], list) and payload["messages"]:
-            return _extract_message_text(payload["messages"][-1])
-        if "output" in payload:
-            return _extract_message_text(payload["output"])
-        if "content" in payload:
-            return _extract_message_text(payload["content"])
-        if "text" in payload and isinstance(payload["text"], str):
-            return payload["text"]
-    return ""
-
-
-def _subagent_event_detail(data: dict[str, Any]) -> str:
-    raw_input = data.get("input")
-    input_data = raw_input if isinstance(raw_input, dict) else {}
-    subagent_type = str(
-        input_data.get("subagent_type")
-        or input_data.get("subagent")
-        or input_data.get("agent")
-        or data.get("subagent_type")
-        or ""
-    ).strip()
-    return subagent_type or str(data.get("name") or "Subagent event")
-
-
-def _restore_subagent_detail(
-    ui_event: dict[str, Any],
-    *,
-    subagent_names_by_runtime_run: dict[str, str],
-) -> None:
-    raw_data = ui_event.get("data")
-    data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
-    runtime_run_id = str(data.get("runtime_run_id") or ui_event.get("run_id") or "")
-    detail = str(ui_event.get("detail") or "")
-    if ui_event.get("status") == "running":
-        if detail and detail not in {"task", "Subagent event"}:
-            subagent_names_by_runtime_run[runtime_run_id] = detail
-        return
-    if detail not in {"task", "Subagent event"}:
-        return
-    restored = subagent_names_by_runtime_run.get(runtime_run_id)
-    if not restored:
-        return
-    ui_event["detail"] = restored
-    ui_event["data"] = {**data, "subagent_type": restored}
-
-
-def _is_runtime_placeholder_text(value: str) -> bool:
-    text = value.strip()
-    return text.startswith("[omitted long runtime string:") or text.startswith(
-        "[redacted base64-like runtime string:"
-    )
-
-
-def _resolve_run_attachments(
-    *,
-    db: Session,
-    session_id: str,
-    attachments: list[dict[str, Any]],
-    settings: Settings,
-) -> list[dict[str, Any]]:
-    if not attachments:
-        return []
-
-    requested_ids = [str(item.get("id") or "").strip() for item in attachments if item.get("id")]
-    records_by_id = {}
-    if requested_ids:
-        records = (
-            db.query(UploadRecord)
-            .filter(
-                UploadRecord.session_id == session_id,
-                UploadRecord.id.in_(requested_ids),
-            )
-            .all()
-        )
-        records_by_id = {record.id: record for record in records}
-    requested_storage_keys = [
-        str(item.get("storage_key") or "").strip()
-        for item in attachments
-        if not item.get("id") and item.get("storage_key")
-    ]
-    records_by_storage_key = {}
-    if requested_storage_keys:
-        records = (
-            db.query(UploadRecord)
-            .filter(
-                UploadRecord.session_id == session_id,
-                UploadRecord.storage_key.in_(requested_storage_keys),
-            )
-            .all()
-        )
-        records_by_storage_key = {record.storage_key: record for record in records}
-
-    resolved: list[dict[str, Any]] = []
-    for item in attachments:
-        attachment_id = str(item.get("id") or "").strip()
-        record = records_by_id.get(attachment_id)
-        if attachment_id and record is None:
-            raise InvalidRunAttachmentError("Invalid attachment")
-        storage_key = str(item.get("storage_key") or "").strip()
-        if record is None and storage_key:
-            record = records_by_storage_key.get(storage_key)
-            if record is None:
-                raise InvalidRunAttachmentError("Invalid attachment")
-        if record is not None:
-            if record.message_id is not None:
-                raise InvalidRunAttachmentError(
-                    "Upload is already attached to a message",
-                    status_code=409,
-                )
-            upload_path = _resolve_attachment_disk_path(
-                upload_root=settings.upload_storage_dir,
-                storage_key=record.storage_key,
-            )
-            resolved.append(
-                {
-                    "id": record.id,
-                    "name": record.filename,
-                    "status": str(item.get("status") or "uploaded"),
-                    "size": record.size_bytes,
-                    "size_bytes": record.size_bytes,
-                    "content_type": record.content_type,
-                    "storage_key": record.storage_key,
-                    "upload_path": str(upload_path) if upload_path is not None else "",
-                    "sandbox_path": _resolve_sandbox_attachment_path(
-                        upload_path=upload_path,
-                        settings=settings,
-                    ),
-                }
-            )
-            continue
-
-        upload_path = _resolve_attachment_disk_path(
-            upload_root=settings.upload_storage_dir,
-            storage_key=storage_key,
-        )
-        resolved.append(
-            {
-                "id": attachment_id or str(item.get("attachment_id") or ""),
-                "name": str(item.get("name") or item.get("filename") or "attachment"),
-                "status": str(item.get("status") or "uploaded"),
-                "size": int(item.get("size") or item.get("size_bytes") or 0),
-                "size_bytes": int(item.get("size_bytes") or item.get("size") or 0),
-                "content_type": str(item.get("content_type") or "application/octet-stream"),
-                "storage_key": storage_key,
-                "upload_path": str(upload_path) if upload_path is not None else "",
-                "sandbox_path": _resolve_sandbox_attachment_path(
-                    upload_path=upload_path,
-                    settings=settings,
-                ),
-            }
-        )
-
-    return resolved
-
-
-def _pending_upload_records_for_attachments(
-    *,
-    db: Session,
-    session_id: str,
-    attachments: list[dict[str, Any]],
-) -> list[UploadRecord]:
-    upload_ids = [str(item.get("id") or "").strip() for item in attachments if item.get("id")]
-    if not upload_ids:
-        return []
-
-    records = (
-        db.query(UploadRecord)
-        .filter(
-            UploadRecord.session_id == session_id,
-            UploadRecord.id.in_(upload_ids),
-        )
-        .all()
-    )
-    records_by_id = {record.id: record for record in records}
-
-    ordered_records: list[UploadRecord] = []
-    for upload_id in upload_ids:
-        record = records_by_id.get(upload_id)
-        if record is None:
-            raise InvalidRunAttachmentError("Invalid attachment")
-        if record.message_id is not None:
-            raise InvalidRunAttachmentError(
-                "Upload is already attached to a message",
-                status_code=409,
-            )
-        ordered_records.append(record)
-    return ordered_records
-
-
-def _resolve_attachment_disk_path(*, upload_root: Path, storage_key: str) -> Path | None:
-    if not storage_key:
-        return None
-    return (upload_root / storage_key).resolve()
-
-
-def _state_backend_files(*, attachments: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
-    files: dict[str, dict[str, str]] = {}
-    for attachment in attachments:
-        sandbox_path = str(attachment.get("sandbox_path") or "").strip()
-        upload_path = str(attachment.get("upload_path") or "").strip()
-        if not sandbox_path or not upload_path:
-            continue
-        disk_path = Path(upload_path)
-        if not disk_path.is_file():
-            continue
-        payload = disk_path.read_bytes()
-        try:
-            files[sandbox_path] = {
-                "content": payload.decode("utf-8"),
-                "encoding": "utf-8",
-            }
-        except UnicodeDecodeError:
-            files[sandbox_path] = {
-                "content": base64.b64encode(payload).decode("ascii"),
-                "encoding": "base64",
-            }
-    return files
-
-
-def _generated_state_output_files(
-    completion_output: Any,
-    *,
-    initial_files: Any,
-) -> dict[str, dict[str, Any]]:
-    output = (
-        completion_output.get("output")
-        if isinstance(completion_output, dict) and "output" in completion_output
-        else completion_output
-    )
-    if not isinstance(output, dict):
-        return {}
-    raw_files = output.get("files")
-    if not isinstance(raw_files, dict):
-        return {}
-    initial = initial_files if isinstance(initial_files, dict) else {}
-    generated: dict[str, dict[str, Any]] = {}
-    for path, file_data in raw_files.items():
-        runtime_path = str(path or "").strip()
-        if not runtime_path or not isinstance(file_data, dict):
-            continue
-        if runtime_path in initial and _state_file_payload_equal(file_data, initial[runtime_path]):
-            continue
-        generated[runtime_path] = file_data
-    return generated
-
-
-def _state_file_payload_equal(left: dict[str, Any], right: Any) -> bool:
-    if not isinstance(right, dict):
-        return False
-    return (
-        str(left.get("encoding") or "utf-8") == str(right.get("encoding") or "utf-8")
-        and _state_file_content_string(left) == _state_file_content_string(right)
-    )
-
-
-def _state_file_payload_bytes(file_data: dict[str, Any]) -> bytes:
-    content = _state_file_content_string(file_data)
-    encoding = str(file_data.get("encoding") or "utf-8")
-    if encoding == "base64":
-        try:
-            return base64.standard_b64decode(content)
-        except (binascii.Error, ValueError):
-            return content.encode("utf-8")
-    return content.encode("utf-8")
-
-
-def _state_file_content_string(file_data: dict[str, Any]) -> str:
-    content = file_data.get("content", "")
-    if isinstance(content, list):
-        return "\n".join(str(item) for item in content)
-    return str(content)
-
-
-def _state_output_filename(runtime_path: str) -> str:
-    name = Path(runtime_path).name.strip()
-    return name or "state-output.txt"
-
-
-def _upload_attachment_manifest(record: UploadRecord) -> dict[str, Any]:
-    return {
-        "id": record.id,
-        "name": record.filename,
-        "filename": record.filename,
-        "size": record.size_bytes,
-        "size_bytes": record.size_bytes,
-        "status": "generated",
-        "content_type": record.content_type,
-        "storage_key": record.storage_key,
-        "source": "state_output",
-        "runtime_path": (record.extra or {}).get("runtime_path", ""),
-    }
-
-
-def _append_message_attachments(record: MessageRecord, attachments: list[dict[str, Any]]) -> None:
-    if not attachments:
-        return
-    extra = dict(record.extra or {})
-    existing = extra.get("attachments")
-    extra["attachments"] = [
-        *(existing if isinstance(existing, list) else []),
-        *attachments,
-    ]
-    record.extra = extra
-
-
-def _link_uploads_to_message(
-    db: Session,
-    *,
-    attachments: list[dict[str, Any]],
-    message_id: str,
-) -> None:
-    if not attachments:
-        return
-    upload_ids = [str(item.get("id") or "") for item in attachments if item.get("id")]
-    if not upload_ids:
-        return
-    for record in db.query(UploadRecord).filter(UploadRecord.id.in_(upload_ids)).all():
-        record.message_id = message_id
-        db.add(record)
-
-
-def _resolve_sandbox_attachment_path(*, upload_path: Path | None, settings: Settings) -> str:
-    if upload_path is None:
-        return ""
-
-    if settings.deepagents_sandbox_kind == "state":
-        return _state_attachment_path(upload_path=upload_path, settings=settings)
-
-    sandbox_root = _resolved_sandbox_root(settings)
-    if sandbox_root is None:
-        return ""
-
-    try:
-        relative_path = upload_path.resolve().relative_to(sandbox_root)
-    except ValueError:
-        return ""
-
-    normalized = relative_path.as_posix()
-    if settings.resolved_sandbox_virtual_mode():
-        return f"/{normalized.lstrip('/')}"
-    return normalized
-
-
-def _resolved_sandbox_root(settings: Settings) -> Path | None:
-    root_dir = settings.resolved_sandbox_root_dir()
-    if root_dir is not None:
-        return Path(root_dir).expanduser().resolve()
-    return None
-
-
-def _state_attachment_path(*, upload_path: Path, settings: Settings) -> str:
-    try:
-        relative_path = upload_path.resolve().relative_to(settings.upload_storage_dir.resolve())
-    except ValueError:
-        return f"/uploads/{upload_path.name}"
-    return f"/uploads/{relative_path.as_posix().lstrip('/')}"
-
-
-def _message_attachments(*, record: MessageRecord) -> list[dict[str, Any]]:
-    extra = record.extra if isinstance(record.extra, dict) else {}
-    attachments = extra.get("attachments")
-    if isinstance(attachments, list):
-        return [item for item in attachments if isinstance(item, dict)]
-    return []
-
-
 def _build_recursion_fallback(_prompt: str, _messages: list[dict[str, str]]) -> str:
     return (
         "我已经尝试使用可用工具处理这个问题，但执行过程没有在预期步数内收敛。"
@@ -1845,7 +1259,3 @@ def _build_recursion_fallback(_prompt: str, _messages: list[dict[str, str]]) -> 
 
 def _elapsed_ms(started_at: float) -> int:
     return int((time.perf_counter() - started_at) * 1000)
-
-
-def _count_runtime_events(counter: Counter[str], prefix: str) -> int:
-    return sum(count for name, count in counter.items() if name.startswith(prefix))

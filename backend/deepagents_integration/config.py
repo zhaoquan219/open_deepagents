@@ -100,6 +100,10 @@ class DeepAgentsRuntimeConfig:
     model_id: str | None = None
     subagent_profile_id: str | None = None
     runtime_selection: Mapping[str, Any] | None = None
+    checkpointer: Any = None
+    store: Any = None
+    interrupt_on: Mapping[str, Any] | None = None
+    cache: Any = None
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
 
     def logging_summary(self) -> dict[str, Any]:
@@ -131,6 +135,10 @@ class DeepAgentsRuntimeConfig:
                 else None
             ),
             "builtin_tool_blocklist_count": len(self.builtin_tool_blocklist),
+            "checkpointer_configured": self.checkpointer is not None,
+            "store_configured": self.store is not None,
+            "cache_configured": self.cache is not None,
+            "interrupt_on_count": len(self.interrupt_on or {}),
             "tool_count": len(self.tool_specs),
             "tool_object_count": len(self.tools),
             "upload_hook_count": len(self.upload_hook_specs),
@@ -162,6 +170,10 @@ class DeepAgentsRuntimeConfig:
             model_id=_optional_str(raw.get("model_id")),
             subagent_profile_id=_optional_str(raw.get("subagent_profile_id")),
             runtime_selection=raw.get("runtime_selection"),
+            checkpointer=raw.get("checkpointer"),
+            store=raw.get("store"),
+            interrupt_on=_optional_mapping(raw.get("interrupt_on")),
+            cache=raw.get("cache"),
             sandbox=SandboxConfig.from_mapping(raw.get("sandbox")),
         )
 
@@ -196,6 +208,14 @@ def _mapping_tuple(value: Any) -> tuple[Mapping[str, Any], ...]:
     if not isinstance(value, list | tuple) or not all(isinstance(item, Mapping) for item in value):
         raise ValueError("Expected a list of mappings")
     return tuple(value)
+
+
+def _optional_mapping(value: Any) -> Mapping[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("Expected a mapping")
+    return value
 
 
 def _skill_source_tuple(value: Any) -> tuple[SkillSourceConfig, ...]:

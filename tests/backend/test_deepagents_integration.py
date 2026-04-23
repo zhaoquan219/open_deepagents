@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from deepagents.backends import FilesystemBackend, LocalShellBackend, StateBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware.permissions import _check_fs_permission
 from deepagents.middleware.skills import _list_skills
@@ -238,6 +238,7 @@ class DeepAgentsConfigTests(unittest.TestCase):
                 ),
             )
 
+            self.assertIsInstance(backend, CompositeBackend)
             self.assertEqual(active_sources, ("/extensions/skills/",))
             skills = _list_skills(backend, "/extensions/skills/")
             self.assertEqual(
@@ -339,6 +340,28 @@ class DeepAgentsConfigTests(unittest.TestCase):
             self.assertEqual(kwargs["permissions"][0].operations, ["read", "write"])
             self.assertIsInstance(kwargs["backend"], FilesystemBackend)
             self.assertIs(kwargs["context_schema"], DeepAgentsRunContext)
+
+    def test_build_deep_agent_wires_native_lifecycle_hooks(self):
+        checkpointer = object()
+        store = object()
+        cache = object()
+        config = DeepAgentsRuntimeConfig(
+            model="openai:gpt-5.4",
+            checkpointer=checkpointer,
+            store=store,
+            cache=cache,
+            interrupt_on={"execute": True},
+        )
+
+        with patch("deepagents_integration.agent_factory.create_deep_agent") as mocked_create:
+            mocked_create.return_value = object()
+            build_deep_agent(config)
+
+        _, kwargs = mocked_create.call_args
+        self.assertIs(kwargs["checkpointer"], checkpointer)
+        self.assertIs(kwargs["store"], store)
+        self.assertIs(kwargs["cache"], cache)
+        self.assertEqual(kwargs["interrupt_on"], {"execute": True})
 
     def test_builtin_tool_selection_middleware_filters_only_deepagents_builtin_tools(self):
         middleware = BuiltinToolSelectionMiddleware(

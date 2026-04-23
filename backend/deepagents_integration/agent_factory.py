@@ -42,9 +42,13 @@ def build_deep_agent(config: DeepAgentsRuntimeConfig) -> Any:
         subagents=_deepagents_subagents(config.subagents),
         system_prompt=config.system_prompt,
         context_schema=DeepAgentsRunContext,
+        checkpointer=config.checkpointer,
+        store=config.store,
         backend=backend,
+        interrupt_on=dict(config.interrupt_on) if config.interrupt_on else None,
         debug=config.debug,
         name=config.agent_name,
+        cache=config.cache,
     )
 
 

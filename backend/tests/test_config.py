@@ -249,3 +249,43 @@ def test_runtime_permissions_default_deny_unmatched_write_paths() -> None:
         "read",
         normalize_sandbox_permission_path(DEFAULT_SANDBOX_ROOT / "uploads" / "in.txt"),
     ) == "allow"
+
+
+def test_runtime_config_preserves_agent_native_lifecycle_fields(monkeypatch, tmp_path) -> None:
+    package = tmp_path / "native_runtime_agent"
+    package.mkdir()
+    (package / "system.md").write_text("Native runtime agent", encoding="utf-8")
+    (package / "__init__.py").write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "",
+                "CHECKPOINTER = object()",
+                "STORE = object()",
+                "CACHE = object()",
+                "AGENT = {",
+                "    'id': 'native-runtime',",
+                "    'system_prompt': Path(__file__).with_name('system.md'),",
+                "    'checkpointer': CHECKPOINTER,",
+                "    'store': STORE,",
+                "    'cache': CACHE,",
+                "    'interrupt_on': {'execute': True},",
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    settings = Settings(
+        deepagents_default_model="openai/gpt-5-4",
+        deepagents_main_agent="native_runtime_agent:AGENT",
+    )
+
+    runtime_config = settings.to_runtime_config()
+
+    assert runtime_config.checkpointer is not None
+    assert runtime_config.store is not None
+    assert runtime_config.cache is not None
+    assert runtime_config.interrupt_on == {"execute": True}

@@ -625,6 +625,61 @@ def test_run_event_views_skip_transient_deltas_under_long_streams(tmp_path) -> N
             assert len(event_views) <= 4
 
 
+def test_run_routes_fall_back_to_persisted_history_when_manager_state_is_gone(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'persisted-runs.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_default_model="openai/gpt-5-4",
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = build_fake_runtime
+
+    with TestClient(app) as client:
+        headers = login_headers(client, "admin", "secret")
+        token = headers["Authorization"].split(" ", maxsplit=1)[1]
+
+        session = client.post("/api/sessions", headers=headers, json={"title": "Persisted run"})
+        session_id = session.json()["id"]
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={"session_id": session_id, "prompt": "Say hello", "attachments": []},
+        )
+        run_id = run.json()["run_id"]
+
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and '"status": "completed"' in line:
+                    break
+
+        app.state.run_manager._runs.clear()
+
+        get_run = client.get(f"/api/runs/{run_id}", headers=headers)
+        assert get_run.status_code == 200
+        assert get_run.json()["status"] == "completed"
+        assert get_run.json()["session_id"] == session_id
+
+        payloads = []
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and line.startswith("data: "):
+                    payloads.append(json.loads(line[6:]))
+
+        assert payloads
+        assert all(payload["type"] != "message.delta" for payload in payloads)
+        assert any(payload["type"] == "message.final" for payload in payloads)
+        assert payloads[-1]["status"] == "completed"
+
+
 def test_long_stream_completion_does_not_emit_omitted_runtime_placeholder(tmp_path) -> None:
     settings = Settings(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'long-stream.db'}",
