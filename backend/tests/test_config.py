@@ -79,6 +79,19 @@ def test_runtime_config_loads_agent_skill_sources_for_deepagents() -> None:
     assert all(source.source_path.startswith("/skills/") for source in runtime_config.skill_sources)
 
 
+def test_runtime_config_resolves_agent_run_and_upload_hooks() -> None:
+    settings = Settings(
+        deepagents_default_model="openai/gpt-5-4",
+    )
+
+    runtime_config = settings.to_runtime_config()
+
+    assert runtime_config.run_input_hooks
+    assert runtime_config.upload_hooks
+    assert callable(runtime_config.run_input_hooks[0])
+    assert callable(runtime_config.upload_hooks[0])
+
+
 def test_normalize_runtime_backend_path_prefers_repo_relative_sources() -> None:
     path = normalize_runtime_backend_path(
         "agents/skills",

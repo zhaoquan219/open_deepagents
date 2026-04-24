@@ -5,9 +5,7 @@ import re
 from pathlib import Path
 from uuid import uuid4
 
-_FILENAME_SAFE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 _SESSION_TOKEN_LENGTH = 8
-_UPLOAD_TOKEN_LENGTH = 10
 
 
 class LocalStorage:
@@ -15,9 +13,9 @@ class LocalStorage:
         self.root = root
 
     def save_bytes(self, *, session_id: str, filename: str, payload: bytes) -> tuple[str, str]:
-        safe_name = _safe_filename(filename)
+        stored_name = Path(filename).name or "upload.bin"
         session_token = _short_session_token(session_id)
-        relative_path = Path(session_token) / safe_name
+        relative_path = Path(session_token) / stored_name
         destination = self.root / relative_path
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(payload)
@@ -29,11 +27,6 @@ class LocalStorage:
 
     def delete(self, storage_key: str) -> None:
         self.resolve(storage_key).unlink(missing_ok=True)
-
-
-def _safe_filename(filename: str) -> str:
-    raw_name = Path(filename).name or "upload.bin"
-    return raw_name
 
 
 def _short_session_token(session_id: str) -> str:

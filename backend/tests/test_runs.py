@@ -24,8 +24,6 @@ from app.db.models import (
 from app.main import create_app
 from app.services.runs import MAX_REPLAY_BACKLOG_EVENTS, RunState
 
-DEFAULT_RUN_INPUT_HOOK_SPEC = "agents.hooks:RUN_INPUT_HOOKS"
-
 
 def test_run_state_drops_transient_events_and_caps_replay_backlog() -> None:
     state = RunState(run_id="run-long", session_id="session-long")
@@ -502,7 +500,6 @@ def test_run_lifecycle_and_stream(tmp_path) -> None:
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
         deepagents_default_model="openai/gpt-5-4",
-        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
     app.state.run_service.builder = build_fake_runtime
@@ -867,7 +864,6 @@ def test_stream_emits_keepalive_while_tool_execution_blocks(tmp_path) -> None:
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
         deepagents_default_model="openai/gpt-5-4",
-        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
     app.state.database.create_all()
@@ -1453,7 +1449,6 @@ def test_run_builds_attachment_context_with_storage_key_and_upload_path(tmp_path
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
         deepagents_default_model="openai/gpt-5-4",
-        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime
@@ -1523,7 +1518,6 @@ def test_run_consumes_pending_upload_by_binding_it_to_user_message(tmp_path) -> 
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
         deepagents_default_model="openai/gpt-5-4",
-        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime
@@ -1688,7 +1682,6 @@ def test_later_run_without_uploads_does_not_mark_history_as_current_attachment(t
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
         deepagents_default_model="openai/gpt-5-4",
-        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime
@@ -1775,7 +1768,6 @@ def test_run_builds_attachment_context_with_sandbox_path_for_virtual_filesystem(
         deepagents_sandbox_kind="filesystem",
         deepagents_sandbox_root_dir=str(sandbox_root),
         deepagents_sandbox_virtual_mode=False,
-        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime
@@ -1840,7 +1832,6 @@ def test_run_builds_attachment_context_with_state_sandbox_without_file_payload(t
         upload_storage_dir=tmp_path / "uploads",
         deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="state",
-        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime
@@ -1907,7 +1898,6 @@ def test_state_sandbox_generated_files_are_exported_as_message_attachments(tmp_p
         upload_storage_dir=tmp_path / "uploads",
         deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="state",
-        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: StateOutputRuntime()
@@ -2014,7 +2004,6 @@ def test_filesystem_sandbox_attachment_path_stays_under_data_root(tmp_path) -> N
         deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="filesystem",
         deepagents_sandbox_virtual_mode=False,
-        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime
@@ -2073,7 +2062,6 @@ def test_single_uploaded_file_tasks_use_generic_attachment_context_without_keywo
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
         deepagents_default_model="openai/gpt-5-4",
-        deepagents_run_input_hook_specs=DEFAULT_RUN_INPUT_HOOK_SPEC,
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime

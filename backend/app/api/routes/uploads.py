@@ -90,6 +90,10 @@ async def upload_file(
     )
     db.add(record)
     db.flush()
+    try:
+        upload_hooks = settings.to_runtime_config().upload_hooks
+    except ImportError:
+        upload_hooks = ()
     hook_extra = apply_upload_hooks(
         context=build_upload_hook_context(
             upload_id=record.id,
@@ -102,8 +106,7 @@ async def upload_file(
             sha256=record.sha256,
             upload_root=settings.upload_storage_dir,
         ),
-        hook_specs=settings.upload_hook_specs(),
-        hooks=settings.upload_hooks(),
+        hooks=upload_hooks,
     )
     if hook_extra:
         record.extra = {**(record.extra or {}), **hook_extra}

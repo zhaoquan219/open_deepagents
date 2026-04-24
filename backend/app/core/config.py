@@ -208,8 +208,6 @@ class Settings(BaseSettings):
         resolved_skill_sources = self.deepagents_skill_sources()
         agent_skill_sources = tuple(runtime_resolution.agent.get("skill_sources") or ())
         all_skill_sources = (*resolved_skill_sources, *agent_skill_sources)
-        tool_specs: tuple[str, ...] = ()
-        middleware_specs: tuple[str, ...] = ()
         agent_tools = tuple(runtime_resolution.agent.get("tools") or ())
         agent_middleware = tuple(runtime_resolution.agent.get("middleware") or ())
         hooks = runtime_resolution.agent.get("hooks")
@@ -238,13 +236,9 @@ class Settings(BaseSettings):
             system_prompt=self.load_deepagents_system_prompt(runtime_resolution.agent),
             agent_name=self.deepagents_agent_name,
             debug=self.deepagents_debug,
-            tool_specs=tool_specs,
             tools=agent_tools,
-            middleware_specs=middleware_specs,
             middleware=agent_middleware,
-            run_input_hook_specs=self.run_input_hook_specs(),
             run_input_hooks=agent_run_input_hooks,
-            upload_hook_specs=self.upload_hook_specs(),
             upload_hooks=agent_upload_hooks,
             builtin_tool_allowlist=(
                 env_builtin_allowlist
@@ -387,25 +381,6 @@ class Settings(BaseSettings):
             "sandbox_root_dir_effective": bool(self.resolved_sandbox_root_dir()),
             "upload_storage_dir": str(self.upload_storage_dir),
         }
-
-    def run_input_hook_specs(self) -> tuple[str, ...]:
-        return ()
-
-    def upload_hook_specs(self) -> tuple[str, ...]:
-        return ()
-
-    def upload_hooks(self) -> tuple[Any, ...]:
-        try:
-            agent = self.resolve_runtime(
-                selection=None,
-                model_catalog=self.load_model_catalog_for_runtime(),
-            ).agent
-        except Exception:
-            return ()
-        hooks = agent.get("hooks")
-        if not isinstance(hooks, dict):
-            return ()
-        return tuple(hooks.get("upload") or ())
 
     def runtime_model_logging_summary(self) -> dict[str, object]:
         model_source = "model_catalog" if self.load_model_catalog() is not None else "unset"

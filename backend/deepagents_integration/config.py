@@ -86,9 +86,7 @@ class DeepAgentsRuntimeConfig:
     tools: tuple[Any, ...] = ()
     middleware_specs: tuple[str, ...] = ()
     middleware: tuple[Any, ...] = ()
-    run_input_hook_specs: tuple[str, ...] = ()
     run_input_hooks: tuple[Any, ...] = ()
-    upload_hook_specs: tuple[str, ...] = ()
     upload_hooks: tuple[Any, ...] = ()
     builtin_tool_allowlist: tuple[str, ...] | None = None
     builtin_tool_blocklist: tuple[str, ...] = ()
@@ -118,7 +116,6 @@ class DeepAgentsRuntimeConfig:
             "model_id": self.model_id or "",
             "model_name": model_name,
             "permission_count": len(self.permissions),
-            "run_input_hook_count": len(self.run_input_hook_specs),
             "run_input_hook_object_count": len(self.run_input_hooks),
             "sandbox_backend_spec_configured": bool(self.sandbox.backend_spec),
             "sandbox_kind": self.sandbox.kind,
@@ -141,7 +138,6 @@ class DeepAgentsRuntimeConfig:
             "interrupt_on_count": len(self.interrupt_on or {}),
             "tool_count": len(self.tool_specs),
             "tool_object_count": len(self.tools),
-            "upload_hook_count": len(self.upload_hook_specs),
             "upload_hook_object_count": len(self.upload_hooks),
         }
 
@@ -156,9 +152,7 @@ class DeepAgentsRuntimeConfig:
             tools=tuple(raw.get("tools") or ()),
             middleware_specs=_string_tuple(raw.get("middleware_specs")),
             middleware=tuple(raw.get("middleware") or ()),
-            run_input_hook_specs=_string_tuple(raw.get("run_input_hook_specs")),
             run_input_hooks=tuple(raw.get("run_input_hooks") or ()),
-            upload_hook_specs=_string_tuple(raw.get("upload_hook_specs")),
             upload_hooks=tuple(raw.get("upload_hooks") or ()),
             builtin_tool_allowlist=_optional_string_tuple(raw.get("builtin_tool_allowlist")),
             builtin_tool_blocklist=_string_tuple(raw.get("builtin_tool_blocklist")),

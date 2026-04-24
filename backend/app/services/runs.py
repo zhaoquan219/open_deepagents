@@ -521,7 +521,6 @@ class RunService:
                 run_id=run_id,
                 prompt=prompt,
                 attachments=attachments,
-                hook_specs=runtime_config.run_input_hook_specs,
                 hooks=runtime_config.run_input_hooks,
             )
             phase = "streaming"
@@ -1048,7 +1047,6 @@ class RunService:
         run_id: str,
         prompt: str,
         attachments: list[dict[str, Any]],
-        hook_specs: tuple[str, ...] = (),
         hooks: tuple[Any, ...] = (),
     ) -> dict[str, Any]:
         with self.database.session_factory() as db:
@@ -1079,7 +1077,6 @@ class RunService:
                         attachments=tuple(record_attachments),
                         is_current_run=record.run_id == run_id,
                     ),
-                    hook_specs=hook_specs,
                     hooks=hooks,
                 )
             if not content.strip():
@@ -1095,13 +1092,12 @@ class RunService:
                             session_id=session_id,
                             run_id=run_id,
                             role="user",
-                            content=prompt,
-                            attachments=tuple(attachments),
-                            is_current_run=True,
-                        ),
-                        hook_specs=hook_specs,
-                        hooks=hooks,
+                        content=prompt,
+                        attachments=tuple(attachments),
+                        is_current_run=True,
                     ),
+                    hooks=hooks,
+                ),
                 }
             ]
 

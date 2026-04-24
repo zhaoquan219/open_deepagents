@@ -168,7 +168,36 @@ def test_upload_hook_can_enrich_upload_metadata(tmp_path) -> None:
     assert extra["upload_path"].endswith(upload_response.json()["storage_key"])
 
 
-def test_upload_storage_key_is_short_and_does_not_include_session_id(
+def test_upload_still_succeeds_when_agent_import_is_unavailable(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'upload-no-runtime.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret-key-with-32-bytes-minimum",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_main_agent="missing_package:AGENT",
+    )
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        create_session = client.post("/api/sessions", headers=headers, json={"title": "Fallback"})
+        session_id = create_session.json()["id"]
+
+        upload_response = client.post(
+            f"/api/sessions/{session_id}/uploads",
+            headers=headers,
+            files={"file": ("note.txt", b"backend attachment", "text/plain")},
+        )
+
+    assert upload_response.status_code == 201
+    assert upload_response.json()["extra"] == {}
+
+
+def test_upload_storage_key_is_short_and_preserves_original_filename(
     client: TestClient,
     auth_headers: dict[str, str],
 ) -> None:
@@ -191,7 +220,7 @@ def test_upload_storage_key_is_short_and_does_not_include_session_id(
     assert storage_key.count("/") == 1
     folder, filename = storage_key.split("/", 1)
     assert len(folder) <= 8
-    assert filename.endswith("-very-long-report-name.txt")
+    assert filename == "very long report name.txt"
 
 
 def test_upload_storage_key_preserves_long_sanitized_filename(
