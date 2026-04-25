@@ -15,7 +15,6 @@ class PersistedRunState:
     run_id: str
     session_id: str
     status: str
-    extra: dict[str, object]
     created_at: datetime
 
 
@@ -32,7 +31,6 @@ def load_persisted_run_state(
             run_id=record.id,
             session_id=record.session_id,
             status=record.status,
-            extra=dict(record.extra or {}),
             created_at=record.created_at,
         )
 

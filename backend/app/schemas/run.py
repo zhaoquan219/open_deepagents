@@ -10,7 +10,6 @@ class RunCreate(BaseModel):
     session_id: str
     prompt: str = Field(min_length=1)
     attachments: list[dict[str, Any]] = Field(default_factory=list)
-    extra: dict[str, Any] = Field(default_factory=dict)
     model_id: str | None = None
     subagent_profile_id: str | None = None
 
@@ -19,5 +18,4 @@ class RunRead(BaseModel):
     run_id: str
     session_id: str
     status: str
-    extra: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime

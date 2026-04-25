@@ -11,9 +11,7 @@ from app.core.config import Settings
 from app.core.runtime_catalog import RuntimeSelection
 from app.core.session_scope import get_run_for_user, get_session_for_user
 from app.schemas.run import RunCreate, RunRead
-from app.services.run_attachments import InvalidRunAttachmentError
-from app.services.runs import RunService
-from app.services.runtime_overrides import InvalidRuntimeOverrideError, normalize_persisted_extra
+from app.services.runs import InvalidRunAttachmentError, RunService
 
 router = APIRouter()
 
@@ -38,13 +36,11 @@ async def create_run(
     )
 
     try:
-        normalized_extra = normalize_persisted_extra(payload.extra)
         run_state = get_run_service(request).start_run(
             settings=settings,
             session_id=payload.session_id,
             prompt=payload.prompt,
             attachments=payload.attachments,
-            extra=normalized_extra,
             runtime_selection=RuntimeSelection(
                 model_id=payload.model_id,
                 subagent_profile_id=payload.subagent_profile_id,
@@ -52,13 +48,10 @@ async def create_run(
         )
     except InvalidRunAttachmentError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-    except InvalidRuntimeOverrideError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return RunRead(
         run_id=run_state.run_id,
         session_id=run_state.session_id,
         status=run_state.status,
-        extra=normalized_extra,
         created_at=run_state.created_at,
     )
 
@@ -80,7 +73,6 @@ def get_run(
         run_id=run_state.run_id,
         session_id=run_state.session_id,
         status=run_state.status,
-        extra=getattr(run_state, "extra", {}) or {},
         created_at=run_state.created_at,
     )
 
@@ -102,7 +94,6 @@ def cancel_run(
         run_id=run_state.run_id,
         session_id=run_state.session_id,
         status=run_state.status,
-        extra=getattr(run_state, "extra", {}) or {},
         created_at=run_state.created_at,
     )
 

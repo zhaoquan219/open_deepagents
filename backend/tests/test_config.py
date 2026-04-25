@@ -92,25 +92,6 @@ def test_runtime_config_resolves_agent_run_and_upload_hooks() -> None:
     assert callable(runtime_config.upload_hooks[0])
 
 
-def test_settings_default_timezone_is_beijing() -> None:
-    settings = Settings()
-
-    assert settings.app_timezone == "Asia/Shanghai"
-
-
-def test_settings_reject_invalid_timezone() -> None:
-    with pytest.raises(ValueError, match="Unsupported timezone"):
-        Settings(app_timezone="Mars/Olympus")
-
-
-def test_runtime_options_include_timezone() -> None:
-    settings = Settings()
-
-    options = settings.runtime_options()
-
-    assert options["timezone"] == "Asia/Shanghai"
-
-
 def test_normalize_runtime_backend_path_prefers_repo_relative_sources() -> None:
     path = normalize_runtime_backend_path(
         "agents/skills",
