@@ -197,6 +197,20 @@ def test_upload_still_succeeds_when_agent_import_is_unavailable(tmp_path) -> Non
     assert upload_response.json()["extra"] == {}
 
 
+def test_session_rejects_invalid_runtime_timezone_extra(
+    client: TestClient,
+    auth_headers: dict[str, str],
+) -> None:
+    create_session = client.post(
+        "/api/sessions",
+        headers=auth_headers,
+        json={"title": "Bad runtime", "extra": {"runtime": {"timezone": "Mars/Olympus"}}},
+    )
+
+    assert create_session.status_code == 400
+    assert "Unsupported timezone" in create_session.json()["detail"]
+
+
 def test_upload_storage_key_is_short_and_preserves_original_filename(
     client: TestClient,
     auth_headers: dict[str, str],

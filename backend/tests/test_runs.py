@@ -266,6 +266,14 @@ class CapturingConversationRuntime:
         }
 
 
+def build_config_capturing_runtime(runtime: Any, captured_configs: list[Any]):
+    def builder(config: Any) -> Any:
+        captured_configs.append(config)
+        return runtime
+
+    return builder
+
+
 class StateOutputRuntime:
     async def astream_events(
         self,
@@ -1138,6 +1146,151 @@ def test_second_run_receives_prior_session_messages(tmp_path) -> None:
         {"role": "assistant", "content": "seen:1"},
         {"role": "user", "content": "第二问"},
     ]
+
+
+def test_run_merges_runtime_overrides_for_timezone_and_prompt_injections(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'runtime-overrides.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_default_model="openai/gpt-5-4",
+    )
+    app = create_app(settings)
+    runtime = CapturingConversationRuntime()
+    captured_configs: list[Any] = []
+    app.state.run_service.builder = build_config_capturing_runtime(runtime, captured_configs)
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        session = client.post(
+            "/api/sessions",
+            headers=headers,
+            json={
+                "title": "Overrides",
+                "extra": {
+                    "runtime": {
+                        "timezone": "Asia/Tokyo",
+                        "prompt_injections": {
+                            "system_prefix": ["Session system prefix"],
+                            "user_prefix": ["Session user prefix"],
+                            "current_user_suffix": ["Session current suffix"],
+                        },
+                    }
+                },
+            },
+        )
+        session_id = session.json()["id"]
+
+        first_run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "first prompt",
+                "attachments": [],
+                "extra": {
+                    "runtime": {
+                        "timezone": "Europe/Paris",
+                        "prompt_injections": {
+                            "system_suffix": ["Run system suffix"],
+                            "current_user_prefix": ["Run current prefix"],
+                        },
+                    }
+                },
+            },
+        )
+        first_run_id = first_run.json()["run_id"]
+
+        with client.stream(
+            "GET",
+            f"/api/runs/{first_run_id}/stream?access_token={token}",
+        ) as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and '"status": "completed"' in line:
+                    break
+
+        second_run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={"session_id": session_id, "prompt": "second prompt", "attachments": []},
+        )
+        second_run_id = second_run.json()["run_id"]
+
+        with client.stream(
+            "GET",
+            f"/api/runs/{second_run_id}/stream?access_token={token}",
+        ) as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and '"status": "completed"' in line:
+                    break
+
+    assert len(captured_configs) == 2
+    assert "Session system prefix" in captured_configs[0].system_prompt
+    assert "Run system suffix" in captured_configs[0].system_prompt
+    assert "Timezone: Europe/Paris" in captured_configs[0].system_prompt
+
+    first_messages = runtime.inputs[0]["messages"]
+    assert "Session user prefix" in first_messages[0]["content"]
+    assert "Run current prefix" in first_messages[0]["content"]
+    assert "Session current suffix" in first_messages[0]["content"]
+    assert runtime.contexts[0]["timezone"] == "Europe/Paris"
+    assert runtime.contexts[0]["current_date"]
+    assert runtime.contexts[0]["prompt_injections"]["system_prefix"] == ["Session system prefix"]
+
+    second_messages = runtime.inputs[1]["messages"]
+    assert "Session user prefix" in second_messages[0]["content"]
+    assert "Run current prefix" not in second_messages[0]["content"]
+    assert "Session current suffix" not in second_messages[0]["content"]
+
+    with app.state.database.session_factory() as db:
+        run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == first_run_id).first()
+        assert run_record is not None
+        assert run_record.extra["runtime"]["timezone"] == "Europe/Paris"
+
+
+def test_run_rejects_invalid_runtime_timezone_extra(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'bad-runtime-run.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_default_model="openai/gpt-5-4",
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = build_fake_runtime
+
+    with TestClient(app) as client:
+        login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        session = client.post("/api/sessions", headers=headers, json={"title": "Bad run"})
+        session_id = session.json()["id"]
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "hello",
+                "attachments": [],
+                "extra": {"runtime": {"timezone": "Mars/Olympus"}},
+            },
+        )
+
+    assert run.status_code == 400
+    assert "Unsupported timezone" in run.json()["detail"]
 
 
 def test_run_start_persists_distilled_session_title_without_overwriting_it(tmp_path) -> None:

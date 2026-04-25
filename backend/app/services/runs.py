@@ -6,7 +6,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -86,6 +86,13 @@ from app.services.run_history import (
     load_persisted_run_state,
     stream_persisted_run,
 )
+from app.services.runtime_overrides import (
+    RuntimeOverrides,
+    apply_system_prompt_overrides,
+    apply_user_prompt_overrides,
+    normalize_persisted_extra,
+    resolve_runtime_overrides,
+)
 from app.services.session_titles import sync_session_title_from_source
 from deepagents_integration import DeepAgentsRuntimeConfig, stream_sse_envelopes
 from deepagents_integration.run_hooks import RunInputHookContext, apply_run_input_hooks
@@ -109,6 +116,7 @@ class RunState:
     run_id: str
     session_id: str
     status: str = "queued"
+    extra: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
     envelopes: list[dict[str, Any]] = field(default_factory=list)
     subscribers: set[RunSubscriber] = field(default_factory=set)
@@ -269,6 +277,7 @@ class RunService:
         session_id: str,
         prompt: str,
         attachments: list[dict[str, Any]],
+        extra: dict[str, Any] | None = None,
         runtime_selection: RuntimeSelection | None = None,
     ) -> RunState:
         try:
@@ -277,6 +286,7 @@ class RunService:
             )
         except ValueError as exc:
             raise InvalidRunAttachmentError(str(exc), status_code=400) from exc
+        normalized_extra = normalize_persisted_extra(extra)
         with self.database.session_factory() as db:
             session = _require_session(db, session_id)
             resolved_attachments = _resolve_run_attachments(
@@ -291,6 +301,7 @@ class RunService:
                 attachments=resolved_attachments,
             )
             state = self.manager.create(session_id)
+            state.extra = normalized_extra
             session.last_run_id = state.run_id
             sync_session_title_from_source(session, prompt)
             user_message = MessageRecord(
@@ -298,7 +309,7 @@ class RunService:
                 role="user",
                 content=prompt,
                 run_id=state.run_id,
-                extra={"attachments": resolved_attachments},
+                extra={**normalized_extra, "attachments": resolved_attachments},
             )
             db.add(
                 AgentRunRecord(
@@ -307,6 +318,7 @@ class RunService:
                     status="queued",
                     prompt=prompt,
                     extra={
+                        **normalized_extra,
                         "attachments": resolved_attachments,
                         "runtime_selection": safe_runtime_selection,
                     },
@@ -339,7 +351,11 @@ class RunService:
                 status="running",
                 label="Run started",
                 detail="Queued DeepAgents run.",
-                data={"attachments": resolved_attachments, "prompt": prompt},
+                data={
+                    "attachments": resolved_attachments,
+                    "prompt": prompt,
+                    "extra": normalized_extra,
+                },
             )
         )
         self._launch_run(
@@ -348,6 +364,7 @@ class RunService:
             session_id=session_id,
             prompt=prompt,
             attachments=resolved_attachments,
+            extra=normalized_extra,
             runtime_selection=runtime_selection,
         )
         return state
@@ -360,6 +377,7 @@ class RunService:
         session_id: str,
         prompt: str,
         attachments: list[dict[str, Any]],
+        extra: dict[str, Any],
         runtime_selection: RuntimeSelection | None,
     ) -> None:
         def runner() -> None:
@@ -373,6 +391,7 @@ class RunService:
                     session_id=session_id,
                     prompt=prompt,
                     attachments=attachments,
+                    extra=extra,
                     runtime_selection=runtime_selection,
                 )
             )
@@ -446,6 +465,7 @@ class RunService:
         session_id: str,
         prompt: str,
         attachments: list[dict[str, Any]],
+        extra: dict[str, Any],
         runtime_selection: RuntimeSelection | None,
     ) -> None:
         state = self.manager.get(run_id)
@@ -476,6 +496,19 @@ class RunService:
             )
             phase = "resolving runtime config"
             runtime_config = settings.to_runtime_config(selection=runtime_selection)
+            runtime_overrides = self._runtime_overrides(
+                settings=settings,
+                session_id=session_id,
+                run_id=run_id,
+                run_extra=extra,
+            )
+            runtime_config = replace(
+                runtime_config,
+                system_prompt=apply_system_prompt_overrides(
+                    runtime_config.system_prompt,
+                    runtime_overrides,
+                ),
+            )
             runtime_summary_message, runtime_summary_fields = _runtime_config_log_summary(settings)
             runtime_log_fields: dict[str, Any] = {
                 "recursion_limit": settings.deepagents_recursion_limit,
@@ -521,6 +554,7 @@ class RunService:
                 run_id=run_id,
                 prompt=prompt,
                 attachments=attachments,
+                runtime_overrides=runtime_overrides,
                 hooks=runtime_config.run_input_hooks,
             )
             phase = "streaming"
@@ -558,6 +592,7 @@ class RunService:
                     "run_id": run_id,
                     "current_attachments": tuple(attachments),
                     "attachments": tuple(attachments),
+                    **runtime_overrides.context_fields(),
                 },
             ):
                 if state.status == "cancelled" or state.completed:
@@ -1039,6 +1074,25 @@ class RunService:
             return current_state.terminalize("cancelled", cancel_envelope)
         return True
 
+    def _runtime_overrides(
+        self,
+        *,
+        settings: Settings,
+        session_id: str,
+        run_id: str,
+        run_extra: dict[str, Any],
+    ) -> RuntimeOverrides:
+        with self.database.session_factory() as db:
+            session = _require_session(db, session_id)
+            run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
+            session_extra = dict(session.extra or {})
+            persisted_run_extra = dict(run_record.extra or {}) if run_record is not None else {}
+        return resolve_runtime_overrides(
+            default_timezone=settings.app_timezone,
+            session_extra=session_extra,
+            run_extra={**persisted_run_extra, **run_extra},
+        )
+
     def _build_agent_input(
         self,
         *,
@@ -1047,6 +1101,7 @@ class RunService:
         run_id: str,
         prompt: str,
         attachments: list[dict[str, Any]],
+        runtime_overrides: RuntimeOverrides,
         hooks: tuple[Any, ...] = (),
     ) -> dict[str, Any]:
         with self.database.session_factory() as db:
@@ -1079,6 +1134,11 @@ class RunService:
                     ),
                     hooks=hooks,
                 )
+                content = apply_user_prompt_overrides(
+                    content,
+                    overrides=runtime_overrides,
+                    is_current=record.run_id == run_id,
+                )
             if not content.strip():
                 continue
             messages.append({"role": record.role, "content": content})
@@ -1092,14 +1152,19 @@ class RunService:
                             session_id=session_id,
                             run_id=run_id,
                             role="user",
-                        content=prompt,
-                        attachments=tuple(attachments),
-                        is_current_run=True,
+                            content=prompt,
+                            attachments=tuple(attachments),
+                            is_current_run=True,
+                        ),
+                        hooks=hooks,
                     ),
-                    hooks=hooks,
-                ),
                 }
             ]
+            messages[0]["content"] = apply_user_prompt_overrides(
+                messages[0]["content"],
+                overrides=runtime_overrides,
+                is_current=True,
+            )
 
         agent_input: dict[str, Any] = {"messages": messages}
         state_files = (

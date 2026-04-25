@@ -3,6 +3,7 @@ from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path, PurePath
 from typing import Any, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from langchain_openai import ChatOpenAI
 from pydantic import Field, field_validator
@@ -60,6 +61,7 @@ class Settings(BaseSettings):
     cors_allowed_origins: str | None = "http://127.0.0.1:5173,http://localhost:5173"
     upload_storage_dir: Path = Field(default=Path("./data/uploads"))
     max_upload_size_bytes: int = 10 * 1024 * 1024
+    app_timezone: str = "Asia/Shanghai"
     deepagents_default_model: str | None = "openai/gpt-5-4"
     deepagents_model_config_path: str | None = "./models.json"
     deepagents_main_agent: str = "agents:AGENT"
@@ -151,6 +153,15 @@ class Settings(BaseSettings):
         if not path.is_absolute():
             path = BACKEND_ROOT / path
         return path.resolve()
+
+    @field_validator("app_timezone", mode="after")
+    @classmethod
+    def validate_app_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Unsupported timezone: {value!r}") from exc
+        return value
 
     @field_validator("deepagents_sandbox_root_dir", mode="after")
     @classmethod
@@ -340,7 +351,10 @@ class Settings(BaseSettings):
             model_catalog=model_catalog,
             default_model_id=self.deepagents_default_model,
         )
-        return options
+        return {
+            **options,
+            "timezone": self.app_timezone,
+        }
 
     def resolve_model(
         self,
@@ -369,6 +383,7 @@ class Settings(BaseSettings):
     def logging_summary(self) -> dict[str, object]:
         return {
             "app_name": self.app_name,
+            "app_timezone": self.app_timezone,
             "cors_origin_count": len(self.get_cors_origins()),
             "database_backend": (
                 "sqlite" if self.is_sqlite else "mysql" if self.is_mysql else "other"

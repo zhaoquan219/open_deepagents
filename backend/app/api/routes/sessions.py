@@ -1,4 +1,4 @@
-from fastapi import APIRouter, status
+from fastapi import APIRouter, HTTPException, status
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import AdminUserDep, DatabaseSessionDep, SettingsDep
@@ -8,6 +8,7 @@ from app.core.session_scope import (
 )
 from app.db.models import SessionRecord
 from app.schemas.session import SessionCreate, SessionDetail, SessionRead, SessionUpdate
+from app.services.runtime_overrides import InvalidRuntimeOverrideError, normalize_persisted_extra
 from app.services.session_titles import sync_session_title_from_history
 
 router = APIRouter()
@@ -40,10 +41,14 @@ def create_session(
     settings: SettingsDep,
     username: AdminUserDep,
 ) -> SessionRecord:
+    try:
+        normalized_extra = normalize_persisted_extra(payload.extra)
+    except InvalidRuntimeOverrideError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     record = SessionRecord(
         title=payload.title,
         runtime_thread_id=payload.runtime_thread_id,
-        extra=payload.extra,
+        extra=normalized_extra,
     )
     assign_session_owner(record, username, settings)
     db.add(record)
@@ -90,7 +95,14 @@ def update_session(
         settings=settings,
     )
 
-    for field_name, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    if "extra" in changes and changes["extra"] is not None:
+        try:
+            changes["extra"] = normalize_persisted_extra(changes["extra"])
+        except InvalidRuntimeOverrideError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    for field_name, value in changes.items():
         setattr(record, field_name, value)
 
     db.add(record)
