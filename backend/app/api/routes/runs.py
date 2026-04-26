@@ -11,7 +11,8 @@ from app.core.config import Settings
 from app.core.runtime_catalog import RuntimeSelection
 from app.core.session_scope import get_run_for_user, get_session_for_user
 from app.schemas.run import RunCreate, RunRead
-from app.services.runs import InvalidRunAttachmentError, RunService
+from app.services.run_attachments import InvalidRunAttachmentError
+from app.services.runs import RunService
 
 router = APIRouter()
 
@@ -43,7 +44,6 @@ async def create_run(
             attachments=payload.attachments,
             runtime_selection=RuntimeSelection(
                 model_id=payload.model_id,
-                subagent_profile_id=payload.subagent_profile_id,
             ),
         )
     except InvalidRunAttachmentError as exc:

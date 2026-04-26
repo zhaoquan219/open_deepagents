@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
@@ -7,6 +8,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import AdminUserDep, DatabaseSessionDep, SettingsDep, StorageDep
+from app.core.logging import format_log_message
 from app.core.session_scope import (
     get_message_for_user,
     get_session_for_user,
@@ -21,6 +23,7 @@ UploadFileDep = Annotated[UploadFile, File()]
 MessageIdForm = Annotated[str | None, Form()]
 PendingUploadCleanup = Callable[[Session, UploadRecord], None]
 PENDING_UPLOAD_CLEANUPS: tuple[PendingUploadCleanup, ...] = ()
+logger = logging.getLogger(__name__)
 
 
 @router.get("/sessions/{session_id}/uploads", response_model=list[UploadRead])
@@ -62,6 +65,17 @@ async def upload_file(
             settings=settings,
         )
         if message.session_id != session_id:
+            logger.warning(
+                "%s",
+                format_log_message(
+                    "upload rejected because the target message belongs to a different session",
+                    event="upload.invalid_message_binding",
+                    phase="validating upload request",
+                    session_id=session_id,
+                    message_id=message_id,
+                    username=username,
+                ),
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid message binding",
@@ -69,6 +83,19 @@ async def upload_file(
 
     payload = await file.read()
     if len(payload) > settings.max_upload_size_bytes:
+        logger.warning(
+            "%s",
+            format_log_message(
+                "upload rejected because the file is larger than the configured limit",
+                event="upload.rejected_too_large",
+                phase="reading upload payload",
+                session_id=session_id,
+                filename=file.filename or "upload.bin",
+                size_bytes=len(payload),
+                max_upload_size_bytes=settings.max_upload_size_bytes,
+                username=username,
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="File too large",
@@ -113,6 +140,23 @@ async def upload_file(
         db.add(record)
     db.commit()
     db.refresh(record)
+    logger.info(
+        "%s",
+        format_log_message(
+            "upload stored successfully",
+            event="upload.created",
+            phase="persisting upload",
+            upload_id=record.id,
+            session_id=session_id,
+            message_id=message_id or "",
+            filename=record.filename,
+            content_type=record.content_type,
+            size_bytes=record.size_bytes,
+            storage_key=record.storage_key,
+            hook_extra_keys=tuple(sorted(hook_extra.keys())) if hook_extra else (),
+            username=username,
+        ),
+    )
     return record
 
 
@@ -158,7 +202,32 @@ def download_upload(
     record = get_upload_for_user(db, upload_id=upload_id, username=username, settings=settings)
     file_path = storage.resolve(record.storage_key)
     if not file_path.exists():
+        logger.warning(
+            "%s",
+            format_log_message(
+                "upload content is missing on disk",
+                event="upload.content_missing",
+                phase="resolving upload content",
+                upload_id=upload_id,
+                session_id=record.session_id,
+                storage_key=record.storage_key,
+                username=username,
+            ),
+        )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload content missing")
+    logger.info(
+        "%s",
+        format_log_message(
+            "upload content downloaded",
+            event="upload.downloaded",
+            phase="serving upload content",
+            upload_id=upload_id,
+            session_id=record.session_id,
+            filename=record.filename,
+            size_bytes=record.size_bytes,
+            username=username,
+        ),
+    )
     return FileResponse(
         path=file_path,
         filename=record.filename,
@@ -176,15 +245,43 @@ def delete_upload(
 ) -> None:
     record = get_upload_for_user(db, upload_id=upload_id, username=username, settings=settings)
     if record.message_id is not None:
+        logger.warning(
+            "%s",
+            format_log_message(
+                "upload delete rejected because the upload is already attached to a sent message",
+                event="upload.delete_rejected_sent",
+                phase="deleting upload",
+                upload_id=upload_id,
+                session_id=record.session_id,
+                message_id=record.message_id,
+                username=username,
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Sent uploads cannot be deleted",
         )
 
+    deleted_storage_key = record.storage_key
+    deleted_filename = record.filename
+    deleted_session_id = record.session_id
     cleanup_pending_upload_state(db=db, record=record)
     storage.delete(record.storage_key)
     db.delete(record)
     db.commit()
+    logger.info(
+        "%s",
+        format_log_message(
+            "pending upload deleted",
+            event="upload.deleted",
+            phase="deleting upload",
+            upload_id=upload_id,
+            session_id=deleted_session_id,
+            filename=deleted_filename,
+            storage_key=deleted_storage_key,
+            username=username,
+        ),
+    )
 
 
 def cleanup_pending_upload_state(*, db: Session, record: UploadRecord) -> None:

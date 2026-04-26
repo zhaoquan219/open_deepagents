@@ -1,7 +1,3 @@
-SKILL_SETS = {
-    "default": ["skill-creator"],
-    "all": "*",
-}
-SKILLS = SKILL_SETS["default"]
+SKILLS = ["skill-creator"]
 
-__all__ = ["SKILLS", "SKILL_SETS"]
+__all__ = ["SKILLS"]

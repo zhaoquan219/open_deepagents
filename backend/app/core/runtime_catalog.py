@@ -9,6 +9,7 @@ from typing import Any
 from app.core.model_catalog import ModelCatalog
 from deepagents_integration.extensions import (
     SelectablePathRegistry,
+    build_builtin_tool_selection_middleware,
     discover_components,
     discover_memory,
     flatten_components,
@@ -21,17 +22,13 @@ from deepagents_integration.extensions import (
 @dataclass(frozen=True)
 class RuntimeSelection:
     model_id: str | None = None
-    subagent_profile_id: str | None = None
 
 
 @dataclass(frozen=True)
 class RuntimeResolution:
     agent: Mapping[str, Any]
     model_id: str | None
-    profile_id: str
-    profiles: tuple[Mapping[str, Any], ...]
     subagents: tuple[Mapping[str, Any], ...]
-    safe_selection: Mapping[str, Any]
 
 
 def load_agent_spec(spec: str) -> Mapping[str, Any]:
@@ -61,72 +58,23 @@ def resolve_runtime(
         )
         for raw in flatten_components(agent.get("subagents"))
     )
-    profile_id = (
-        selection.subagent_profile_id
-        if selection and selection.subagent_profile_id
-        else "default"
-    )
-    profile = {
-        "id": "default",
-        "label": "Default",
-        "model_id": selected_model_id or "",
-        "subagent_ids": [str(item.get("id") or item.get("name") or "") for item in subagents],
-    }
     return RuntimeResolution(
         agent=agent,
         model_id=selected_model_id,
-        profile_id=profile_id,
-        profiles=(profile,),
         subagents=subagents,
-        safe_selection={
-            "model_id": selected_model_id or "",
-            "subagent_profile_id": profile_id,
-            "profile_label": profile["label"],
-            "subagent_names": [str(item.get("name") or "") for item in subagents],
-        },
     )
 
 
 def runtime_options(
     *,
-    agent_spec: str,
     model_catalog: ModelCatalog | None,
     default_model_id: str | None,
 ) -> dict[str, Any]:
-    resolution = resolve_runtime(
-        agent_spec=agent_spec,
-        model_catalog=model_catalog,
-        default_model_id=default_model_id,
-    )
-    model_options = (
+    return (
         model_catalog.safe_options()
         if model_catalog is not None
         else {"default_model_id": default_model_id or "", "models": []}
     )
-    return {
-        **model_options,
-        "default_profile_id": "default",
-        "profiles": [
-            {
-                "id": profile["id"],
-                "label": profile["label"],
-                "model_id": profile["model_id"],
-                "subagent_ids": profile["subagent_ids"],
-            }
-            for profile in resolution.profiles
-        ],
-        "subagents": [
-            {
-                "id": str(item.get("id") or item.get("name") or ""),
-                "name": str(item.get("name") or ""),
-                "label": str(item.get("label") or item.get("name") or ""),
-                "description": str(item.get("description") or ""),
-                "type": "async" if "graph_id" in item else "sync",
-                "workspace": str(item.get("workspace") or ""),
-            }
-            for item in resolution.subagents
-        ],
-    }
 
 
 def _build_subagent_spec(
@@ -163,6 +111,17 @@ def _build_subagent_spec(
     raw = _resolve_agent_package(raw)
     system_prompt = _resolve_system_prompt(raw)
     model_id = str(raw.get("model") or raw.get("model_id") or default_model_id or "")
+    middleware = _resolve_component_list(
+        raw.get("middleware"),
+        raw.get("middleware_specs"),
+        load_middleware_extensions,
+    )
+    tool_selection = build_builtin_tool_selection_middleware(
+        allowlist=raw.get("builtin_tool_allowlist"),
+        blocklist=raw.get("builtin_tool_blocklist"),
+    )
+    if tool_selection is not None:
+        middleware.append(tool_selection)
     subagent: dict[str, Any] = {
         "id": agent_id,
         "name": raw.get("name") or agent_id,
@@ -174,17 +133,7 @@ def _build_subagent_spec(
             raw.get("tool_specs"),
             load_tool_extensions,
         ),
-        "middleware": _resolve_component_list(
-            raw.get("middleware"),
-            raw.get("middleware_specs"),
-            load_middleware_extensions,
-        ),
-        "builtin_tools": _string_tuple(
-            raw.get("builtin_tools") or raw.get("builtin_tool_allowlist")
-        ),
-        "disabled_builtin_tools": _string_tuple(
-            raw.get("disabled_builtin_tools") or raw.get("builtin_tool_blocklist")
-        ),
+        "middleware": middleware,
         "skills": tuple(source.source_path for source in raw.get("skill_sources", ())),
         "permissions": tuple(raw.get("permissions") or ()),
         "workspace": raw.get("workspace") or "",
@@ -208,7 +157,6 @@ def _build_subagent_spec(
         subagent["subagents"] = nested
     return {key: value for key, value in subagent.items() if value not in (None, "", (), [])}
 
-
 def _resolve_component_list(
     direct: Any,
     specs: Any,
@@ -230,13 +178,30 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
     return tuple(item.strip() for item in value if item.strip())
 
 
+def _optional_string_tuple(value: Any) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    return _string_tuple(value)
+
+
+def _mapping_tuple(value: Any) -> tuple[Mapping[str, Any], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list | tuple) or not all(isinstance(item, Mapping) for item in value):
+        raise ValueError("Expected a list of mappings")
+    return tuple(value)
+
+
 def _resolve_agent_package(raw: Mapping[str, Any]) -> Mapping[str, Any]:
     root = _agent_root(raw)
     package_name = _package_name(root)
-    resolved = dict(raw)
+    resolved = _normalize_agent_fields(raw)
     if "system_prompt" in raw and "system_prompt_path" not in raw:
         resolved["system_prompt_path"] = raw["system_prompt"]
     if root is not None and package_name:
+        subagent_package = f"{package_name}.subagents"
+        resolved["_agent_root"] = root
+        resolved["_subagent_package"] = subagent_package
         resolved["tools"] = _resolve_python_selection(
             root=root,
             package=f"{package_name}.tools",
@@ -260,10 +225,24 @@ def _resolve_agent_package(raw: Mapping[str, Any]) -> Mapping[str, Any]:
         resolved["memory"] = _resolve_memory_selection(root, raw.get("memory"))
         resolved["subagents"] = _resolve_subagent_selection(
             root=root,
-            package=f"{package_name}.subagents",
+            package=subagent_package,
             value=raw.get("subagents"),
         )
     return resolved
+
+
+def _normalize_agent_fields(raw: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        **raw,
+        "workspace": str(raw.get("workspace") or ""),
+        "permissions": _mapping_tuple(raw.get("permissions")),
+        "builtin_tool_allowlist": _optional_string_tuple(
+            raw.get("builtin_tools") or raw.get("builtin_tool_allowlist")
+        ),
+        "builtin_tool_blocklist": _string_tuple(
+            raw.get("disabled_builtin_tools") or raw.get("builtin_tool_blocklist")
+        ),
+    }
 
 
 def _agent_root(raw: Mapping[str, Any]) -> Path | None:
@@ -376,7 +355,6 @@ def _resolve_subagent_selection(*, root: Path, package: str, value: Any) -> list
         else:
             resolved.append(item)
     return resolved
-
 
 def _exports_from_module(module_name: str, names: tuple[str, ...]) -> list[Any]:
     module = importlib.import_module(module_name)

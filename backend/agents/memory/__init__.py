@@ -1,7 +1,3 @@
-MEMORY_SETS = {
-    "default": ["project"],
-    "all": "*",
-}
-MEMORY = MEMORY_SETS["default"]
+MEMORY = ["project"]
 
-__all__ = ["MEMORY", "MEMORY_SETS"]
+__all__ = ["MEMORY"]

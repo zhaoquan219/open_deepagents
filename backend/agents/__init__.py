@@ -21,12 +21,10 @@ READ_ONLY_BUILTIN_TOOLS = (
 
 AGENT = {
     "id": "main",
-    "name": "deepagents-web",
-    "type": "main",
     "system_prompt": ROOT / "prompts" / "system.md",
-    "model": None,
     "workspace": "/workspace/main",
     "tools": TOOLS,
+    # Visible DeepAgents built-ins. `task` is auto-hidden when no subagents are active.
     "builtin_tools": READ_ONLY_BUILTIN_TOOLS,
     "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
     "middleware": MIDDLEWARE,
@@ -36,6 +34,10 @@ AGENT = {
     },
     "skills": SKILLS,
     "memory": MEMORY,
+    # Optional:
+    # "model": "openai/gpt-5-4",
+    # "permissions": [{"operations": ["read"], "paths": ["/workspace/main"]}],
+    # Start with explicit children.
     "subagents": SUBAGENTS,
 }
 

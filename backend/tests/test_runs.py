@@ -58,6 +58,19 @@ def login_headers(client: TestClient, username: str, password: str) -> dict[str,
     return {"Authorization": f"Bearer {token}"}
 
 
+def make_test_settings(tmp_path, db_name: str, **overrides: Any) -> Settings:
+    return Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / db_name}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_default_model="openai/gpt-5-4",
+        **overrides,
+    )
+
+
 class FakeRuntime:
     async def astream_events(
         self,
@@ -223,6 +236,35 @@ class CancellableRuntime:
             raise
 
 
+class IdleRuntime:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.closed = threading.Event()
+
+    async def astream_events(
+        self,
+        agent_input: Any,
+        *,
+        version: str = "v2",
+        config: Any = None,
+        context: Any = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        del agent_input, version, config, context
+        self.started.set()
+        yield {
+            "event": "on_chain_start",
+            "name": "deep-agent",
+            "run_id": "runtime-idle",
+            "metadata": {"langgraph_node": "agent"},
+            "data": {"input": {"messages": []}},
+        }
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            self.closed.set()
+            raise
+
+
 def build_failing_runtime(_config: Any) -> Any:
     raise RuntimeError("builder exploded")
 
@@ -230,6 +272,7 @@ def build_failing_runtime(_config: Any) -> Any:
 class CapturingConversationRuntime:
     def __init__(self) -> None:
         self.inputs: list[Any] = []
+        self.configs: list[Any] = []
         self.contexts: list[Any] = []
 
     async def astream_events(
@@ -241,6 +284,7 @@ class CapturingConversationRuntime:
         context: Any = None,
     ) -> AsyncIterator[dict[str, Any]]:
         self.inputs.append(agent_input)
+        self.configs.append(config)
         self.contexts.append(context)
         reply = f"seen:{len(agent_input.get('messages', []))}"
         yield {
@@ -566,6 +610,30 @@ def test_run_lifecycle_and_stream(tmp_path) -> None:
             )
             assert runtime_link is not None
             assert runtime_link.runtime_run_id == "runtime-1"
+
+
+def test_create_run_rejects_user_facing_subagent_profile(tmp_path) -> None:
+    settings = make_test_settings(tmp_path, "run-extra-field.db")
+    app = create_app(settings)
+    app.state.run_service.builder = build_fake_runtime
+
+    with TestClient(app) as client:
+        headers = login_headers(client, "admin", "secret")
+        session = client.post("/api/sessions", headers=headers, json={"title": "Run demo"})
+        session_id = session.json()["id"]
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "Say hello",
+                "attachments": [],
+                "subagent_profile_id": "none",
+            },
+        )
+
+        assert run.status_code == 422
 
 
 def test_run_event_views_skip_transient_deltas_under_long_streams(tmp_path) -> None:
@@ -1140,6 +1208,413 @@ def test_second_run_receives_prior_session_messages(tmp_path) -> None:
     ]
 
 
+def test_run_uses_backend_owned_runtime_thread_id_for_langgraph_config(tmp_path) -> None:
+    settings = make_test_settings(tmp_path, "runtime-thread.db")
+    app = create_app(settings)
+    runtime = CapturingConversationRuntime()
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        headers = login_headers(client, "admin", "secret")
+        token = headers["Authorization"].removeprefix("Bearer ")
+        session = client.post(
+            "/api/sessions",
+            headers=headers,
+            json={"title": "Thread demo"},
+        )
+        session_id = session.json()["id"]
+        assert "runtime_thread_id" not in session.json()
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={"session_id": session_id, "prompt": "hello", "attachments": []},
+        )
+        run_id = run.json()["run_id"]
+
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and '"status": "completed"' in line:
+                    break
+
+    assert str(runtime.configs[0]["configurable"]["thread_id"]).startswith("thread-")
+    assert runtime.configs[0]["recursion_limit"] == settings.deepagents_recursion_limit
+
+
+def test_same_session_reuses_runtime_thread_id_across_runs(tmp_path) -> None:
+    settings = make_test_settings(tmp_path, "runtime-thread-reuse.db")
+    app = create_app(settings)
+    runtime = CapturingConversationRuntime()
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        headers = login_headers(client, "admin", "secret")
+        token = headers["Authorization"].removeprefix("Bearer ")
+        session = client.post("/api/sessions", headers=headers, json={"title": "Reuse"})
+        session_id = session.json()["id"]
+
+        for prompt in ("one", "two"):
+            run = client.post(
+                "/api/runs",
+                headers=headers,
+                json={"session_id": session_id, "prompt": prompt, "attachments": []},
+            )
+            run_id = run.json()["run_id"]
+            with client.stream(
+                "GET",
+                f"/api/runs/{run_id}/stream?access_token={token}",
+            ) as response:
+                for line in response.iter_lines():
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8")
+                    if line and '"status": "completed"' in line:
+                        break
+
+    thread_ids = [config["configurable"]["thread_id"] for config in runtime.configs]
+    assert thread_ids[0].startswith("thread-")
+    assert thread_ids == [thread_ids[0], thread_ids[0]]
+
+
+def test_run_backfills_missing_runtime_thread_id_before_execution(tmp_path) -> None:
+    settings = make_test_settings(tmp_path, "runtime-thread-backfill.db")
+    app = create_app(settings)
+    runtime = CapturingConversationRuntime()
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        headers = login_headers(client, "admin", "secret")
+        token = headers["Authorization"].removeprefix("Bearer ")
+        session = client.post("/api/sessions", headers=headers, json={"title": "Legacy"})
+        session_id = session.json()["id"]
+        with app.state.database.session_factory() as db:
+            record = db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
+            assert record is not None
+            record.runtime_thread_id = None
+            db.add(record)
+            db.commit()
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={"session_id": session_id, "prompt": "legacy", "attachments": []},
+        )
+        run_id = run.json()["run_id"]
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and '"status": "completed"' in line:
+                    break
+
+    thread_id = runtime.configs[0]["configurable"]["thread_id"]
+    assert thread_id.startswith("thread-")
+    with app.state.database.session_factory() as db:
+        record = db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
+        assert record is not None
+        assert record.runtime_thread_id == thread_id
+
+
+def test_hidden_prompt_injection_persists_and_applies_without_showing_in_default_transcript(
+    tmp_path,
+) -> None:
+    settings = make_test_settings(tmp_path, "hidden-injections.db")
+    app = create_app(settings)
+    runtime = CapturingConversationRuntime()
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        headers = login_headers(client, "admin", "secret")
+        token = headers["Authorization"].removeprefix("Bearer ")
+        session = client.post("/api/sessions", headers=headers, json={"title": "Injected"})
+        session_id = session.json()["id"]
+
+        app.state.prompt_injections.inject_prompt(
+            session_id=session_id,
+            content="后台隐藏指令",
+            visibility="hidden",
+            position="before_user",
+            source="middleware.test",
+        )
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={"session_id": session_id, "prompt": "回答这个问题", "attachments": []},
+        )
+        run_id = run.json()["run_id"]
+
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and '"status": "completed"' in line:
+                    break
+
+        transcript = client.get(f"/api/sessions/{session_id}/messages", headers=headers)
+
+    assert runtime.inputs[0]["messages"] == [
+        {"role": "system", "content": "后台隐藏指令"},
+        {"role": "user", "content": "回答这个问题"},
+    ]
+
+    transcript_payload = transcript.json()
+    assert [item["content"] for item in transcript_payload] == ["回答这个问题", "seen:2"]
+    assert all("message_type" not in item for item in transcript_payload)
+
+    with app.state.database.session_factory() as db:
+        injected = (
+            db.query(MessageRecord)
+            .filter(
+                MessageRecord.session_id == session_id,
+                MessageRecord.message_type == "prompt_injection",
+            )
+            .one()
+        )
+        assert injected.run_id is None
+        assert injected.injection_position == "before_user"
+        assert injected.content == "后台隐藏指令"
+        assert injected.role == "system"
+        assert injected.visibility == "hidden"
+        assert injected.source == "middleware.test"
+
+
+def test_run_api_rejects_prompt_injection_metadata_fields(tmp_path) -> None:
+    settings = make_test_settings(tmp_path, "run-extra-fields.db")
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        headers = login_headers(client, "admin", "secret")
+        session = client.post("/api/sessions", headers=headers, json={"title": "Reject extra"})
+        session_id = session.json()["id"]
+
+        response = client.post(
+            "/api/runs",
+            headers=headers,
+            json={
+                "session_id": session_id,
+                "prompt": "hello",
+                "attachments": [],
+                "message_type": "prompt_injection",
+                "visibility": "hidden",
+                "source": "public-api",
+                "injection_position": "after_system",
+            },
+        )
+
+    assert response.status_code == 422
+
+
+def test_visible_prompt_injection_replays_without_public_transcript_metadata(
+    tmp_path,
+) -> None:
+    settings = make_test_settings(tmp_path, "visible-injections.db")
+    app = create_app(settings)
+    runtime = CapturingConversationRuntime()
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        headers = login_headers(client, "admin", "secret")
+        token = headers["Authorization"].removeprefix("Bearer ")
+        session = client.post("/api/sessions", headers=headers, json={"title": "Visible injected"})
+        session_id = session.json()["id"]
+
+        app.state.prompt_injections.inject_prompt(
+            session_id=session_id,
+            content="总是先检查隐藏约束",
+            visibility="visible",
+            position="before_system",
+            source="runtime.test",
+        )
+
+        for prompt in ("第一问", "第二问"):
+            run = client.post(
+                "/api/runs",
+                headers=headers,
+                json={"session_id": session_id, "prompt": prompt, "attachments": []},
+            )
+            run_id = run.json()["run_id"]
+            with client.stream(
+                "GET",
+                f"/api/runs/{run_id}/stream?access_token={token}",
+            ) as response:
+                for line in response.iter_lines():
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8")
+                    if line and '"status": "completed"' in line:
+                        break
+
+        transcript = client.get(f"/api/sessions/{session_id}/messages", headers=headers)
+
+    assert runtime.inputs[0]["messages"] == [
+        {"role": "system", "content": "总是先检查隐藏约束"},
+        {"role": "user", "content": "第一问"},
+    ]
+    assert runtime.inputs[1]["messages"] == [
+        {"role": "system", "content": "总是先检查隐藏约束"},
+        {"role": "user", "content": "第一问"},
+        {"role": "assistant", "content": "seen:2"},
+        {"role": "user", "content": "第二问"},
+    ]
+
+    transcript_payload = transcript.json()
+    assert [item["content"] for item in transcript_payload] == [
+        "第一问",
+        "seen:2",
+        "第二问",
+        "seen:4",
+    ]
+    assert all("message_type" not in item for item in transcript_payload)
+
+
+def test_run_scoped_after_prompt_injection_only_applies_to_target_run(tmp_path) -> None:
+    settings = make_test_settings(tmp_path, "scoped-injections.db")
+    app = create_app(settings)
+    app.state.database.initialize_schema()
+
+    with app.state.database.session_factory() as db:
+        session = SessionRecord(title="Scoped")
+        db.add(session)
+        db.flush()
+        session_id = session.id
+        db.add_all(
+            [
+                MessageRecord(
+                    session_id=session_id,
+                    role="user",
+                    content="历史问题",
+                    run_id="run-a",
+                ),
+                MessageRecord(
+                    session_id=session_id,
+                    role="assistant",
+                    content="历史回答",
+                    run_id="run-a",
+                ),
+                MessageRecord(
+                    session_id=session_id,
+                    role="user",
+                    content="当前问题",
+                    run_id="run-b",
+                ),
+            ]
+        )
+        db.commit()
+
+    app.state.prompt_injections.inject_prompt(
+        session_id=session_id,
+        run_id="run-b",
+        content="只对当前 run 生效",
+        visibility="hidden",
+        position="after_user",
+        source="task.test",
+    )
+
+    scoped_messages = app.state.prompt_injections.assemble_prompt_messages(
+        session_id=session_id,
+        run_id="run-b",
+    )
+    other_messages = app.state.prompt_injections.assemble_prompt_messages(
+        session_id=session_id,
+        run_id="run-c",
+    )
+
+    assert [(item.role, item.content) for item in scoped_messages] == [
+        ("user", "历史问题"),
+        ("assistant", "历史回答"),
+        ("user", "当前问题"),
+        ("system", "只对当前 run 生效"),
+    ]
+    assert [(item.role, item.content) for item in other_messages] == [
+        ("user", "历史问题"),
+        ("assistant", "历史回答"),
+        ("user", "当前问题"),
+    ]
+
+
+def test_prompt_injection_positions_anchor_around_system_and_current_user(tmp_path) -> None:
+    settings = make_test_settings(tmp_path, "position-anchors.db")
+    app = create_app(settings)
+    app.state.database.initialize_schema()
+
+    with app.state.database.session_factory() as db:
+        session = SessionRecord(title="Anchors")
+        db.add(session)
+        db.flush()
+        session_id = session.id
+        db.add_all(
+            [
+                MessageRecord(
+                    session_id=session_id,
+                    role="system",
+                    content="内置系统提示",
+                ),
+                MessageRecord(
+                    session_id=session_id,
+                    role="user",
+                    content="历史问题",
+                    run_id="run-a",
+                ),
+                MessageRecord(
+                    session_id=session_id,
+                    role="assistant",
+                    content="历史回答",
+                    run_id="run-a",
+                ),
+                MessageRecord(
+                    session_id=session_id,
+                    role="user",
+                    content="当前问题",
+                    run_id="run-b",
+                ),
+            ]
+        )
+        db.commit()
+
+    app.state.prompt_injections.inject_prompt(
+        session_id=session_id,
+        content="系统前置提示",
+        position="before_system",
+        source="test.before_system",
+    )
+    app.state.prompt_injections.inject_prompt(
+        session_id=session_id,
+        content="系统后置提示",
+        position="after_system",
+        source="test.after_system",
+    )
+    app.state.prompt_injections.inject_prompt(
+        session_id=session_id,
+        run_id="run-b",
+        content="当前用户前提示",
+        position="before_user",
+        source="test.before_user",
+    )
+    app.state.prompt_injections.inject_prompt(
+        session_id=session_id,
+        run_id="run-b",
+        content="当前用户后提示",
+        position="after_user",
+        source="test.after_user",
+    )
+
+    assembled = app.state.prompt_injections.assemble_prompt_messages(
+        session_id=session_id,
+        run_id="run-b",
+    )
+
+    assert [(item.role, item.content) for item in assembled] == [
+        ("system", "系统前置提示"),
+        ("system", "内置系统提示"),
+        ("system", "系统后置提示"),
+        ("user", "历史问题"),
+        ("assistant", "历史回答"),
+        ("system", "当前用户前提示"),
+        ("user", "当前问题"),
+        ("system", "当前用户后提示"),
+    ]
+
+
 def test_run_start_persists_distilled_session_title_without_overwriting_it(tmp_path) -> None:
     settings = Settings(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'titles.db'}",
@@ -1429,7 +1904,13 @@ def test_run_failure_logging_identifies_the_failing_phase(tmp_path, caplog) -> N
                 if line and '"status": "failed"' in line:
                     break
 
+    deadline = time.monotonic() + 1
     messages = [record.getMessage() for record in caplog.records]
+    while not any("run failed while building agent" in message for message in messages):
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
+        messages = [record.getMessage() for record in caplog.records]
 
     assert any("run failed while building agent" in message for message in messages)
     assert any('"phase": "building agent"' in message for message in messages)
@@ -1437,6 +1918,59 @@ def test_run_failure_logging_identifies_the_failing_phase(tmp_path, caplog) -> N
         '"next_step": "inspect the DeepAgents builder and runtime dependencies"' in message
         for message in messages
     )
+
+
+def test_idle_runtime_stream_times_out_and_marks_run_failed(tmp_path) -> None:
+    settings = Settings(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'idle-timeout.db'}",
+        admin_email="admin@example.com",
+        admin_username="admin",
+        admin_password="secret",
+        admin_token_secret="test-secret",
+        upload_storage_dir=tmp_path / "uploads",
+        deepagents_default_model="openai/gpt-5-4",
+        deepagents_stream_idle_timeout=0.05,
+    )
+    app = create_app(settings)
+    runtime = IdleRuntime()
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        headers = login_headers(client, "admin", "secret")
+        token = headers["Authorization"].removeprefix("Bearer ")
+        session = client.post("/api/sessions", headers=headers, json={"title": "Idle"})
+        session_id = session.json()["id"]
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={"session_id": session_id, "prompt": "hang", "attachments": []},
+        )
+        run_id = run.json()["run_id"]
+        assert runtime.started.wait(timeout=1)
+
+        payloads = []
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and line.startswith("data: "):
+                    payload = json.loads(line[6:])
+                    payloads.append(payload)
+                    if payload.get("status") == "failed":
+                        break
+
+    assert runtime.closed.wait(timeout=1)
+    failed_payload = next(payload for payload in payloads if payload.get("status") == "failed")
+    assert failed_payload["type"] == "error"
+    assert "produced no events" in failed_payload["detail"]
+
+    with app.state.database.session_factory() as db:
+        run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
+        assert run_record is not None
+        assert run_record.status == "failed"
+        assert run_record.completed_at is not None
+        assert "produced no events" in (run_record.error_text or "")
 
 
 def test_run_builds_attachment_context_with_storage_key_and_upload_path(tmp_path) -> None:
@@ -1506,6 +2040,43 @@ def test_run_builds_attachment_context_with_storage_key_and_upload_path(tmp_path
     assert str(expected_upload_path) in content
     assert "If sandbox_path is provided, use it directly with file tools" in content
     assert "Do not rediscover the file by searching the workspace first" in content
+
+
+def test_run_context_keeps_only_ids_and_attachments(tmp_path) -> None:
+    runtime = CapturingConversationRuntime()
+    settings = make_test_settings(
+        tmp_path,
+        "timezone-context.db",
+        deepagents_default_timezone="Asia/Tokyo",
+    )
+    app = create_app(settings)
+    app.state.run_service.builder = lambda _config: runtime
+
+    with TestClient(app) as client:
+        headers = login_headers(client, "admin", "secret")
+        token = headers["Authorization"].removeprefix("Bearer ")
+        session = client.post("/api/sessions", headers=headers, json={"title": "Timezone"})
+        session_id = session.json()["id"]
+
+        run = client.post(
+            "/api/runs",
+            headers=headers,
+            json={"session_id": session_id, "prompt": "time", "attachments": []},
+        )
+        run_id = run.json()["run_id"]
+        with client.stream("GET", f"/api/runs/{run_id}/stream?access_token={token}") as response:
+            for line in response.iter_lines():
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line and '"status": "completed"' in line:
+                    break
+
+    context = runtime.contexts[0]
+    assert context["session_id"] == session_id
+    assert context["run_id"] == run_id
+    assert "timezone" not in context
+    assert "timezone_offset" not in context
+    assert "current_time" not in context
 
 
 def test_run_consumes_pending_upload_by_binding_it_to_user_message(tmp_path) -> None:

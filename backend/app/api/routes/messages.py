@@ -1,10 +1,17 @@
-from fastapi import APIRouter, status
+from typing import cast
+
+from fastapi import APIRouter, HTTPException, Request, status
 
 from app.api.deps import AdminUserDep, DatabaseSessionDep, SettingsDep
-from app.core.session_scope import get_message_for_user, get_session_for_user
+from app.core.session_scope import (
+    get_message_for_user,
+    get_session_for_user,
+    is_prompt_injection,
+    PromptInjectionService,
+    sync_session_title_from_source,
+)
 from app.db.models import MessageRecord
 from app.schemas.message import MessageCreate, MessageRead, MessageUpdate
-from app.services.session_titles import sync_session_title_from_source
 
 router = APIRouter()
 
@@ -12,16 +19,16 @@ router = APIRouter()
 @router.get("/sessions/{session_id}/messages", response_model=list[MessageRead])
 def list_messages(
     session_id: str,
+    request: Request,
     db: DatabaseSessionDep,
     settings: SettingsDep,
     username: AdminUserDep,
 ) -> list[MessageRecord]:
     get_session_for_user(db, session_id=session_id, username=username, settings=settings)
-    return list(
-        db.query(MessageRecord)
-        .filter(MessageRecord.session_id == session_id)
-        .order_by(MessageRecord.created_at.asc())
-        .all()
+    prompt_injections = cast(PromptInjectionService, request.app.state.prompt_injections)
+    return prompt_injections.list_transcript_records(
+        session_id=session_id,
+        db=db,
     )
 
 
@@ -69,7 +76,10 @@ def get_message(
     settings: SettingsDep,
     username: AdminUserDep,
 ) -> MessageRecord:
-    return get_message_for_user(db, message_id=message_id, username=username, settings=settings)
+    record = get_message_for_user(db, message_id=message_id, username=username, settings=settings)
+    if is_prompt_injection(record):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    return record
 
 
 @router.patch("/messages/{message_id}", response_model=MessageRead)
@@ -81,6 +91,8 @@ def update_message(
     username: AdminUserDep,
 ) -> MessageRecord:
     record = get_message_for_user(db, message_id=message_id, username=username, settings=settings)
+    if is_prompt_injection(record):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
 
     for field_name, value in payload.model_dump(exclude_unset=True).items():
         setattr(record, field_name, value)
@@ -99,5 +111,7 @@ def delete_message(
     username: AdminUserDep,
 ) -> None:
     record = get_message_for_user(db, message_id=message_id, username=username, settings=settings)
+    if is_prompt_injection(record):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
     db.delete(record)
     db.commit()

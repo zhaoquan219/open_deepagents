@@ -1,10 +1,11 @@
 # open_deepagents
 
-`open_deepagents` is a ready-to-run web console for building DeepAgents
-applications. It includes a FastAPI backend, a Vue chat workspace, persistent
-sessions, uploads and generated-file downloads, streamed runtime events, model
-selection, Mermaid rendering, sandbox controls, and a recursive agent package you
-can customize without changing the app shell.
+`open_deepagents` is a ready-to-run, user-facing open-source framework for
+building production-grade DeepAgents applications. It includes a FastAPI backend,
+a Vue chat workspace, persistent sessions, uploads and generated-file downloads,
+streamed runtime events, model selection, Mermaid rendering, sandbox controls,
+and a recursive agent package you can customize without
+changing the app shell.
 
 Chinese documentation: [README_CH.md](README_CH.md)
 
@@ -47,9 +48,11 @@ Run flow:
 4. The backend stores the user message and starts a DeepAgents run.
 5. `backend/agents:AGENT` is resolved into prompt, tools, middleware, hooks,
    skills, memory, permissions, and subagents.
-6. Runtime events are normalized into UI SSE events and streamed to the browser.
-7. The frontend updates the transcript and runtime timeline.
-8. Files produced by the `state` backend are exported to uploads and attached to
+6. The run input is assembled from transcript history, attachments, hooks, and
+   runtime configuration.
+7. Runtime events are normalized into UI SSE events and streamed to the browser.
+8. The frontend updates the transcript and runtime timeline.
+9. Files produced by the `state` backend are exported to uploads and attached to
    the final assistant message.
 
 ## Quick Start
@@ -74,7 +77,8 @@ Important `.env` settings:
 | `UPLOAD_STORAGE_DIR` | Upload and generated-file storage directory. |
 | `DEEPAGENTS_MAIN_AGENT` | Main agent import spec. Default: `agents:AGENT`. |
 | `DEEPAGENTS_MODEL_CONFIG_PATH` | Model catalog path. Default: `./models.json`. |
-| `DEEPAGENTS_DEFAULT_MODEL` | Model ID from the catalog. |
+| `DEEPAGENTS_DEFAULT_TIMEZONE` | Backend timezone for persisted timestamps and auth/session events. |
+| `DEEPAGENTS_STREAM_IDLE_TIMEOUT` | Seconds without runtime/model/tool events before a run fails instead of hanging. Set `0` to disable. |
 | `DEEPAGENTS_SANDBOX_KIND` | `state`, `filesystem`, `local_shell`, or `custom`. |
 | `DEEPAGENTS_SANDBOX_ROOT_DIR` | Root directory for filesystem/local-shell file tools. |
 | `DEEPAGENTS_SANDBOX_BACKEND_SPEC` | Import spec for a custom backend factory. |
@@ -142,9 +146,7 @@ The default main agent is `backend/agents:AGENT`.
 ```python
 AGENT = {
     "id": "main",
-    "name": "deepagents-web",
     "system_prompt": ROOT / "prompts" / "system.md",
-    "model": None,
     "workspace": "/workspace/main",
     "tools": TOOLS,
     "builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
@@ -157,9 +159,15 @@ AGENT = {
 }
 ```
 
-`model=None` means the agent uses `DEEPAGENTS_DEFAULT_MODEL`. Subagents can use
-the same fields and may set their own `model`, `workspace`, tools, built-in tool
-filtering, permissions, skills, memory, and nested subagents.
+This is the smallest recommended shape. Add `model`, `workspace`, `permissions`,
+or inline `subagents` only when you actually need them.
+
+Subagents can use the same fields and may set their own `model`, `workspace`,
+tools, built-in tool filtering, permissions, skills, memory, and nested
+subagents.
+`workspace` is descriptive metadata for UI/logging and agent authoring. It is not
+a filesystem or tool-access boundary; use sandbox backend selection plus
+`permissions` for enforcement.
 
 Use these files first:
 
@@ -180,6 +188,11 @@ Built-in tools and file permissions are separate controls:
 - `builtin_tools` and `disabled_builtin_tools` decide which DeepAgents built-in
   tool names are visible to the model.
 - `permissions` decide what visible file tools may do after they are called.
+- If a built-in appears in both lists, `disabled_builtin_tools` wins.
+- If no subagents are active, the backend automatically hides the built-in
+  `task` tool.
+
+The default scaffold now uses explicit `skills` and `subagents` lists.
 
 `operations=["read"]` covers `ls`, `read_file`, `glob`, and `grep`.
 `operations=["write"]` covers `write_file` and `edit_file`.
@@ -201,6 +214,36 @@ Example:
 - In `state` sandbox mode, uploads are copied into virtual `/uploads/...` files.
 - Generated or changed state files are exported after run completion.
 - Exported files become downloadable assistant-message attachments.
+
+## Prompt Injections
+
+Prompt injection support is still present. The implementation now lives in
+`backend/app/core/session_scope.py` under `PromptInjectionService`.
+
+Use it from backend code or hooks:
+
+```python
+app.state.prompt_injections.inject_prompt(
+    session_id=session_id,
+    content="Always inspect the uploaded file before answering.",
+    visibility="hidden",
+    position="before_user",
+    source="backend.rule",
+)
+```
+
+Key points:
+
+- hidden injections affect runtime input but do not appear in the default transcript
+- visible injections still persist as injection records without polluting the public transcript
+- `run_id=...` makes an injection apply only to one run
+- the public message and run APIs intentionally reject hidden injection metadata
+
+## Runtime State
+
+Each web session owns an internal stable LangGraph thread id. The database
+remains the product ledger for sessions, messages, uploads, and replayable UI
+event views.
 
 ## Sandbox Backends
 

@@ -1,9 +1,9 @@
 # open_deepagents
 
-`open_deepagents` 是一个可直接运行的 DeepAgents Web 工作台。它包含 FastAPI
-后端、Vue 聊天界面、持久化会话、文件上传和生成文件下载、流式运行事件、模型
-选择、Mermaid 渲染、sandbox 控制，以及一个可递归扩展的 `backend/agents/`
-agent 包。
+`open_deepagents` 是一个可直接运行、面向真实用户的开源智能体应用框架。它包含
+FastAPI 后端、Vue 聊天界面、持久化会话、文件上传和生成文件下载、流式运行事件、
+模型选择、Mermaid 渲染、sandbox 控制，以及一个可递归扩展的
+`backend/agents/` agent 包。
 
 English documentation: [README.md](README.md)
 
@@ -44,9 +44,10 @@ verification/             脚手架和契约审计工具
 4. 后端保存用户消息并启动 DeepAgents run。
 5. `backend/agents:AGENT` 解析出提示词、工具、中间件、钩子、技能、记忆、
    permissions 和 subagents。
-6. 运行事件转换为前端 SSE 事件并推送到浏览器。
-7. 前端更新聊天记录和运行时间线。
-8. `state` backend 生成的文件会导出为上传记录，并挂到最终助手回复上。
+6. 后端把历史消息、附件、hooks 和运行配置组装为 LLM 输入。
+7. 运行事件转换为前端 SSE 事件并推送到浏览器。
+8. 前端更新聊天记录和运行时间线。
+9. `state` backend 生成的文件会导出为上传记录，并挂到最终助手回复上。
 
 ## 快速开始
 
@@ -69,7 +70,8 @@ cp backend/models.example.json backend/models.json
 | `UPLOAD_STORAGE_DIR` | 上传文件和生成文件存储目录。 |
 | `DEEPAGENTS_MAIN_AGENT` | 主 agent import spec，默认 `agents:AGENT`。 |
 | `DEEPAGENTS_MODEL_CONFIG_PATH` | 模型目录路径，默认 `./models.json`。 |
-| `DEEPAGENTS_DEFAULT_MODEL` | 模型目录中的模型 ID。 |
+| `DEEPAGENTS_DEFAULT_TIMEZONE` | 后端持久化时间和认证/会话事件使用的时区。 |
+| `DEEPAGENTS_STREAM_IDLE_TIMEOUT` | runtime/model/tool 长时间无事件时自动失败的秒数，防止界面永久卡住；设为 `0` 可关闭。 |
 | `DEEPAGENTS_SANDBOX_KIND` | `state`、`filesystem`、`local_shell` 或 `custom`。 |
 | `DEEPAGENTS_SANDBOX_ROOT_DIR` | filesystem/local-shell 文件工具的根目录。 |
 | `DEEPAGENTS_SANDBOX_BACKEND_SPEC` | 自定义 backend factory 的 import spec。 |
@@ -136,9 +138,7 @@ npm run dev
 ```python
 AGENT = {
     "id": "main",
-    "name": "deepagents-web",
     "system_prompt": ROOT / "prompts" / "system.md",
-    "model": None,
     "workspace": "/workspace/main",
     "tools": TOOLS,
     "builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
@@ -151,9 +151,13 @@ AGENT = {
 }
 ```
 
-`model=None` 表示使用 `DEEPAGENTS_DEFAULT_MODEL`。Subagent 支持同样的字段，也
-可以配置自己的 `model`、`workspace`、工具、内置工具过滤、permissions、技能、
-记忆和嵌套 subagents。
+这是推荐的最小配置。`model`、`workspace`、`permissions`、内联 `subagents`
+这些字段，都建议按需再加，不要默认全堆进去。
+
+Subagent 支持同样的字段，也可以配置自己的 `model`、`workspace`、工具、内置工具
+过滤、permissions、技能、记忆和嵌套 subagents。
+`workspace` 只是 UI、日志和 agent 编写时的描述性元数据，不是文件系统或工具访问
+边界；真正的访问控制来自 sandbox backend 选择和 `permissions`。
 
 常改文件：
 
@@ -173,6 +177,10 @@ Agent 包示例见 [backend/agents/README.md](backend/agents/README.md)。
 
 - `builtin_tools` / `disabled_builtin_tools` 决定模型能看到哪些 DeepAgents 内置工具名。
 - `permissions` 决定可见文件工具被调用后，实际能操作哪些路径。
+- 同一个内置工具如果同时出现在两个列表里，`disabled_builtin_tools` 优先。
+- 如果当前没有启用 subagents，后端会自动隐藏内置 `task` 工具。
+
+默认脚手架现在直接用显式 `skills` 和 `subagents` 列表。
 
 `operations=["read"]` 覆盖 `ls`、`read_file`、`glob`、`grep`。
 `operations=["write"]` 覆盖 `write_file`、`edit_file`。
@@ -194,6 +202,35 @@ Agent 包示例见 [backend/agents/README.md](backend/agents/README.md)。
 - `state` sandbox 会把上传文件复制为虚拟 `/uploads/...` 文件。
 - Agent 在 `state` backend 里新增或修改的文件，会在 run 完成后导出。
 - 导出的文件会作为助手回复附件展示和下载。
+
+## Prompt Injection
+
+提示词注入功能还在，没有删。实现现在放在
+`backend/app/core/session_scope.py` 的 `PromptInjectionService` 里。
+
+后端代码或 hooks 里这样用：
+
+```python
+app.state.prompt_injections.inject_prompt(
+    session_id=session_id,
+    content="回答前先检查上传文件。",
+    visibility="hidden",
+    position="before_user",
+    source="backend.rule",
+)
+```
+
+说明：
+
+- `hidden` 注入会影响 runtime 输入，但不会出现在默认 transcript 里
+- `visible` 注入会持久化为 injection 记录，但公开 transcript 仍然保持干净
+- 传 `run_id=...` 时，只对那个 run 生效
+- 公共 message/run API 故意不接受隐藏注入元数据
+
+## Runtime 状态
+
+每个 Web 会话都会拥有后端内部维护的稳定 LangGraph thread id。应用数据库作为
+产品账本，负责 sessions、messages、uploads 和可回放的 UI event views。
 
 ## Sandbox
 

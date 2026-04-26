@@ -6,10 +6,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
-from uuid import uuid4
 
 from langgraph.errors import GraphRecursionError
 from sqlalchemy.orm import Session
@@ -18,242 +15,31 @@ from app.core.config import Settings
 from app.core.database import DatabaseState
 from app.core.logging import format_log_message
 from app.core.runtime_catalog import RuntimeSelection
+from app.core.session_scope import (
+    PromptInjectionService,
+    ensure_runtime_thread_id,
+    require_session_record,
+    sync_session_title_from_source,
+)
 from app.db.models import (
     AgentRunRecord,
     MessageRecord,
-    RunEventViewRecord,
-    SessionRecord,
-    SessionRuntimeLinkRecord,
 )
-from app.services.run_attachments import (
-    InvalidRunAttachmentError,
-    persist_generated_state_outputs,
-)
-from app.services.run_attachments import (
-    append_message_attachments as _append_message_attachments,
-)
-from app.services.run_attachments import (
-    generated_state_output_files as _generated_state_output_files,
-)
-from app.services.run_attachments import (
-    link_uploads_to_message as _link_uploads_to_message,
-)
-from app.services.run_attachments import (
-    message_attachments as _message_attachments,
-)
-from app.services.run_attachments import (
-    pending_upload_records_for_attachments as _pending_upload_records_for_attachments,
-)
-from app.services.run_attachments import (
-    resolve_run_attachments as _resolve_run_attachments,
-)
-from app.services.run_attachments import (
-    state_backend_files as _state_backend_files,
-)
+from app.services import run_attachments
+from app.services import run_events as events
 from app.services.run_events import (
-    RunEventViewBuffer,
-    utc_now,
-)
-from app.services.run_events import (
-    backlog_after as _backlog_after,
-)
-from app.services.run_events import (
-    bridge_to_ui as _bridge_to_ui,
-)
-from app.services.run_events import (
-    count_runtime_events as _count_runtime_events,
-)
-from app.services.run_events import (
-    extract_message_text as _extract_message_text,
-)
-from app.services.run_events import (
-    is_runtime_placeholder_text as _is_runtime_placeholder_text,
-)
-from app.services.run_events import (
-    persist_event_views as _persist_event_views,
-)
-from app.services.run_events import (
-    restore_subagent_detail as _restore_subagent_detail,
-)
-from app.services.run_events import (
-    to_sse as _to_sse,
-)
-from app.services.run_events import (
-    ui_envelope as _ui_envelope,
-)
-from app.services.run_history import (
+    MAX_REPLAY_BACKLOG_EVENTS,
     PersistedRunState,
+    RunManager,
+    RunState,
     load_persisted_run_state,
     stream_persisted_run,
 )
-from app.services.session_titles import sync_session_title_from_source
 from deepagents_integration import DeepAgentsRuntimeConfig, stream_sse_envelopes
-from deepagents_integration.run_hooks import RunInputHookContext, apply_run_input_hooks
 
 RunBuilder = Callable[[DeepAgentsRuntimeConfig], Any]
+__all__ = ["MAX_REPLAY_BACKLOG_EVENTS", "RunManager", "RunService", "RunState"]
 logger = logging.getLogger(__name__)
-MAX_REPLAY_BACKLOG_EVENTS = 500
-
-def new_run_id() -> str:
-    return f"run-{uuid4()}"
-
-
-@dataclass(frozen=True)
-class RunSubscriber:
-    queue: asyncio.Queue[dict[str, Any] | None]
-    loop: asyncio.AbstractEventLoop
-
-
-@dataclass
-class RunState:
-    run_id: str
-    session_id: str
-    status: str = "queued"
-    created_at: datetime = field(default_factory=utc_now)
-    envelopes: list[dict[str, Any]] = field(default_factory=list)
-    subscribers: set[RunSubscriber] = field(default_factory=set)
-    completed: bool = False
-    cancel_requested: bool = False
-    execution_loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
-    execution_task: asyncio.Task[None] | None = field(default=None, repr=False)
-    last_sequence: int = 0
-    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-
-    def publish(self, envelope: dict[str, Any]) -> bool:
-        with self.lock:
-            if self.completed:
-                return False
-            self._remember_sequence(envelope)
-            self._append_replay_envelope(envelope)
-            if envelope.get("type") == "status":
-                self.status = str(envelope.get("status") or self.status)
-            elif envelope.get("type") == "error":
-                self.status = "failed"
-            subscribers = tuple(self.subscribers)
-        for subscriber in subscribers:
-            subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, envelope)
-        return True
-
-    def finish(self, status: str) -> None:
-        self.terminalize(status)
-
-    def terminalize(self, status: str, envelope: dict[str, Any] | None = None) -> bool:
-        with self.lock:
-            if self.completed:
-                return False
-            if envelope is not None:
-                self._remember_sequence(envelope)
-                self._append_replay_envelope(envelope)
-            self.status = status
-            self.completed = True
-            subscribers = tuple(self.subscribers)
-        if envelope is not None:
-            for subscriber in subscribers:
-                subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, envelope)
-        for subscriber in subscribers:
-            subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, None)
-        return True
-
-    def backlog_after(self, last_event_id: str | None) -> list[dict[str, Any]]:
-        with self.lock:
-            return _backlog_after(list(self.envelopes), last_event_id)
-
-    def _append_replay_envelope(self, envelope: dict[str, Any]) -> None:
-        data = envelope.get("data")
-        if isinstance(data, dict) and data.get("transient") is True:
-            return
-        self.envelopes.append(envelope)
-        if len(self.envelopes) > MAX_REPLAY_BACKLOG_EVENTS:
-            self.envelopes = self.envelopes[-MAX_REPLAY_BACKLOG_EVENTS:]
-
-    def _remember_sequence(self, envelope: dict[str, Any]) -> None:
-        try:
-            sequence = int(str(envelope.get("event_id") or "").rsplit(":", maxsplit=1)[-1])
-        except ValueError:
-            return
-        self.last_sequence = max(self.last_sequence, sequence)
-
-    def add_subscriber(self, subscriber: RunSubscriber) -> None:
-        with self.lock:
-            self.subscribers.add(subscriber)
-            completed = self.completed
-        if completed:
-            subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, None)
-
-    def discard_subscriber(self, subscriber: RunSubscriber) -> None:
-        with self.lock:
-            self.subscribers.discard(subscriber)
-
-    def bind_execution(
-        self,
-        loop: asyncio.AbstractEventLoop,
-        task: asyncio.Task[None],
-    ) -> None:
-        with self.lock:
-            self.execution_loop = loop
-            self.execution_task = task
-            should_cancel = self.cancel_requested or self.completed
-        if should_cancel:
-            loop.call_soon_threadsafe(task.cancel)
-
-    def clear_execution(self, task: asyncio.Task[None]) -> None:
-        with self.lock:
-            if self.execution_task is task:
-                self.execution_task = None
-                self.execution_loop = None
-
-    def request_cancel(self) -> bool:
-        with self.lock:
-            if self.completed:
-                return False
-            self.cancel_requested = True
-            loop = self.execution_loop
-            task = self.execution_task
-        if loop is not None and task is not None:
-            loop.call_soon_threadsafe(task.cancel)
-        return True
-
-    def next_sequence(self) -> int:
-        with self.lock:
-            return self.last_sequence + 1
-class RunManager:
-    def __init__(self, keepalive_interval: float = 15.0) -> None:
-        self._runs: dict[str, RunState] = {}
-        self.keepalive_interval = keepalive_interval
-
-    def create(self, session_id: str) -> RunState:
-        state = RunState(run_id=new_run_id(), session_id=session_id)
-        self._runs[state.run_id] = state
-        return state
-
-    def get(self, run_id: str) -> RunState | None:
-        return self._runs.get(run_id)
-
-    async def stream(self, run_id: str, last_event_id: str | None = None) -> AsyncIterator[str]:
-        state = self.get(run_id)
-        if state is None:
-            raise KeyError(run_id)
-
-        subscriber = RunSubscriber(queue=asyncio.Queue(), loop=asyncio.get_running_loop())
-        state.add_subscriber(subscriber)
-        try:
-            for envelope in state.backlog_after(last_event_id):
-                yield _to_sse(envelope)
-
-            while True:
-                try:
-                    item = await asyncio.wait_for(
-                        subscriber.queue.get(),
-                        timeout=self.keepalive_interval,
-                    )
-                except TimeoutError:
-                    yield ": keep-alive\n\n"
-                    continue
-                if item is None:
-                    break
-                yield _to_sse(item)
-        finally:
-            state.discard_subscriber(subscriber)
 
 
 class RunService:
@@ -261,6 +47,7 @@ class RunService:
         self.database = database
         self.manager = manager
         self.builder = builder
+        self.prompt_injections = PromptInjectionService(database)
 
     def start_run(
         self,
@@ -276,21 +63,22 @@ class RunService:
                 settings.to_runtime_config(selection=runtime_selection).runtime_selection or {}
             )
         except ValueError as exc:
-            raise InvalidRunAttachmentError(str(exc), status_code=400) from exc
+            raise run_attachments.InvalidRunAttachmentError(str(exc), status_code=400) from exc
         with self.database.session_factory() as db:
-            session = _require_session(db, session_id)
-            resolved_attachments = _resolve_run_attachments(
+            session = require_session_record(db, session_id=session_id)
+            resolved_attachments = run_attachments.resolve_run_attachments(
                 db=db,
                 session_id=session_id,
                 attachments=attachments,
                 settings=settings,
             )
-            attachment_records = _pending_upload_records_for_attachments(
+            attachment_records = run_attachments.pending_upload_records_for_attachments(
                 db=db,
                 session_id=session_id,
                 attachments=resolved_attachments,
             )
             state = self.manager.create(session_id)
+            runtime_thread_id = ensure_runtime_thread_id(db, session)
             session.last_run_id = state.run_id
             sync_session_title_from_source(session, prompt)
             user_message = MessageRecord(
@@ -309,6 +97,7 @@ class RunService:
                     extra={
                         "attachments": resolved_attachments,
                         "runtime_selection": safe_runtime_selection,
+                        "runtime_thread_id": runtime_thread_id,
                     },
                 )
             )
@@ -322,7 +111,7 @@ class RunService:
 
         _log_run(
             logging.INFO,
-            f"run started with {_count_phrase(len(attachments), 'attachment')}",
+            f"run started with {events.count_phrase(len(attachments), 'attachment')}",
             event="run.created",
             phase="queued",
             run_id=state.run_id,
@@ -331,7 +120,7 @@ class RunService:
             prompt_chars=len(prompt),
         )
         state.publish(
-            _ui_envelope(
+            events.ui_envelope(
                 run_id=state.run_id,
                 session_id=session_id,
                 sequence=1,
@@ -349,6 +138,7 @@ class RunService:
             prompt=prompt,
             attachments=resolved_attachments,
             runtime_selection=runtime_selection,
+            runtime_thread_id=runtime_thread_id,
         )
         return state
 
@@ -361,6 +151,7 @@ class RunService:
         prompt: str,
         attachments: list[dict[str, Any]],
         runtime_selection: RuntimeSelection | None,
+        runtime_thread_id: str,
     ) -> None:
         def runner() -> None:
             state = self.manager.get(run_id)
@@ -374,6 +165,7 @@ class RunService:
                     prompt=prompt,
                     attachments=attachments,
                     runtime_selection=runtime_selection,
+                    runtime_thread_id=runtime_thread_id,
                 )
             )
             if state is not None:
@@ -447,18 +239,19 @@ class RunService:
         prompt: str,
         attachments: list[dict[str, Any]],
         runtime_selection: RuntimeSelection | None,
+        runtime_thread_id: str,
     ) -> None:
         state = self.manager.get(run_id)
         if state is None:
             return
-        if state.status == "cancelled" or state.completed:
+        if _run_inactive(state):
             return
 
         started_at = time.perf_counter()
         runtime_event_counts: Counter[str] = Counter()
         agent_input: dict[str, Any] = {"messages": []}
         phase = "starting execution"
-        event_view_buffer = RunEventViewBuffer(
+        event_view_buffer = events.RunEventViewBuffer(
             self.database,
             run_id=run_id,
             session_id=session_id,
@@ -476,7 +269,9 @@ class RunService:
             )
             phase = "resolving runtime config"
             runtime_config = settings.to_runtime_config(selection=runtime_selection)
-            runtime_summary_message, runtime_summary_fields = _runtime_config_log_summary(settings)
+            runtime_summary_message, runtime_summary_fields = events.runtime_config_log_summary(
+                settings
+            )
             runtime_log_fields: dict[str, Any] = {
                 "recursion_limit": settings.deepagents_recursion_limit,
                 **runtime_summary_fields,
@@ -492,9 +287,7 @@ class RunService:
                 **runtime_log_fields,
             )
             if runtime_config.model is None:
-                raise RuntimeError(
-                    "DEEPAGENTS_DEFAULT_MODEL is not configured or cannot be resolved"
-                )
+                raise RuntimeError("No default model could be resolved from models.json")
 
             phase = "building agent"
             _log_run(
@@ -515,8 +308,12 @@ class RunService:
                 session_id=session_id,
             )
             phase = "building agent input"
-            agent_input = self._build_agent_input(
+            agent_input = run_attachments.build_agent_input(
                 settings=settings,
+                records=self.prompt_injections.assemble_prompt_messages(
+                    session_id=session_id,
+                    run_id=run_id,
+                ),
                 session_id=session_id,
                 run_id=run_id,
                 prompt=prompt,
@@ -524,11 +321,16 @@ class RunService:
                 hooks=runtime_config.run_input_hooks,
             )
             phase = "streaming"
+            run_context = run_attachments.runtime_context(
+                session_id=session_id,
+                run_id=run_id,
+                attachments=attachments,
+            )
             _log_run(
                 logging.INFO,
                 "stream started with "
-                f"{_count_phrase(len(agent_input['messages']), 'input message')} and "
-                f"{_count_phrase(len(attachments), 'attachment')}",
+                f"{events.count_phrase(len(agent_input['messages']), 'input message')} and "
+                f"{events.count_phrase(len(attachments), 'attachment')}",
                 event="run.stream_started",
                 phase=phase,
                 run_id=run_id,
@@ -552,31 +354,30 @@ class RunService:
                 agent,
                 agent_input,
                 bridge_run_id=run_id,
-                config={"recursion_limit": settings.deepagents_recursion_limit},
-                context={
-                    "session_id": session_id,
-                    "run_id": run_id,
-                    "current_attachments": tuple(attachments),
-                    "attachments": tuple(attachments),
+                config={
+                    "recursion_limit": settings.deepagents_recursion_limit,
+                    "configurable": {"thread_id": runtime_thread_id},
                 },
+                context=run_context,
+                event_idle_timeout=settings.deepagents_stream_idle_timeout,
             ):
-                if state.status == "cancelled" or state.completed:
+                if _run_inactive(state):
                     return
                 runtime_event_counts[envelope.event] += 1
                 if envelope.event == "run.completed":
                     raw_completion_output = getattr(envelope, "internal_data", {}).get("raw_output")
                 sequence += 1
-                ui_event = _bridge_to_ui(
+                ui_event = events.bridge_to_ui(
                     envelope=envelope,
                     session_id=session_id,
                     sequence=sequence,
                 )
                 if ui_event["type"] == "subagent":
-                    _restore_subagent_detail(
+                    events.restore_subagent_detail(
                         ui_event,
                         subagent_names_by_runtime_run=subagent_names_by_runtime_run,
                     )
-                if state.status == "cancelled" or state.completed:
+                if _run_inactive(state):
                     return
                 if ui_event["type"] == "status" and ui_event["status"] == "completed":
                     pending_completion_event = ui_event
@@ -592,7 +393,8 @@ class RunService:
                         assistant_message_count += 1
                         final_message = assistant_content
                         last_assistant_message = assistant_content
-                        last_assistant_record_id = self._create_message_record(
+                        last_assistant_record_id = events.create_message_record(
+                            self.database,
                             session_id=session_id,
                             role="assistant",
                             content=assistant_content,
@@ -604,20 +406,35 @@ class RunService:
                 elif (
                     not final_message
                     and ui_event.get("label") in {"message.completed", "run.completed"}
-                    and (candidate := _extract_message_text(ui_event.get("data")))
-                    and not _is_runtime_placeholder_text(candidate)
+                    and (candidate := events.extract_message_text(ui_event.get("data")))
+                    and not events.is_runtime_placeholder_text(candidate)
                 ):
                     final_message = candidate
                 runtime_run_id = str(ui_event.get("data", {}).get("runtime_run_id") or "")
                 if runtime_run_id and runtime_run_id != last_synced_runtime_run_id:
-                    self._sync_runtime_link(
+                    runtime_linked = events.persist_runtime_link(
+                        self.database,
                         run_id=run_id,
                         session_id=session_id,
                         runtime_run_id=runtime_run_id,
+                        runtime_thread_id=runtime_thread_id,
                     )
+                    if not runtime_linked:
+                        _log_run(
+                            logging.WARNING,
+                            "runtime link resolved before the run record was available",
+                            event="run.runtime_link_run_missing",
+                            phase="syncing runtime link",
+                            run_id=run_id,
+                            session_id=session_id,
+                            next_step=(
+                                "inspect run persistence ordering "
+                                "if runtime links stop attaching"
+                            ),
+                        )
                     last_synced_runtime_run_id = runtime_run_id
 
-            if state.status == "cancelled" or state.completed:
+            if _run_inactive(state):
                 return
             if not final_message and streamed_message_parts:
                 final_message = "".join(streamed_message_parts)
@@ -629,12 +446,12 @@ class RunService:
             )
             generated_attachments: list[dict[str, Any]] = []
             if settings.deepagents_sandbox_kind == "state":
-                generated_state_files = _generated_state_output_files(
+                generated_state_files = run_attachments.generated_state_output_files(
                     raw_completion_output if raw_completion_output is not None else completion_data,
                     initial_files=agent_input.get("files", {}),
                 )
                 if generated_state_files:
-                    generated_attachments = persist_generated_state_outputs(
+                    generated_attachments = run_attachments.persist_generated_state_outputs(
                         database=self.database,
                         settings=settings,
                         session_id=session_id,
@@ -649,27 +466,27 @@ class RunService:
             _log_run(
                 logging.INFO,
                 "stream finished with "
-                f"{_count_phrase(sum(runtime_event_counts.values()), 'runtime event')} in "
-                f"{_elapsed_ms(started_at)} ms",
+                f"{events.count_phrase(sum(runtime_event_counts.values()), 'runtime event')} in "
+                f"{events.elapsed_ms(started_at)} ms",
                 event="run.stream_finished",
                 phase=phase,
                 run_id=run_id,
                 session_id=session_id,
-                duration_ms=_elapsed_ms(started_at),
+                duration_ms=events.elapsed_ms(started_at),
                 message_delta_events=runtime_event_counts["message.delta"],
                 runtime_event_count=sum(runtime_event_counts.values()),
-                sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
-                skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
+                sandbox_event_count=events.count_runtime_events(runtime_event_counts, "sandbox."),
+                skill_event_count=events.count_runtime_events(runtime_event_counts, "skill."),
                 skipped_event_view_count=event_view_buffer.skipped_count,
-                tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
+                tool_event_count=events.count_runtime_events(runtime_event_counts, "tool."),
                 persisted_event_view_count=event_view_buffer.persisted_count,
             )
 
             if final_message and not saw_message_delta and assistant_message_count == 0:
-                if state.status == "cancelled" or state.completed:
+                if _run_inactive(state):
                     return
                 sequence += 1
-                delta_event = _ui_envelope(
+                delta_event = events.ui_envelope(
                     run_id=run_id,
                     session_id=session_id,
                     sequence=sequence,
@@ -687,10 +504,10 @@ class RunService:
                 assistant_message_count == 0 or final_message != last_assistant_message
             )
             if should_emit_terminal_message:
-                if state.status == "cancelled" or state.completed:
+                if _run_inactive(state):
                     return
                 sequence += 1
-                final_event = _ui_envelope(
+                final_event = events.ui_envelope(
                     run_id=run_id,
                     session_id=session_id,
                     sequence=sequence,
@@ -703,7 +520,7 @@ class RunService:
                         "id": f"final:{run_id}",
                         "role": "assistant",
                         "content": final_message,
-                        "createdAt": utc_now().isoformat(),
+                        "createdAt": events.event_now().isoformat(),
                         "attachments": generated_attachments,
                     },
                 )
@@ -712,60 +529,17 @@ class RunService:
 
             event_view_buffer.flush()
             phase = "persisting final message"
-            if state.status == "cancelled" or state.completed:
+            if _run_inactive(state):
                 return
-            with self.database.session_factory() as db:
-                session = _require_session(db, session_id)
-                if final_message:
-                    if (
-                        last_assistant_record_id is not None
-                        and last_assistant_message == final_message
-                    ):
-                        existing_record = (
-                            db.query(MessageRecord)
-                            .filter(MessageRecord.id == last_assistant_record_id)
-                            .first()
-                        )
-                        if existing_record is not None:
-                            existing_record.is_final = True
-                            _append_message_attachments(existing_record, generated_attachments)
-                            _link_uploads_to_message(
-                                db,
-                                attachments=generated_attachments,
-                                message_id=existing_record.id,
-                            )
-                            db.add(existing_record)
-                    else:
-                        assistant_record = MessageRecord(
-                            session_id=session_id,
-                            role="assistant",
-                            content=final_message,
-                            run_id=run_id,
-                            is_final=True,
-                        )
-                        _append_message_attachments(assistant_record, generated_attachments)
-                        db.add(assistant_record)
-                        db.flush()
-                        _link_uploads_to_message(
-                            db,
-                            attachments=generated_attachments,
-                            message_id=assistant_record.id,
-                        )
-                session.last_run_id = run_id
-                run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
-                if run_record is not None:
-                    run_record.status = "completed"
-                    run_record.final_output_text = final_message or None
-                    run_record.event_count = len(state.envelopes)
-                    run_record.completed_at = utc_now()
-                    if generated_attachments:
-                        run_record.extra = {
-                            **(run_record.extra or {}),
-                            "generated_attachments": generated_attachments,
-                        }
-                    db.add(run_record)
-                db.add(session)
-                db.commit()
+            self._persist_completed_run(
+                run_id=run_id,
+                session_id=session_id,
+                state=state,
+                final_message=final_message,
+                generated_attachments=generated_attachments,
+                last_assistant_message=last_assistant_message,
+                last_assistant_record_id=last_assistant_record_id,
+            )
 
             phase = "finalizing completion"
             completion_label = "Run completed"
@@ -775,7 +549,7 @@ class RunService:
                 completion_detail = str(
                     pending_completion_event.get("detail") or completion_detail
                 )
-            completion_envelope = _ui_envelope(
+            completion_envelope = events.ui_envelope(
                 run_id=run_id,
                 session_id=session_id,
                 sequence=sequence + 1,
@@ -785,7 +559,8 @@ class RunService:
                 detail=completion_detail,
                 data=completion_data,
             )
-            self._persist_event(
+            events.persist_single_event(
+                self.database,
                 run_id=run_id,
                 session_id=session_id,
                 envelope=completion_envelope,
@@ -795,20 +570,20 @@ class RunService:
             _log_run(
                 logging.INFO,
                 "run completed with "
-                f"{_count_phrase(sum(runtime_event_counts.values()), 'runtime event')} in "
-                f"{_elapsed_ms(started_at)} ms",
+                f"{events.count_phrase(sum(runtime_event_counts.values()), 'runtime event')} in "
+                f"{events.elapsed_ms(started_at)} ms",
                 event="run.completed",
                 phase=phase,
                 run_id=run_id,
                 session_id=session_id,
                 assistant_chars=len(final_message),
-                duration_ms=_elapsed_ms(started_at),
+                duration_ms=events.elapsed_ms(started_at),
                 message_delta_events=runtime_event_counts["message.delta"],
                 runtime_event_count=sum(runtime_event_counts.values()),
-                sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
-                skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
+                sandbox_event_count=events.count_runtime_events(runtime_event_counts, "sandbox."),
+                skill_event_count=events.count_runtime_events(runtime_event_counts, "skill."),
                 status="completed",
-                tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
+                tool_event_count=events.count_runtime_events(runtime_event_counts, "tool."),
                 ui_event_count=len(state.envelopes),
                 skipped_event_view_count=event_view_buffer.skipped_count,
                 persisted_event_view_count=event_view_buffer.persisted_count + 1,
@@ -837,59 +612,14 @@ class RunService:
             event_view_buffer.flush()
             phase = "persisting fallback response"
             fallback_message = _build_recursion_fallback(prompt, agent_input["messages"])
-            fallback_event = _ui_envelope(
+            events.persist_recursion_fallback(
+                self.database,
                 run_id=run_id,
                 session_id=session_id,
-                sequence=len(state.envelopes) + 1,
-                event_type="message.final",
-                status="completed",
-                label="message.final",
-                detail="Assistant response completed with fallback after recursion limit.",
-                data={"warning": str(exc)},
-                message={
-                    "id": f"final:{run_id}",
-                    "role": "assistant",
-                    "content": fallback_message,
-                    "createdAt": utc_now().isoformat(),
-                    "attachments": [],
-                },
+                state=state,
+                fallback_message=fallback_message,
+                warning=str(exc),
             )
-            self._persist_event(run_id=run_id, session_id=session_id, envelope=fallback_event)
-            state.publish(fallback_event)
-            completion_event = _ui_envelope(
-                run_id=run_id,
-                session_id=session_id,
-                sequence=len(state.envelopes) + 1,
-                event_type="status",
-                status="completed",
-                label="Run completed",
-                detail="DeepAgents run completed with a fallback response.",
-                data={"warning": str(exc)},
-            )
-            self._persist_event(run_id=run_id, session_id=session_id, envelope=completion_event)
-            state.publish(completion_event)
-            with self.database.session_factory() as db:
-                recovered_session = _require_session(db, session_id)
-                db.add(
-                    MessageRecord(
-                        session_id=session_id,
-                        role="assistant",
-                        content=fallback_message,
-                        run_id=run_id,
-                        is_final=True,
-                    )
-                )
-                recovered_session.last_run_id = run_id
-                run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
-                if run_record is not None:
-                    run_record.status = "completed"
-                    run_record.error_text = str(exc)
-                    run_record.final_output_text = fallback_message
-                    run_record.event_count = len(state.envelopes)
-                    run_record.completed_at = utc_now()
-                    db.add(run_record)
-                db.add(recovered_session)
-                db.commit()
             state.finish("completed")
             _log_run(
                 logging.WARNING,
@@ -901,57 +631,24 @@ class RunService:
                 reason="recursion_limit",
                 next_step="inspect recursive tool or agent loops in the upstream runtime trace",
                 assistant_chars=len(fallback_message),
-                duration_ms=_elapsed_ms(started_at),
+                duration_ms=events.elapsed_ms(started_at),
                 error_type=type(exc).__name__,
                 runtime_event_count=sum(runtime_event_counts.values()),
-                sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
-                skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
+                sandbox_event_count=events.count_runtime_events(runtime_event_counts, "sandbox."),
+                skill_event_count=events.count_runtime_events(runtime_event_counts, "skill."),
                 status="completed",
-                tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
+                tool_event_count=events.count_runtime_events(runtime_event_counts, "tool."),
                 ui_event_count=len(state.envelopes),
             )
         except Exception as exc:
             event_view_buffer.flush()
-            error_envelope = _ui_envelope(
+            events.persist_failed_run(
+                self.database,
                 run_id=run_id,
                 session_id=session_id,
-                sequence=len(state.envelopes) + 1,
-                event_type="error",
-                status="failed",
-                label="Run failed",
-                detail=str(exc),
-                data={"error": str(exc)},
+                state=state,
+                error_text=str(exc),
             )
-            self._persist_event(run_id=run_id, session_id=session_id, envelope=error_envelope)
-            state.publish(error_envelope)
-            with self.database.session_factory() as db:
-                failed_session: SessionRecord | None = (
-                    db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
-                )
-                if failed_session is not None:
-                    failed_session.last_run_id = run_id
-                    db.add(
-                        MessageRecord(
-                            session_id=session_id,
-                            role="system",
-                            content=f"Run failed: {exc}",
-                            run_id=run_id,
-                            is_final=True,
-                        )
-                    )
-                    run_record = (
-                        db.query(AgentRunRecord)
-                        .filter(AgentRunRecord.id == run_id)
-                        .first()
-                    )
-                    if run_record is not None:
-                        run_record.status = "failed"
-                        run_record.error_text = str(exc)
-                        run_record.event_count = len(state.envelopes)
-                        run_record.completed_at = utc_now()
-                        db.add(run_record)
-                    db.add(failed_session)
-                    db.commit()
             state.finish("failed")
             _log_run(
                 logging.ERROR,
@@ -961,15 +658,15 @@ class RunService:
                 run_id=run_id,
                 session_id=session_id,
                 reason=type(exc).__name__,
-                next_step=_phase_failure_hint(phase),
+                next_step=events.phase_failure_hint(phase),
                 exc_info=True,
-                duration_ms=_elapsed_ms(started_at),
+                duration_ms=events.elapsed_ms(started_at),
                 error_type=type(exc).__name__,
                 runtime_event_count=sum(runtime_event_counts.values()),
-                sandbox_event_count=_count_runtime_events(runtime_event_counts, "sandbox."),
-                skill_event_count=_count_runtime_events(runtime_event_counts, "skill."),
+                sandbox_event_count=events.count_runtime_events(runtime_event_counts, "sandbox."),
+                skill_event_count=events.count_runtime_events(runtime_event_counts, "skill."),
                 status="failed",
-                tool_event_count=_count_runtime_events(runtime_event_counts, "tool."),
+                tool_event_count=events.count_runtime_events(runtime_event_counts, "tool."),
                 ui_event_count=len(state.envelopes),
             )
         finally:
@@ -983,200 +680,96 @@ class RunService:
         detail: str,
         state: RunState | None = None,
     ) -> bool:
-        current_state = state or self.manager.get(run_id)
-        if current_state is not None and current_state.status == "cancelled":
-            current_state.request_cancel()
-            return False
-
-        with self.database.session_factory() as db:
-            run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
-            if run_record is None:
-                raise KeyError(run_id)
-            if run_record.status in {"completed", "failed", "cancelled"}:
-                if current_state is not None:
-                    current_state.request_cancel()
-                return False
-
-            sequence = (
-                current_state.next_sequence()
-                if current_state is not None
-                else run_record.event_count + 1
-            )
-            cancel_envelope = _ui_envelope(
-                run_id=run_id,
-                session_id=session_id,
-                sequence=sequence,
-                event_type="status",
-                status="cancelled",
-                label="Run cancelled",
-                detail=detail,
-                data={"cancelled_by": "user"},
-            )
-            record = RunEventViewRecord(
-                id=str(cancel_envelope["event_id"]),
-                run_id=run_id,
-                session_id=session_id,
-                sequence=sequence,
-                event_type="status",
-                status="cancelled",
-                step_id=None,
-                message_id=None,
-                payload=dict(cancel_envelope),
-            )
-            db.merge(record)
-            run_record.status = "cancelled"
-            run_record.error_text = detail
-            run_record.event_count = max(run_record.event_count, sequence)
-            run_record.completed_at = utc_now()
-            db.add(run_record)
-            session = _require_session(db, session_id)
-            session.last_run_id = run_id
-            db.add(session)
-            db.commit()
-
-        if current_state is not None:
-            current_state.request_cancel()
-            return current_state.terminalize("cancelled", cancel_envelope)
-        return True
-
-    def _build_agent_input(
-        self,
-        *,
-        settings: Settings,
-        session_id: str,
-        run_id: str,
-        prompt: str,
-        attachments: list[dict[str, Any]],
-        hooks: tuple[Any, ...] = (),
-    ) -> dict[str, Any]:
-        with self.database.session_factory() as db:
-            records = (
-                db.query(MessageRecord)
-                .filter(MessageRecord.session_id == session_id)
-                .order_by(MessageRecord.created_at.asc(), MessageRecord.id.asc())
-                .all()
-            )
-
-        messages: list[dict[str, str]] = []
-        for record in records:
-            if record.role not in {"user", "assistant"}:
-                continue
-            content = record.content or ""
-            if record.role == "user":
-                record_attachments = (
-                    attachments
-                    if record.run_id == run_id
-                    else _message_attachments(record=record)
-                )
-                content = apply_run_input_hooks(
-                    context=RunInputHookContext(
-                        session_id=session_id,
-                        run_id=run_id,
-                        role=record.role,
-                        content=content,
-                        attachments=tuple(record_attachments),
-                        is_current_run=record.run_id == run_id,
-                    ),
-                    hooks=hooks,
-                )
-            if not content.strip():
-                continue
-            messages.append({"role": record.role, "content": content})
-
-        if not messages:
-            messages = [
-                {
-                    "role": "user",
-                    "content": apply_run_input_hooks(
-                        context=RunInputHookContext(
-                            session_id=session_id,
-                            run_id=run_id,
-                            role="user",
-                        content=prompt,
-                        attachments=tuple(attachments),
-                        is_current_run=True,
-                    ),
-                    hooks=hooks,
-                ),
-                }
-            ]
-
-        agent_input: dict[str, Any] = {"messages": messages}
-        state_files = (
-            _state_backend_files(attachments=attachments)
-            if settings.deepagents_sandbox_kind == "state"
-            else {}
-        )
-        if state_files:
-            agent_input["files"] = state_files
-        return agent_input
-
-    def _persist_event(self, *, run_id: str, session_id: str, envelope: dict[str, Any]) -> None:
-        _persist_event_views(
+        terminalized, _ = events.finalize_cancelled_run(
             self.database,
             run_id=run_id,
             session_id=session_id,
-            envelopes=[envelope],
+            detail=detail,
+            state=state or self.manager.get(run_id),
         )
+        return terminalized
 
-    def _sync_runtime_link(self, *, run_id: str, session_id: str, runtime_run_id: str) -> None:
-        if not runtime_run_id:
-            return
-        with self.database.session_factory() as db:
-            record = (
-                db.query(SessionRuntimeLinkRecord)
-                .filter(SessionRuntimeLinkRecord.session_id == session_id)
-                .first()
-            )
-            if record is None:
-                record = SessionRuntimeLinkRecord(session_id=session_id)
-            record.runtime_run_id = runtime_run_id
-            record.last_seen_at = utc_now()
-            db.add(record)
-            run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
-            if run_record is None:
-                _log_run(
-                    logging.WARNING,
-                    "runtime link resolved before the run record was available",
-                    event="run.runtime_link_run_missing",
-                    phase="syncing runtime link",
-                    run_id=run_id,
-                    session_id=session_id,
-                    next_step="inspect run persistence ordering if runtime links stop attaching",
-                )
-            else:
-                run_record.runtime_run_id = runtime_run_id
-                db.add(run_record)
-            db.commit()
-
-    def _create_message_record(
+    def _persist_completed_run(
         self,
         *,
+        run_id: str,
         session_id: str,
-        role: str,
-        content: str,
-        run_id: str | None = None,
-        is_final: bool = True,
-        step_id: str | None = None,
-        extra: dict[str, Any] | None = None,
-    ) -> str:
+        state: RunState,
+        final_message: str,
+        generated_attachments: list[dict[str, Any]],
+        last_assistant_message: str,
+        last_assistant_record_id: str | None,
+    ) -> None:
         with self.database.session_factory() as db:
-            session = _require_session(db, session_id)
-            record = MessageRecord(
-                session_id=session_id,
-                role=role,
-                content=content,
-                run_id=run_id,
-                is_final=is_final,
-                step_id=step_id,
-                extra=extra or {},
-            )
-            session.last_run_id = run_id or session.last_run_id
-            db.add(record)
+            session = require_session_record(db, session_id=session_id)
+            if final_message:
+                self._persist_final_assistant_message(
+                    db=db,
+                    session_id=session_id,
+                    run_id=run_id,
+                    final_message=final_message,
+                    generated_attachments=generated_attachments,
+                    last_assistant_message=last_assistant_message,
+                    last_assistant_record_id=last_assistant_record_id,
+                )
+            session.last_run_id = run_id
+            run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
+            if run_record is not None:
+                run_record.status = "completed"
+                run_record.final_output_text = final_message or None
+                run_record.event_count = len(state.envelopes)
+                run_record.completed_at = events.event_now()
+                if generated_attachments:
+                    run_record.extra = {
+                        **(run_record.extra or {}),
+                        "generated_attachments": generated_attachments,
+                    }
+                db.add(run_record)
             db.add(session)
             db.commit()
-            db.refresh(record)
-            return str(record.id)
+
+    def _persist_final_assistant_message(
+        self,
+        *,
+        db: Session,
+        session_id: str,
+        run_id: str,
+        final_message: str,
+        generated_attachments: list[dict[str, Any]],
+        last_assistant_message: str,
+        last_assistant_record_id: str | None,
+    ) -> None:
+        if last_assistant_record_id is not None and last_assistant_message == final_message:
+            existing_record = (
+                db.query(MessageRecord).filter(MessageRecord.id == last_assistant_record_id).first()
+            )
+            if existing_record is None:
+                return
+            existing_record.is_final = True
+            run_attachments.append_message_attachments(existing_record, generated_attachments)
+            run_attachments.link_uploads_to_message(
+                db,
+                attachments=generated_attachments,
+                message_id=existing_record.id,
+            )
+            db.add(existing_record)
+            return
+        assistant_record = MessageRecord(
+            session_id=session_id,
+            role="assistant",
+            content=final_message,
+            run_id=run_id,
+            is_final=True,
+        )
+        run_attachments.append_message_attachments(assistant_record, generated_attachments)
+        db.add(assistant_record)
+        db.flush()
+        run_attachments.link_uploads_to_message(
+            db,
+            attachments=generated_attachments,
+            message_id=assistant_record.id,
+        )
+
 
 def _log_run(
     level: int,
@@ -1191,12 +784,7 @@ def _log_run(
     exc_info: bool = False,
     **fields: Any,
 ) -> None:
-    payload: dict[str, Any] = {
-        "event": event,
-        "phase": phase,
-        "run_id": run_id,
-        "session_id": session_id,
-    }
+    payload = dict(event=event, phase=phase, run_id=run_id, session_id=session_id)
     if reason:
         payload["reason"] = reason
     if next_step:
@@ -1207,51 +795,9 @@ def _log_run(
     logger.log(level, "%s", format_log_message(summary, **payload), exc_info=exc_info)
 
 
-def _count_phrase(count: int, singular: str, plural: str | None = None) -> str:
-    noun = singular if count == 1 else (plural or f"{singular}s")
-    return f"{count} {noun}"
-
-
-def _runtime_config_log_summary(settings: Settings) -> tuple[str, dict[str, object]]:
-    fields = settings.runtime_model_logging_summary()
-    if fields["selected_model_name"]:
-        provider = fields.get("selected_model_provider") or "configured"
-        return (
-            f"resolved runtime config using {provider} model {fields['selected_model_name']}",
-            fields,
-        )
-    return "resolved runtime config without a configured model", fields
-
-
-def _phase_failure_hint(phase: str) -> str:
-    if phase == "resolving runtime config":
-        return "inspect backend model settings and custom API configuration"
-    if phase == "building agent":
-        return "inspect the DeepAgents builder and runtime dependencies"
-    if phase == "streaming":
-        return "inspect upstream runtime events, tool calls, and model responses"
-    if phase == "persisting final message":
-        return "inspect database writes and the final assistant message payload"
-    if phase == "persisting fallback response":
-        return "inspect fallback message persistence and recursion-limit handling"
-    if phase == "finalizing completion":
-        return "inspect completion event persistence and run state finalization"
-    return "inspect the previous stage log and structured metadata for the failing step"
-
-
-def _require_session(db: Session, session_id: str) -> SessionRecord:
-    session = db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
-    if session is None:
-        raise ValueError(f"Session {session_id!r} not found")
-    return session
-
-
 def _build_recursion_fallback(_prompt: str, _messages: list[dict[str, str]]) -> str:
-    return (
-        "我已经尝试使用可用工具处理这个问题，但执行过程没有在预期步数内收敛。"
-        "请换一个更具体的问法，或稍后重试。"
-    )
+    return "我已尝试处理这个问题，但执行过程没有在预期步数内收敛。请换个更具体的问法，或稍后重试。"
 
 
-def _elapsed_ms(started_at: float) -> int:
-    return int((time.perf_counter() - started_at) * 1000)
+def _run_inactive(state: RunState) -> bool:
+    return state.status == "cancelled" or state.completed

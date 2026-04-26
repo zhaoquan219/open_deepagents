@@ -5,10 +5,12 @@ from app.api.deps import AdminUserDep, DatabaseSessionDep, SettingsDep
 from app.core.session_scope import (
     assign_session_owner,
     get_session_for_user,
+    is_transcript_visible,
+    new_runtime_thread_id,
+    sync_session_title_from_history,
 )
 from app.db.models import SessionRecord
 from app.schemas.session import SessionCreate, SessionDetail, SessionRead, SessionUpdate
-from app.services.session_titles import sync_session_title_from_history
 
 router = APIRouter()
 
@@ -42,7 +44,7 @@ def create_session(
 ) -> SessionRecord:
     record = SessionRecord(
         title=payload.title,
-        runtime_thread_id=payload.runtime_thread_id,
+        runtime_thread_id=new_runtime_thread_id(),
         extra=payload.extra,
     )
     assign_session_owner(record, username, settings)
@@ -72,6 +74,7 @@ def get_session(
     if sync_session_title_from_history(db, record):
         db.commit()
         db.refresh(record)
+    record.messages = [message for message in record.messages if is_transcript_visible(message)]
     return record
 
 

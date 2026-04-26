@@ -12,6 +12,7 @@ from app.core.config import Settings
 from app.core.database import DatabaseState
 from app.db.models import MessageRecord, UploadRecord
 from app.storage import LocalStorage
+from deepagents_integration.run_hooks import RunInputHookContext, apply_run_input_hooks
 
 
 class InvalidRunAttachmentError(ValueError):
@@ -226,6 +227,77 @@ def state_backend_files(*, attachments: list[dict[str, Any]]) -> dict[str, dict[
                 "encoding": "base64",
             }
     return files
+
+
+def build_agent_input(
+    *,
+    settings: Settings,
+    records: list[MessageRecord],
+    session_id: str,
+    run_id: str,
+    prompt: str,
+    attachments: list[dict[str, Any]],
+    hooks: tuple[Any, ...] = (),
+) -> dict[str, Any]:
+    messages: list[dict[str, str]] = []
+    for record in records:
+        content = record.content or ""
+        if record.role == "user":
+            record_attachments = (
+                attachments if record.run_id == run_id else message_attachments(record=record)
+            )
+            content = apply_run_input_hooks(
+                context=RunInputHookContext(
+                    session_id=record.session_id,
+                    run_id=run_id,
+                    role=record.role,
+                    content=content,
+                    attachments=tuple(record_attachments),
+                    is_current_run=record.run_id == run_id,
+                ),
+                hooks=hooks,
+            )
+        if content.strip():
+            messages.append({"role": record.role, "content": content})
+
+    if not messages:
+        messages = [
+            {
+                "role": "user",
+                "content": apply_run_input_hooks(
+                    context=RunInputHookContext(
+                        session_id=session_id,
+                        run_id=run_id,
+                        role="user",
+                        content=prompt,
+                        attachments=tuple(attachments),
+                        is_current_run=True,
+                    ),
+                    hooks=hooks,
+                ),
+            }
+        ]
+
+    agent_input: dict[str, Any] = {"messages": messages}
+    if settings.deepagents_sandbox_kind == "state" and (
+        state_files := state_backend_files(attachments=attachments)
+    ):
+        agent_input["files"] = state_files
+    return agent_input
+
+
+def runtime_context(
+    *,
+    session_id: str,
+    run_id: str,
+    attachments: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "session_id": session_id,
+        "run_id": run_id,
+        "current_attachments": tuple(attachments),
+        "attachments": tuple(attachments),
+    }
 
 
 def generated_state_output_files(

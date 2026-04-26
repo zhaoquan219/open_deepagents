@@ -83,12 +83,17 @@ use bearer auth or an `access_token` query parameter.
 | --- | --- |
 | `DEEPAGENTS_MAIN_AGENT` | Import spec for the main agent. Default: `agents:AGENT`. |
 | `DEEPAGENTS_MODEL_CONFIG_PATH` | Model catalog path. Default: `./models.json`. |
-| `DEEPAGENTS_DEFAULT_MODEL` | Model ID selected from the catalog. |
 | `DEEPAGENTS_AGENT_NAME` | Name passed to `create_deep_agent`. |
 | `DEEPAGENTS_DEBUG` | Enables DeepAgents debug behavior. |
+| `DEEPAGENTS_DEFAULT_TIMEZONE` | Backend timezone for persisted timestamps and auth/session events. |
 | `DEEPAGENTS_RECURSION_LIMIT` | LangGraph recursion limit for runs. |
+| `DEEPAGENTS_STREAM_IDLE_TIMEOUT` | Seconds without runtime/model/tool events before a run is marked failed. Use `0` to disable. |
 
 Model providers and model-specific options belong in `models.json`.
+
+Every web session is mapped to an internal stable LangGraph thread id. The
+backend database remains a product ledger for sessions, messages, uploads, and
+replayable event views.
 
 ## Agent Package Loading
 
@@ -106,6 +111,10 @@ The backend loads `backend/agents:AGENT` by default. The mapping can define:
 - `memory`
 - `permissions`
 - `subagents`
+
+The recommended style is to keep the default example small: `id`,
+`system_prompt`, `tools`, built-in tool visibility, hooks, skills, memory, and
+explicit `subagents`. Add `model` or `permissions` only when they are needed.
 
 Subagents are resolved recursively and support the same runtime-facing controls.
 See [agents/README.md](agents/README.md).
@@ -132,6 +141,28 @@ Use permissions to decide what visible file tools may access:
 `write` covers `write_file` and `edit_file`.
 
 When permission specs are configured, unmatched read/write paths are denied.
+When no subagents are active, the backend automatically hides the built-in
+`task` tool.
+
+## Prompt Injections
+
+Prompt injections are backend-controlled runtime instructions. The feature still
+exists; the implementation now lives in `app/core/session_scope.py` as
+`PromptInjectionService`.
+
+Use it from backend code, middleware, or hooks:
+
+```python
+app.state.prompt_injections.inject_prompt(
+    session_id=session_id,
+    content="Use the uploaded file as the source of truth.",
+    visibility="hidden",
+    position="before_user",
+    source="backend.rule",
+)
+```
+
+The public message/run APIs intentionally reject hidden prompt injection fields.
 
 ## Sandbox Backends
 

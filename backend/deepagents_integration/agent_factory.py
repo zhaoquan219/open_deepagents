@@ -78,6 +78,7 @@ def _deepagents_subagents(
                 "interrupt_on",
                 "skills",
                 "permissions",
+                "subagents",
             }
         converted.append(
             cast(
@@ -89,31 +90,10 @@ def _deepagents_subagents(
 
 
 def _with_builtin_tool_selection_middleware(item: dict[str, Any]) -> dict[str, Any]:
-    middleware = [*item.get("middleware", ())]
     tool_selection = build_builtin_tool_selection_middleware(
-        allowlist=_optional_string_tuple(
-            item.get("builtin_tools") or item.get("builtin_tool_allowlist")
-        ),
-        blocklist=_string_tuple(
-            item.get("disabled_builtin_tools") or item.get("builtin_tool_blocklist")
-        ),
+        allowlist=item.get("builtin_tool_allowlist") or item.get("builtin_tools"),
+        blocklist=item.get("builtin_tool_blocklist") or item.get("disabled_builtin_tools"),
     )
-    if tool_selection is not None:
-        middleware.append(tool_selection)
-    return {**item, "middleware": middleware}
-
-
-def _string_tuple(value: Any) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if isinstance(value, str):
-        return tuple(item.strip() for item in value.split(",") if item.strip())
-    if not isinstance(value, list | tuple) or not all(isinstance(item, str) for item in value):
-        raise ValueError("Expected a string or list of strings")
-    return tuple(item.strip() for item in value if item.strip())
-
-
-def _optional_string_tuple(value: Any) -> tuple[str, ...] | None:
-    if value is None:
-        return None
-    return _string_tuple(value)
+    if tool_selection is None:
+        return item
+    return {**item, "middleware": [*item.get("middleware", ()), tool_selection]}

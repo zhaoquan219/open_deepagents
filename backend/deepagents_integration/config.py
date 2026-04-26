@@ -96,7 +96,6 @@ class DeepAgentsRuntimeConfig:
     permissions: tuple[Mapping[str, Any], ...] = ()
     subagents: tuple[Mapping[str, Any], ...] = ()
     model_id: str | None = None
-    subagent_profile_id: str | None = None
     runtime_selection: Mapping[str, Any] | None = None
     checkpointer: Any = None
     store: Any = None
@@ -109,12 +108,18 @@ class DeepAgentsRuntimeConfig:
         return {
             "agent_name": self.agent_name or "",
             "debug": self.debug,
+            "memory_paths": tuple(self.memory),
             "memory_count": len(self.memory),
             "middleware_count": len(self.middleware_specs),
             "middleware_object_count": len(self.middleware),
             "model_kind": model_kind,
             "model_id": self.model_id or "",
             "model_name": model_name,
+            "permission_paths": tuple(
+                str(path)
+                for rule in self.permissions
+                for path in tuple(rule.get("paths") or ())
+            ),
             "permission_count": len(self.permissions),
             "run_input_hook_object_count": len(self.run_input_hooks),
             "sandbox_backend_spec_configured": bool(self.sandbox.backend_spec),
@@ -122,15 +127,22 @@ class DeepAgentsRuntimeConfig:
             "sandbox_root_dir_configured": bool(self.sandbox.root_dir),
             "sandbox_timeout": self.sandbox.timeout,
             "sandbox_virtual_mode": self.sandbox.virtual_mode,
+            "skills": tuple(self.skills),
             "skill_count": len(self.skills),
             "skill_source_count": len(self.skill_sources),
+            "subagent_names": tuple(
+                str(item.get("name") or item.get("id") or "")
+                for item in self.subagents
+                if isinstance(item, Mapping)
+            ),
             "subagent_count": len(self.subagents),
-            "subagent_profile_id": self.subagent_profile_id or "",
+            "builtin_tool_allowlist": tuple(self.builtin_tool_allowlist or ()),
             "builtin_tool_allowlist_count": (
                 len(self.builtin_tool_allowlist)
                 if self.builtin_tool_allowlist is not None
                 else None
             ),
+            "builtin_tool_blocklist": tuple(self.builtin_tool_blocklist),
             "builtin_tool_blocklist_count": len(self.builtin_tool_blocklist),
             "checkpointer_configured": self.checkpointer is not None,
             "store_configured": self.store is not None,
@@ -162,7 +174,6 @@ class DeepAgentsRuntimeConfig:
             permissions=_mapping_tuple(raw.get("permissions")),
             subagents=_mapping_tuple(raw.get("subagents")),
             model_id=_optional_str(raw.get("model_id")),
-            subagent_profile_id=_optional_str(raw.get("subagent_profile_id")),
             runtime_selection=raw.get("runtime_selection"),
             checkpointer=raw.get("checkpointer"),
             store=raw.get("store"),

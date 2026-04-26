@@ -47,8 +47,14 @@ class DummyBackend(BackendProtocol):
 class AsyncEventRuntime:
     def __init__(self, events):
         self._events = events
+        self.inputs = []
+        self.configs = []
+        self.contexts = []
 
-    async def astream_events(self, agent_input, *, version="v2", config=None):
+    async def astream_events(self, agent_input, *, version="v2", config=None, context=None):
+        self.inputs.append(agent_input)
+        self.configs.append(config)
+        self.contexts.append(context)
         for event in self._events:
             await asyncio.sleep(0)
             yield event
@@ -256,6 +262,38 @@ class DeepAgentsConfigTests(unittest.TestCase):
                 ],
             )
 
+    def test_route_skill_sources_materializes_selected_skill_folders(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_root = Path(tmpdir) / "skills"
+            (skill_root / "alpha").mkdir(parents=True)
+            (skill_root / "beta").mkdir(parents=True)
+            (skill_root / "alpha" / "SKILL.md").write_text(
+                "---\nname: alpha\ndescription: Alpha\n---\n",
+                encoding="utf-8",
+            )
+            (skill_root / "beta" / "SKILL.md").write_text(
+                "---\nname: beta\ndescription: Beta\n---\n",
+                encoding="utf-8",
+            )
+
+            backend, active_sources = route_skill_sources(
+                StateBackend(),
+                (
+                    SkillSourceConfig(
+                        source_path="/skills/",
+                        disk_path=str(skill_root),
+                        include=("beta",),
+                    ),
+                ),
+            )
+
+            self.assertIsInstance(backend, CompositeBackend)
+            self.assertEqual(active_sources, ("/skills/",))
+            self.assertEqual(
+                [item["name"] for item in _list_skills(backend, "/skills/")],
+                ["beta"],
+            )
+
     def test_backend_resolution_supports_builtin_and_custom_backends(self):
         self.assertIsInstance(resolve_backend(SandboxConfig(kind="state")), StateBackend)
         self.assertIsInstance(
@@ -340,6 +378,8 @@ class DeepAgentsConfigTests(unittest.TestCase):
             self.assertEqual(kwargs["permissions"][0].operations, ["read", "write"])
             self.assertIsInstance(kwargs["backend"], FilesystemBackend)
             self.assertIs(kwargs["context_schema"], DeepAgentsRunContext)
+            self.assertIn("session_id", DeepAgentsRunContext.__annotations__)
+            self.assertIn("attachments", DeepAgentsRunContext.__annotations__)
 
     def test_build_deep_agent_wires_native_lifecycle_hooks(self):
         checkpointer = object()
@@ -430,6 +470,34 @@ class DeepAgentsConfigTests(unittest.TestCase):
             )
         )
 
+    def test_build_deep_agent_preserves_nested_subagents(self):
+        config = DeepAgentsRuntimeConfig.from_mapping(
+            {
+                "model": "openai:gpt-5.4",
+                "subagents": [
+                    {
+                        "name": "reviewer",
+                        "description": "reviewer",
+                        "system_prompt": "reviewer",
+                        "subagents": [
+                            {
+                                "name": "researcher",
+                                "description": "researcher",
+                                "system_prompt": "researcher",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+        with patch("deepagents_integration.agent_factory.create_deep_agent") as mocked_create:
+            mocked_create.return_value = object()
+            build_deep_agent(config)
+
+        _, kwargs = mocked_create.call_args
+        self.assertEqual(kwargs["subagents"][0]["subagents"][0]["name"], "researcher")
+
     def test_build_permissions_makes_configured_rules_restrictive(self):
         rules = build_permissions(
             (
@@ -480,6 +548,37 @@ class DeepAgentsConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(content, "Read the file")
+
+
+class DeepAgentsSseBridgeContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_sse_envelopes_forwards_config_and_context_to_runtime(self):
+        runtime = AsyncEventRuntime(
+            [
+                {
+                    "event": "on_chain_end",
+                    "name": "deep-agent",
+                    "run_id": "runtime-1",
+                    "data": {"output": {"messages": [{"content": "done"}]}},
+                }
+            ]
+        )
+        config = {"configurable": {"thread_id": "thread-1"}, "recursion_limit": 12}
+        context = {"session_id": "session-1"}
+
+        envelopes = [
+            envelope
+            async for envelope in stream_sse_envelopes(
+                runtime,
+                {"messages": []},
+                bridge_run_id="app-run-1",
+                config=config,
+                context=context,
+            )
+        ]
+
+        self.assertEqual(runtime.configs, [config])
+        self.assertEqual(runtime.contexts, [context])
+        self.assertEqual(envelopes[-1].event, "run.completed")
 
 
 class DeepAgentsSseBridgeTests(unittest.IsolatedAsyncioTestCase):

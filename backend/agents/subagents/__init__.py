@@ -1,7 +1,3 @@
-SUBAGENT_SETS = {
-    "default": ["code_reviewer"],
-    "all": "*",
-}
-SUBAGENTS = SUBAGENT_SETS["default"]
+SUBAGENTS = ["code_reviewer"]
 
-__all__ = ["SUBAGENTS", "SUBAGENT_SETS"]
+__all__ = ["SUBAGENTS"]

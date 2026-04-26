@@ -5,7 +5,6 @@ from pathlib import Path
 from agents.subagents.code_reviewer.memory import MEMORY
 from agents.subagents.code_reviewer.middleware import MIDDLEWARE
 from agents.subagents.code_reviewer.skills import SKILLS
-from agents.subagents.code_reviewer.subagents import SUBAGENTS
 from agents.subagents.code_reviewer.tools import TOOLS
 
 ROOT = Path(__file__).parent
@@ -24,7 +23,6 @@ SUBAGENT = {
     "label": "Code reviewer",
     "description": "Review implementation changes for defects, regressions, and missing tests.",
     "system_prompt": ROOT / "prompts" / "system.md",
-    "model": None,
     "workspace": "/workspace/reviews",
     "tools": TOOLS,
     "builtin_tools": READ_ONLY_BUILTIN_TOOLS,
@@ -32,7 +30,6 @@ SUBAGENT = {
     "middleware": MIDDLEWARE,
     "skills": SKILLS,
     "memory": MEMORY,
-    "subagents": SUBAGENTS,
     "permissions": [
         {"operations": ["read"], "paths": ["/workspace/reviews", "/workspace/shared"]},
     ],

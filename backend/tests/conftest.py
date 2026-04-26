@@ -25,7 +25,6 @@ def client(tmp_path) -> Iterator[TestClient]:
 @pytest.fixture(autouse=True)
 def test_model_catalog(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("DEEPAGENTS_MODEL_CONFIG_PATH", "./models.example.json")
-    monkeypatch.setenv("DEEPAGENTS_DEFAULT_MODEL", "openai/gpt-5-4")
     original_env_file = Settings.model_config.get("env_file")
     Settings.model_config["env_file"] = None
     yield

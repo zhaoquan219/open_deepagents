@@ -221,11 +221,44 @@ def test_subagent_package_preserves_builtin_tool_selection(tmp_path, monkeypatch
     )
 
     reviewer = resolution.subagents[0]
-    assert reviewer["builtin_tools"] == ("ls", "read_file")
-    assert reviewer["disabled_builtin_tools"] == ("write_file", "edit_file")
+    assert [type(item).__name__ for item in reviewer["middleware"]] == [
+        "BuiltinToolSelectionMiddleware"
+    ]
     assert reviewer["permissions"] == (
         {"operations": ["read"], "paths": ["/workspace/reviews"]},
     )
+
+
+def test_backend_runtime_resolution_uses_explicit_subagent_list(tmp_path, monkeypatch) -> None:
+    package = tmp_path / "demo_profile_agent"
+    prompts = package / "prompts"
+    reviewer = package / "subagents" / "reviewer"
+    prompts.mkdir(parents=True)
+    reviewer.mkdir(parents=True)
+    (prompts / "system.md").write_text("main", encoding="utf-8")
+    (package / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        "ROOT = Path(__file__).parent\n"
+        "AGENT = {\n"
+        "  'id': 'main', 'system_prompt': ROOT / 'prompts' / 'system.md',\n"
+        "  'subagents': ['reviewer'],\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (reviewer / "__init__.py").write_text(
+        "SUBAGENT = {'id': 'reviewer', 'name': 'reviewer', 'description': 'reviewer', "
+        "'system_prompt': 'reviewer'}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    resolution = resolve_runtime(
+        agent_spec="demo_profile_agent:AGENT",
+        model_catalog=None,
+        default_model_id="openai:gpt-5.4",
+    )
+
+    assert [item["name"] for item in resolution.subagents] == ["reviewer"]
 
 
 def test_runtime_resolution_rejects_agent_level_sandbox(tmp_path, monkeypatch) -> None:

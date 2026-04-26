@@ -27,7 +27,6 @@ SUBAGENT = {
     "label": "Code reviewer",
     "description": "Review implementation changes for defects, regressions, and missing tests.",
     "system_prompt": ROOT / "prompts" / "system.md",
-    "model": None,
     "workspace": "/workspace/reviews",
     "tools": TOOLS,
     "builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
@@ -38,17 +37,17 @@ SUBAGENT = {
     "permissions": [
         {"operations": ["read"], "paths": ["/workspace/reviews", "/workspace/shared"]},
     ],
-    "subagents": SUBAGENTS,
 }
 ```
 
 ## Behavior
 
-- The subagent uses the default selected model unless `model` is set.
+- The subagent uses the default selected model unless `model` is added explicitly.
 - The system prompt tells it to lead with concrete findings.
 - Built-in write and shell tools are hidden.
 - File permissions allow read access only to review and shared workspace paths.
 - Local skills and memory provide review checklists and durable review guidance.
+- Add `workspace` only when the label helps the UI or authoring flow; it is metadata, not a boundary.
 
 ## Customizing
 

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 import jwt
 from fastapi import HTTPException, status
@@ -16,7 +16,7 @@ def verify_admin_credentials(settings: Settings, username: str, password: str) -
 
 
 def create_access_token(settings: Settings, subject: str) -> str:
-    expires_at = datetime.now(UTC) + timedelta(minutes=settings.admin_token_expire_minutes)
+    expires_at = settings.current_time() + timedelta(minutes=settings.admin_token_expire_minutes)
     payload = {"sub": subject, "exp": expires_at}
     return jwt.encode(payload, settings.admin_token_secret, algorithm=ALGORITHM)
 

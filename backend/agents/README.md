@@ -32,7 +32,7 @@ subagents/<name>/
 └── subagents/__init__.py
 ```
 
-## Main Agent Shape
+## Smallest Useful Main Agent
 
 ```python
 from pathlib import Path
@@ -57,9 +57,7 @@ READ_ONLY_BUILTIN_TOOLS = (
 
 AGENT = {
     "id": "main",
-    "name": "deepagents-web",
     "system_prompt": ROOT / "prompts" / "system.md",
-    "model": None,
     "workspace": "/workspace/main",
     "tools": TOOLS,
     "builtin_tools": READ_ONLY_BUILTIN_TOOLS,
@@ -72,8 +70,39 @@ AGENT = {
 }
 ```
 
-`model=None` means “use the selected default model”. You can set `model` to a
-model ID from the catalog or a model object.
+这是推荐起点。先只保留你真的会改的字段，再按需加可选项。
+
+## Optional Agent Fields
+
+这些字段仍然支持，但现在建议按需加，不要默认全堆在示例里：
+
+```python
+AGENT = {
+    "id": "main",
+    "system_prompt": ROOT / "prompts" / "system.md",
+    "tools": TOOLS,
+    "builtin_tools": ("ls", "read_file", "glob", "grep", "task"),
+    "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
+    "hooks": {"run_input": RUN_INPUT_HOOKS, "upload": UPLOAD_HOOKS},
+    "skills": ["skill-creator"],
+    "memory": ["project"],
+    "subagents": ["code_reviewer"],
+    # Optional:
+    "model": "openai/gpt-5-4",
+    "workspace": "/workspace/main",
+    "permissions": [
+        {"operations": ["read"], "paths": ["/workspace/main"]},
+    ],
+    "permissions": [
+        {"operations": ["read"], "paths": ["/workspace/main"]},
+    ],
+}
+```
+
+- `model` 不写时，使用当前默认模型。
+- `workspace` 只是给 UI/日志/作者看的描述字段，不是权限边界。
+- `permissions` 才是文件读写边界。
+- `skills` / `memory` / `subagents` 直接写列表，默认最容易看懂。
 
 ## Subagent Shape
 
@@ -84,7 +113,6 @@ SUBAGENT = {
     "label": "Code reviewer",
     "description": "Review implementation changes for defects.",
     "system_prompt": ROOT / "prompts" / "system.md",
-    "model": None,
     "workspace": "/workspace/reviews",
     "tools": TOOLS,
     "builtin_tools": READ_ONLY_BUILTIN_TOOLS,
@@ -95,18 +123,28 @@ SUBAGENT = {
     "permissions": [
         {"operations": ["read"], "paths": ["/workspace/reviews", "/workspace/shared"]},
     ],
-    "subagents": SUBAGENTS,
 }
 ```
 
 Subagents are resolved recursively. Nested subagents can define their own prompt,
 model, tools, built-in tool filter, permissions, skills, memory, middleware, and
 children.
+`workspace` is descriptive metadata for UI/logging and agent authoring. It does
+not narrow filesystem or tool access by itself; use sandbox backend selection and
+`permissions` for enforcement.
 
 ## Selection Patterns
 
 Selection files such as `skills/__init__.py`, `memory/__init__.py`, and
 `subagents/__init__.py` can export one item, a list, named presets, or `"*"`.
+
+For the default scaffold, keep them simple:
+
+```python
+SKILLS = ["skill-creator"]
+MEMORY = ["project"]
+SUBAGENTS = ["code_reviewer"]
+```
 
 Select everything in a directory:
 
@@ -159,7 +197,11 @@ through by the built-in tool filter.
 ## Built-in Tool Visibility
 
 Use `builtin_tools` to expose only the DeepAgents built-ins you want the model to
-see. Use `disabled_builtin_tools` to hide specific built-ins.
+see. Use `disabled_builtin_tools` to hide specific built-ins. If a built-in
+appears in both lists, `disabled_builtin_tools` wins.
+
+When no subagents are active, the backend automatically hides the built-in
+`task` tool even if it appears in `builtin_tools`.
 
 ```python
 "builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
@@ -210,6 +252,43 @@ store on the upload record.
 
 Default hook examples live in `hooks/attachment_hooks.py`.
 
+## Prompt Injections
+
+Prompt injections are still supported. The implementation moved to
+`app.core.session_scope.PromptInjectionService`; it was not removed.
+
+They are backend-controlled runtime instructions and are intentionally not
+accepted through the public message or run payloads.
+
+Programmatic use:
+
+```python
+app.state.prompt_injections.inject_prompt(
+    session_id=session_id,
+    content="Always verify the attachment before answering.",
+    visibility="hidden",   # hidden or visible
+    position="before_user",  # before_system / after_system / before_user / after_user
+    source="backend.rule",
+)
+```
+
+Scoped to one run only:
+
+```python
+app.state.prompt_injections.inject_prompt(
+    session_id=session_id,
+    run_id=run_id,
+    content="Use the uploaded CSV as the source of truth.",
+    position="after_user",
+)
+```
+
+Behavior:
+
+- hidden injections affect runtime input but do not appear in the default transcript
+- visible injections still persist as injection records, but the public transcript stays clean
+- run-scoped injections apply only to the target run
+
 ## Skills and Memory
 
 Skills are exposed through DeepAgents skill paths. Memory files are Markdown
@@ -222,5 +301,5 @@ facts, policies, terminology, and reviewer context.
 
 Sandbox backend selection is global and configured through `backend/.env`.
 Agents and subagents do not define their own sandbox backend. They can define
-`workspace`, built-in tool visibility, and permissions to shape what each agent
-can see and do inside the global backend.
+`workspace` as metadata, built-in tool visibility to shape model-visible tools,
+and permissions to enforce file access inside the global backend.

@@ -16,11 +16,13 @@ def test_session_message_and_upload_crud(client: TestClient, auth_headers: dict[
     create_session = client.post("/api/sessions", headers=auth_headers, json={"title": "Demo"})
     assert create_session.status_code == 201
     session_id = create_session.json()["id"]
+    assert "runtime_thread_id" not in create_session.json()
 
     with client.app.state.database.session_factory() as db:
         created_session = db.query(SessionRecord).filter(SessionRecord.id == session_id).first()
         assert created_session is not None
         assert created_session.owner_username == "admin"
+        assert str(created_session.runtime_thread_id or "").startswith("thread-")
 
     list_sessions = client.get("/api/sessions", headers=auth_headers)
     assert list_sessions.status_code == 200
@@ -92,6 +94,59 @@ def test_session_message_and_upload_crud(client: TestClient, auth_headers: dict[
     final_sessions = client.get("/api/sessions", headers=auth_headers)
     assert final_sessions.status_code == 200
     assert final_sessions.json() == []
+
+
+def test_message_api_rejects_prompt_injection_metadata(
+    client: TestClient,
+    auth_headers: dict[str, str],
+) -> None:
+    create_session = client.post(
+        "/api/sessions",
+        headers=auth_headers,
+        json={"title": "Prompt injection"},
+    )
+    assert create_session.status_code == 201
+    session_id = create_session.json()["id"]
+
+    create_injection = client.post(
+        f"/api/sessions/{session_id}/messages",
+        headers=auth_headers,
+        json={
+            "role": "system",
+            "content": "只在当前用户前注入",
+            "message_type": "prompt_injection",
+            "visibility": "hidden",
+            "source": "api.test",
+            "injection_position": "before_user",
+        },
+    )
+    assert create_injection.status_code == 422
+
+    list_messages = client.get(f"/api/sessions/{session_id}/messages", headers=auth_headers)
+    assert list_messages.status_code == 200
+    assert list_messages.json() == []
+
+
+def test_session_api_rejects_runtime_thread_id(
+    client: TestClient,
+    auth_headers: dict[str, str],
+) -> None:
+    create_response = client.post(
+        "/api/sessions",
+        headers=auth_headers,
+        json={"title": "Threaded", "runtime_thread_id": "custom-thread"},
+    )
+    assert create_response.status_code == 422
+
+    session = client.post("/api/sessions", headers=auth_headers, json={"title": "Threaded"})
+    session_id = session.json()["id"]
+
+    patch_response = client.patch(
+        f"/api/sessions/{session_id}",
+        headers=auth_headers,
+        json={"runtime_thread_id": "patched-thread"},
+    )
+    assert patch_response.status_code == 422
 
 
 def test_list_sessions_backfills_placeholder_title_from_first_user_message(

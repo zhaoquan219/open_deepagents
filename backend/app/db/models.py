@@ -1,17 +1,18 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.core.config import runtime_now
 from app.db.base import Base
 
 
-def utc_now() -> datetime:
-    return datetime.now(UTC)
+def app_now() -> datetime:
+    return runtime_now()
 
 
 def new_id() -> str:
@@ -28,11 +29,11 @@ class SessionRecord(Base):
     last_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     owner_username: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=app_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=utc_now,
-        onupdate=utc_now,
+        default=app_now,
+        onupdate=app_now,
     )
 
     messages: Mapped[list[MessageRecord]] = relationship(
@@ -70,12 +71,16 @@ class MessageRecord(Base):
     is_final: Mapped[bool] = mapped_column(Boolean, default=True)
     run_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     step_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    message_type: Mapped[str] = mapped_column(String(32), default="message", index=True)
+    visibility: Mapped[str] = mapped_column(String(16), default="visible")
+    source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    injection_position: Mapped[str | None] = mapped_column(String(32), nullable=True)
     extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=app_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=utc_now,
-        onupdate=utc_now,
+        default=app_now,
+        onupdate=app_now,
     )
 
     session: Mapped[SessionRecord] = relationship(back_populates="messages")
@@ -101,7 +106,7 @@ class UploadRecord(Base):
     storage_key: Mapped[str] = mapped_column(String(512), unique=True)
     sha256: Mapped[str] = mapped_column(String(64))
     extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=app_now)
 
     session: Mapped[SessionRecord] = relationship(back_populates="uploads")
     message: Mapped[MessageRecord | None] = relationship(back_populates="uploads")
@@ -113,11 +118,11 @@ class AdminUserRecord(Base):
     username: Mapped[str] = mapped_column(String(255), primary_key=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=app_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=utc_now,
-        onupdate=utc_now,
+        default=app_now,
+        onupdate=app_now,
     )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -136,11 +141,11 @@ class AgentRunRecord(Base):
     final_output_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     event_count: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=app_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=utc_now,
-        onupdate=utc_now,
+        default=app_now,
+        onupdate=app_now,
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -171,7 +176,7 @@ class RunEventViewRecord(Base):
     message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     step_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=app_now)
 
     run: Mapped[AgentRunRecord] = relationship(back_populates="events")
 
@@ -186,12 +191,12 @@ class SessionRuntimeLinkRecord(Base):
     )
     runtime_thread_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     runtime_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=app_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=app_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=utc_now,
-        onupdate=utc_now,
+        default=app_now,
+        onupdate=app_now,
     )
     extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 

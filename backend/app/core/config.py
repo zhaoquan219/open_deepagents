@@ -1,17 +1,23 @@
 import json
 from collections.abc import Mapping
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path, PurePath
 from typing import Any, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from langchain_openai import ChatOpenAI
+from langgraph.cache.memory import InMemoryCache
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.store.memory import InMemoryStore
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import DotEnvSettingsSource, EnvSettingsSource
 
 from app.core.model_catalog import load_model_catalog
 from app.core.runtime_catalog import RuntimeSelection, resolve_runtime, runtime_options
-from deepagents_integration import DeepAgentsRuntimeConfig, SandboxConfig, SkillSourceConfig
+from deepagents_integration import DeepAgentsRuntimeConfig, SandboxConfig
+from deepagents_integration.extensions import load_object_from_spec
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ENV_PATH = BACKEND_ROOT / ".env"
@@ -23,6 +29,7 @@ DEFAULT_SANDBOX_READ_PATHS = (
     (BACKEND_ROOT / "agents" / "memory").resolve(),
 )
 DEFAULT_SANDBOX_ROOT = (BACKEND_ROOT / "data").resolve()
+_RUNTIME_TIMEZONE: ZoneInfo | None = None
 
 
 class _LenientComplexEmptyMixin:
@@ -60,14 +67,15 @@ class Settings(BaseSettings):
     cors_allowed_origins: str | None = "http://127.0.0.1:5173,http://localhost:5173"
     upload_storage_dir: Path = Field(default=Path("./data/uploads"))
     max_upload_size_bytes: int = 10 * 1024 * 1024
-    deepagents_default_model: str | None = "openai/gpt-5-4"
     deepagents_model_config_path: str | None = "./models.json"
     deepagents_main_agent: str = "agents:AGENT"
     deepagents_agent_name: str = "deepagents-web"
     deepagents_debug: bool = False
+    deepagents_default_timezone: str = "Asia/Shanghai"
     deepagents_builtin_tools: str | None = None
     deepagents_disabled_builtin_tools: str | None = None
     deepagents_recursion_limit: int = 500
+    deepagents_stream_idle_timeout: float = 180
     deepagents_sandbox_kind: str = "state"
     deepagents_sandbox_root_dir: str | None = None
     deepagents_sandbox_virtual_mode: bool | None = None
@@ -80,12 +88,12 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         enable_decoding=False,
+        populate_by_name=True,
     )
 
     @field_validator(
         "database_url",
         "admin_email",
-        "deepagents_default_model",
         "deepagents_model_config_path",
         "deepagents_main_agent",
         "deepagents_sandbox_root_dir",
@@ -103,6 +111,15 @@ class Settings(BaseSettings):
     def optional_bool_from_env(cls, value: object) -> object:
         if value in ("", None):
             return None
+        return value
+
+    @field_validator("deepagents_default_timezone", mode="after")
+    @classmethod
+    def validate_default_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Unknown timezone: {value}") from exc
         return value
 
     @field_validator("admin_users", mode="before")
@@ -205,9 +222,7 @@ class Settings(BaseSettings):
     ) -> DeepAgentsRuntimeConfig:
         model_catalog = self.load_model_catalog_for_runtime(selection)
         runtime_resolution = self.resolve_runtime(selection=selection, model_catalog=model_catalog)
-        resolved_skill_sources = self.deepagents_skill_sources()
         agent_skill_sources = tuple(runtime_resolution.agent.get("skill_sources") or ())
-        all_skill_sources = (*resolved_skill_sources, *agent_skill_sources)
         agent_tools = tuple(runtime_resolution.agent.get("tools") or ())
         agent_middleware = tuple(runtime_resolution.agent.get("middleware") or ())
         hooks = runtime_resolution.agent.get("hooks")
@@ -221,15 +236,15 @@ class Settings(BaseSettings):
         )
         sandbox_root_dir = self.resolved_sandbox_root_dir()
         agent_builtin_allowlist = _optional_string_tuple(
-            runtime_resolution.agent.get("builtin_tools")
-            or runtime_resolution.agent.get("builtin_tool_allowlist")
+            runtime_resolution.agent.get("builtin_tool_allowlist")
         )
         env_builtin_allowlist = self._optional_csv(self.deepagents_builtin_tools)
         agent_builtin_blocklist = _string_tuple(
-            runtime_resolution.agent.get("disabled_builtin_tools")
-            or runtime_resolution.agent.get("builtin_tool_blocklist")
+            runtime_resolution.agent.get("builtin_tool_blocklist")
         )
         env_builtin_blocklist = self._split_csv(self.deepagents_disabled_builtin_tools)
+        if not runtime_resolution.subagents:
+            agent_builtin_blocklist = _dedupe_tuple((*agent_builtin_blocklist, "task"))
         agent_permissions = _mapping_tuple(runtime_resolution.agent.get("permissions"))
         return DeepAgentsRuntimeConfig(
             model=selected_model,
@@ -248,18 +263,17 @@ class Settings(BaseSettings):
             builtin_tool_blocklist=_dedupe_tuple(
                 (*agent_builtin_blocklist, *env_builtin_blocklist)
             ),
-            skills=tuple(source.source_path for source in all_skill_sources),
-            skill_sources=all_skill_sources,
+            skills=tuple(source.source_path for source in agent_skill_sources),
+            skill_sources=agent_skill_sources,
             memory=agent_memory,
             permissions=(*self.default_permissions(), *agent_permissions),
             subagents=runtime_resolution.subagents,
             model_id=runtime_resolution.model_id,
-            subagent_profile_id=runtime_resolution.profile_id,
-            runtime_selection=runtime_resolution.safe_selection,
-            checkpointer=runtime_resolution.agent.get("checkpointer"),
-            store=runtime_resolution.agent.get("store"),
+            runtime_selection={"model_id": runtime_resolution.model_id or ""},
+            checkpointer=self.resolve_agent_runtime_value(runtime_resolution.agent, "checkpointer"),
+            store=self.resolve_agent_runtime_value(runtime_resolution.agent, "store"),
             interrupt_on=_mapping_or_none(runtime_resolution.agent.get("interrupt_on")),
-            cache=runtime_resolution.agent.get("cache"),
+            cache=self.resolve_agent_runtime_value(runtime_resolution.agent, "cache"),
             sandbox=SandboxConfig(
                 kind=self.deepagents_sandbox_kind,  # type: ignore[arg-type]
                 root_dir=sandbox_root_dir,
@@ -329,16 +343,15 @@ class Settings(BaseSettings):
         return resolve_runtime(
             agent_spec=self.deepagents_main_agent,
             model_catalog=model_catalog,
-            default_model_id=self.deepagents_default_model,
+            default_model_id=None,
             selection=selection,
         )
 
     def runtime_options(self) -> dict[str, Any]:
         model_catalog = self.load_model_catalog_for_runtime()
         options = runtime_options(
-            agent_spec=self.deepagents_main_agent,
             model_catalog=model_catalog,
-            default_model_id=self.deepagents_default_model,
+            default_model_id=model_catalog.default_model_id if model_catalog is not None else None,
         )
         return options
 
@@ -351,17 +364,27 @@ class Settings(BaseSettings):
         if model_catalog is not None:
             return cast(
                 ChatOpenAI,
-                model_catalog.resolve(model_id or self.deepagents_default_model),
+                model_catalog.resolve(model_id),
             )
         return None
 
-    def deepagents_skill_sources(
+    def resolve_agent_runtime_value(
         self,
-        *,
-        base_dir: Path = BACKEND_ROOT,
-    ) -> tuple[SkillSourceConfig, ...]:
-        sources: list[SkillSourceConfig] = []
-        return tuple(sources)
+        agent: Mapping[str, Any],
+        key: str,
+    ) -> Any:
+        if key in agent:
+            agent_value = agent.get(key)
+            if isinstance(agent_value, str):
+                return resolve_native_runtime_value(key=key, value=agent_value)
+            return agent_value
+        return None
+
+    def runtime_timezone(self) -> ZoneInfo:
+        return ZoneInfo(self.deepagents_default_timezone)
+
+    def current_time(self) -> datetime:
+        return datetime.now(self.runtime_timezone())
 
     def get_cors_origins(self) -> list[str]:
         return list(self._split_csv(self.cors_allowed_origins))
@@ -374,7 +397,9 @@ class Settings(BaseSettings):
                 "sqlite" if self.is_sqlite else "mysql" if self.is_mysql else "other"
             ),
             "deepagents_agent_name": self.deepagents_agent_name,
-            "deepagents_model_configured": bool(self.deepagents_default_model),
+            "deepagents_model_configured": bool(self.load_model_catalog() is not None),
+            "deepagents_stream_idle_timeout": self.deepagents_stream_idle_timeout,
+            "deepagents_default_timezone": self.deepagents_default_timezone,
             "admin_auth_enabled": self.admin_auth_enabled,
             "sandbox_kind": self.deepagents_sandbox_kind,
             "sandbox_root_dir_configured": bool(self.deepagents_sandbox_root_dir),
@@ -383,8 +408,10 @@ class Settings(BaseSettings):
         }
 
     def runtime_model_logging_summary(self) -> dict[str, object]:
-        model_source = "model_catalog" if self.load_model_catalog() is not None else "unset"
-        model_provider, model_name = describe_model_reference(self.deepagents_default_model)
+        model_catalog = self.load_model_catalog()
+        model_source = "model_catalog" if model_catalog is not None else "unset"
+        default_model_id = model_catalog.default_model_id if model_catalog is not None else None
+        model_provider, model_name = describe_model_reference(default_model_id)
 
         return {
             "selected_model_source": model_source,
@@ -403,11 +430,6 @@ class Settings(BaseSettings):
         if value is None:
             return None
         return Settings._split_csv(value)
-
-
-@lru_cache(maxsize=1)
-def get_settings() -> Settings:
-    return Settings()
 
 
 def normalize_sandbox_permission_path(path: str | Path | PurePath) -> str:
@@ -503,3 +525,38 @@ def describe_model_reference(model: str | None) -> tuple[str, str]:
     if separator:
         return provider or "string", name
     return "string", model
+
+
+def set_runtime_timezone(value: str) -> None:
+    global _RUNTIME_TIMEZONE
+    _RUNTIME_TIMEZONE = ZoneInfo(value)
+
+
+def active_runtime_timezone() -> ZoneInfo:
+    return _RUNTIME_TIMEZONE or get_settings().runtime_timezone()
+
+
+def runtime_now() -> datetime:
+    return datetime.now(active_runtime_timezone())
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()
+
+
+def resolve_native_runtime_value(*, key: str, value: str | None) -> Any:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized or normalized.lower() == "none":
+        return None
+    if normalized.lower() == "memory":
+        if key == "checkpointer":
+            return InMemorySaver()
+        if key == "store":
+            return InMemoryStore()
+        if key == "cache":
+            return InMemoryCache()
+    spec = normalized.removeprefix("custom:")
+    return load_object_from_spec(spec)

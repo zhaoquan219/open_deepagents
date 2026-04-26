@@ -14,10 +14,14 @@ from app.core.config import (
 from deepagents_integration.extensions import build_permissions, resolve_backend
 
 
+def _default_model_id() -> str:
+    catalog = Settings().load_model_catalog()
+    assert catalog is not None
+    return str(catalog.default_model_id)
+
+
 def test_runtime_config_loads_system_prompt_from_project_file() -> None:
-    settings = Settings(
-        deepagents_default_model="openai/gpt-5-4",
-    )
+    settings = Settings()
 
     runtime_config = settings.to_runtime_config()
 
@@ -27,9 +31,7 @@ def test_runtime_config_loads_system_prompt_from_project_file() -> None:
 
 
 def test_runtime_config_uses_default_read_only_permissions_for_data_and_skills() -> None:
-    settings = Settings(
-        deepagents_default_model="openai/gpt-5-4",
-    )
+    settings = Settings()
 
     runtime_config = settings.to_runtime_config()
 
@@ -58,7 +60,7 @@ def test_runtime_config_logging_summary_is_safe_and_concise() -> None:
 
     summary = settings.to_runtime_config().logging_summary()
 
-    assert summary["model_id"] == "openai/gpt-5-4"
+    assert summary["model_id"] == _default_model_id()
     assert summary["tool_object_count"] >= 1
     assert summary["middleware_object_count"] >= 1
     assert summary["skill_count"] >= 1
@@ -68,21 +70,33 @@ def test_runtime_config_logging_summary_is_safe_and_concise() -> None:
 
 
 def test_runtime_config_loads_agent_skill_sources_for_deepagents() -> None:
-    settings = Settings(
-        deepagents_default_model="openai/gpt-5-4",
-    )
+    settings = Settings()
 
     runtime_config = settings.to_runtime_config()
 
     assert runtime_config.skills
     assert runtime_config.skill_sources
-    assert all(source.source_path.startswith("/skills/") for source in runtime_config.skill_sources)
+    bundled = runtime_config.skill_sources[0]
+    assert bundled.source_path == "/skills/"
+    assert bundled.disk_path == str((BACKEND_ROOT / "agents" / "skills").resolve())
+    assert bundled.include == ("skill-creator",)
+
+
+def test_runtime_config_exposes_default_subagent_and_logging_details() -> None:
+    settings = Settings()
+
+    runtime_config = settings.to_runtime_config()
+    summary = runtime_config.logging_summary()
+
+    assert summary["skills"] == ("/skills/",)
+    assert summary["subagent_names"] == ("code-reviewer",)
+    assert "task" in summary["builtin_tool_allowlist"]
+    assert "execute" in summary["builtin_tool_blocklist"]
+    assert runtime_config.subagents[0]["name"] == "code-reviewer"
 
 
 def test_runtime_config_resolves_agent_run_and_upload_hooks() -> None:
-    settings = Settings(
-        deepagents_default_model="openai/gpt-5-4",
-    )
+    settings = Settings()
 
     runtime_config = settings.to_runtime_config()
 
@@ -90,6 +104,47 @@ def test_runtime_config_resolves_agent_run_and_upload_hooks() -> None:
     assert runtime_config.upload_hooks
     assert callable(runtime_config.run_input_hooks[0])
     assert callable(runtime_config.upload_hooks[0])
+
+
+def test_runtime_config_skips_bad_subagent_model_when_agent_has_no_subagents(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    package = tmp_path / "profile_agent"
+    (package / "system.md").write_text("main", encoding="utf-8")
+    (package / "__init__.py").write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "ROOT = Path(__file__).parent",
+                "AGENT = {",
+                "    'id': 'main',",
+                "    'system_prompt': ROOT / 'system.md',",
+                "    'subagents': [],",
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    settings = Settings(
+        deepagents_main_agent="profile_agent:AGENT",
+    )
+
+    runtime_config = settings.to_runtime_config()
+
+    assert runtime_config.subagents == ()
+
+
+def test_default_timezone_is_validated_and_configured() -> None:
+    settings = Settings(deepagents_default_timezone="Asia/Shanghai")
+
+    assert settings.runtime_timezone().key == "Asia/Shanghai"
+
+    with pytest.raises(ValueError, match="Unknown timezone"):
+        Settings(deepagents_default_timezone="Mars/Base")
 
 
 def test_normalize_runtime_backend_path_prefers_repo_relative_sources() -> None:
@@ -106,8 +161,9 @@ def test_runtime_model_logging_summary_is_safe_and_descriptive() -> None:
     summary = Settings().runtime_model_logging_summary()
 
     assert summary["selected_model_source"] == "model_catalog"
-    assert summary["selected_model_provider"] == "openai"
-    assert summary["selected_model_name"] == "gpt-5-4"
+    provider, _, name = _default_model_id().partition("/")
+    assert summary["selected_model_provider"] == provider
+    assert summary["selected_model_name"] == name
 
 
 def test_relative_upload_storage_dir_resolves_from_backend_root() -> None:
@@ -228,6 +284,29 @@ def test_env_builtin_tool_allowlist_overrides_agent_default() -> None:
     )
 
 
+def test_runtime_config_hides_task_builtin_tool_when_agent_has_no_subagents(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    package = tmp_path / "no_subagents_agent"
+    package.mkdir()
+    (package / "__init__.py").write_text(
+        "AGENT = {'id': 'main', 'system_prompt': 'main', 'subagents': []}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    settings = Settings(
+        deepagents_default_model="openai/gpt-5-4",
+        deepagents_main_agent="no_subagents_agent:AGENT",
+        deepagents_builtin_tools="ls,read_file,task",
+    )
+
+    runtime_config = settings.to_runtime_config()
+
+    assert runtime_config.builtin_tool_allowlist == ("ls", "read_file", "task")
+    assert "task" in runtime_config.builtin_tool_blocklist
+
+
 def test_runtime_config_rejects_invalid_agent_permissions(monkeypatch, tmp_path) -> None:
     package = tmp_path / "invalid_permissions_agent"
     package.mkdir()
@@ -302,3 +381,71 @@ def test_runtime_config_preserves_agent_native_lifecycle_fields(monkeypatch, tmp
     assert runtime_config.store is not None
     assert runtime_config.cache is not None
     assert runtime_config.interrupt_on == {"execute": True}
+
+
+def test_runtime_config_does_not_expose_native_lifecycle_env_defaults() -> None:
+    runtime_config = Settings(deepagents_default_model="openai/gpt-5-4").to_runtime_config()
+
+    assert runtime_config.checkpointer is None
+    assert runtime_config.store is None
+    assert runtime_config.cache is None
+
+
+def test_agent_native_lifecycle_strings_resolve_like_env(monkeypatch, tmp_path) -> None:
+    package = tmp_path / "native_string_agent"
+    package.mkdir()
+    (package / "system.md").write_text("Native strings", encoding="utf-8")
+    (package / "__init__.py").write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "AGENT = {",
+                "    'id': 'native-strings',",
+                "    'system_prompt': Path(__file__).with_name('system.md'),",
+                "    'checkpointer': 'memory',",
+                "    'store': 'memory',",
+                "    'cache': 'memory',",
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    runtime_config = Settings(
+        deepagents_default_model="openai/gpt-5-4",
+        deepagents_main_agent="native_string_agent:AGENT",
+    ).to_runtime_config()
+
+    assert type(runtime_config.checkpointer).__name__ == "InMemorySaver"
+    assert type(runtime_config.store).__name__ == "InMemoryStore"
+    assert type(runtime_config.cache).__name__ == "InMemoryCache"
+
+
+def test_agent_native_lifecycle_none_disables_default_checkpointer(monkeypatch, tmp_path) -> None:
+    package = tmp_path / "native_none_agent"
+    package.mkdir()
+    (package / "system.md").write_text("Native none", encoding="utf-8")
+    (package / "__init__.py").write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "AGENT = {",
+                "    'id': 'native-none',",
+                "    'system_prompt': Path(__file__).with_name('system.md'),",
+                "    'checkpointer': None,",
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    runtime_config = Settings(
+        deepagents_default_model="openai/gpt-5-4",
+        deepagents_main_agent="native_none_agent:AGENT",
+    ).to_runtime_config()
+
+    assert runtime_config.checkpointer is None

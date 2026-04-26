@@ -1,4 +1,3 @@
-from datetime import UTC, datetime
 from typing import cast
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -38,7 +37,7 @@ def login(payload: LoginRequest, request: Request) -> TokenResponse:
                 email=settings.admin_email,
             )
         record.email = settings.admin_email
-        record.last_login_at = datetime.now(UTC)
+        record.last_login_at = settings.current_time()
         db.add(record)
         db.commit()
     finally:
