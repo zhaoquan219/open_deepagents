@@ -66,7 +66,6 @@ def make_test_settings(tmp_path, db_name: str, **overrides: Any) -> Settings:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
         **overrides,
     )
 
@@ -543,7 +542,6 @@ def test_run_lifecycle_and_stream(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = build_fake_runtime
@@ -644,7 +642,6 @@ def test_run_event_views_skip_transient_deltas_under_long_streams(tmp_path) -> N
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: HighVolumeDeltaRuntime()
@@ -698,7 +695,6 @@ def test_run_routes_fall_back_to_persisted_history_when_manager_state_is_gone(tm
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = build_fake_runtime
@@ -753,7 +749,6 @@ def test_long_stream_completion_does_not_emit_omitted_runtime_placeholder(tmp_pa
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: StreamOnlyLongRuntime()
@@ -801,7 +796,6 @@ def test_event_view_buffer_flushes_when_run_terminalizes_mid_stream(tmp_path) ->
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     runtime = EarlyTerminalRuntime(app.state.run_manager)
@@ -847,7 +841,6 @@ def test_run_routes_reject_cross_user_access(tmp_path) -> None:
         admin_users={"user-a": "secret-a", "user-b": "secret-b"},
         admin_token_secret="test-secret-key-with-32-bytes-minimum",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = build_fake_runtime
@@ -891,7 +884,6 @@ def test_run_stream_allows_missing_access_token_when_admin_auth_disabled(tmp_pat
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
         admin_auth_enabled=False,
     )
     app = create_app(settings)
@@ -931,7 +923,6 @@ def test_stream_emits_keepalive_while_tool_execution_blocks(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.database.create_all()
@@ -979,7 +970,6 @@ def test_task_tool_events_are_exposed_as_subagent_status(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: TaskToolRuntime()
@@ -1025,7 +1015,6 @@ def test_cancel_run_marks_run_cancelled_and_terminates_stream(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     runtime = CancellableRuntime()
@@ -1099,7 +1088,6 @@ def test_stream_route_resumes_from_last_event_id_header(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.database.create_all()
@@ -1133,7 +1121,7 @@ def test_stream_route_resumes_from_last_event_id_header(tmp_path) -> None:
             "detail": "search",
         }
     )
-    run_state.finish("completed")
+    run_state.terminalize("completed")
 
     with TestClient(app) as client:
         login = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
@@ -1171,7 +1159,6 @@ def test_second_run_receives_prior_session_messages(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     runtime = CapturingConversationRuntime()
@@ -1623,7 +1610,6 @@ def test_run_start_persists_distilled_session_title_without_overwriting_it(tmp_p
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     runtime = CapturingConversationRuntime()
@@ -1667,7 +1653,6 @@ def test_intermediate_assistant_messages_do_not_complete_the_run_or_disappear(tm
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: MultiMessageRuntime()
@@ -1753,7 +1738,6 @@ def test_graph_recursion_error_returns_fallback_assistant_message(tmp_path) -> N
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: RecursingRuntime()
@@ -1809,7 +1793,6 @@ def test_run_logging_captures_lifecycle_without_prompt_or_attachment_content(
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = build_fake_runtime
@@ -1876,7 +1859,6 @@ def test_run_failure_logging_identifies_the_failing_phase(tmp_path, caplog) -> N
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = build_failing_runtime
@@ -1928,7 +1910,6 @@ def test_idle_runtime_stream_times_out_and_marks_run_failed(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_stream_idle_timeout=0.05,
     )
     app = create_app(settings)
@@ -1982,7 +1963,6 @@ def test_run_builds_attachment_context_with_storage_key_and_upload_path(tmp_path
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime
@@ -2088,7 +2068,6 @@ def test_run_consumes_pending_upload_by_binding_it_to_user_message(tmp_path) -> 
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime
@@ -2149,7 +2128,6 @@ def test_consumed_upload_cannot_be_reused_for_later_run(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime
@@ -2209,7 +2187,6 @@ def test_raw_storage_key_attachment_must_match_upload_record(tmp_path) -> None:
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=upload_root,
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="state",
     )
     app = create_app(settings)
@@ -2252,7 +2229,6 @@ def test_later_run_without_uploads_does_not_mark_history_as_current_attachment(t
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime
@@ -2335,7 +2311,6 @@ def test_run_builds_attachment_context_with_sandbox_path_for_virtual_filesystem(
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=sandbox_root / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="filesystem",
         deepagents_sandbox_root_dir=str(sandbox_root),
         deepagents_sandbox_virtual_mode=False,
@@ -2401,7 +2376,6 @@ def test_run_builds_attachment_context_with_state_sandbox_without_file_payload(t
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="state",
     )
     app = create_app(settings)
@@ -2467,7 +2441,6 @@ def test_state_sandbox_generated_files_are_exported_as_message_attachments(tmp_p
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="state",
     )
     app = create_app(settings)
@@ -2572,7 +2545,6 @@ def test_filesystem_sandbox_attachment_path_stays_under_data_root(tmp_path) -> N
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir="data/uploads",
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="filesystem",
         deepagents_sandbox_virtual_mode=False,
     )
@@ -2632,7 +2604,6 @@ def test_single_uploaded_file_tasks_use_generic_attachment_context_without_keywo
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
     )
     app = create_app(settings)
     app.state.run_service.builder = lambda _config: runtime
@@ -2704,7 +2675,6 @@ def test_run_input_hook_can_customize_attachment_prompt_injection(tmp_path) -> N
         admin_password="secret",
         admin_token_secret="test-secret",
         upload_storage_dir=tmp_path / "uploads",
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_main_agent=f"{hook_module}:AGENT",
     )
     app = create_app(settings)

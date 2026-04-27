@@ -111,6 +111,7 @@ def test_runtime_config_skips_bad_subagent_model_when_agent_has_no_subagents(
     tmp_path,
 ) -> None:
     package = tmp_path / "profile_agent"
+    package.mkdir()
     (package / "system.md").write_text("main", encoding="utf-8")
     (package / "__init__.py").write_text(
         "\n".join(
@@ -174,7 +175,6 @@ def test_relative_upload_storage_dir_resolves_from_backend_root() -> None:
 
 def test_relative_sandbox_root_dir_resolves_from_backend_root() -> None:
     settings = Settings(
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="filesystem",
         deepagents_sandbox_root_dir="./data",
     )
@@ -185,7 +185,6 @@ def test_relative_sandbox_root_dir_resolves_from_backend_root() -> None:
 
 def test_filesystem_sandbox_defaults_to_backend_data_root() -> None:
     settings = Settings(
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="filesystem",
         deepagents_sandbox_root_dir="",
         deepagents_sandbox_virtual_mode=False,
@@ -204,7 +203,6 @@ def test_filesystem_sandbox_defaults_to_backend_data_root() -> None:
 def test_filesystem_sandbox_root_is_virtual_root_for_file_tools(tmp_path) -> None:
     (tmp_path / "inside.txt").write_text("sandboxed", encoding="utf-8")
     settings = Settings(
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="filesystem",
         deepagents_sandbox_root_dir=str(tmp_path),
         deepagents_sandbox_virtual_mode=False,
@@ -223,7 +221,6 @@ def test_filesystem_sandbox_root_is_virtual_root_for_file_tools(tmp_path) -> Non
 
 def test_local_shell_sandbox_defaults_to_backend_data_root() -> None:
     settings = Settings(
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="local_shell",
         deepagents_sandbox_root_dir="",
         deepagents_sandbox_virtual_mode=False,
@@ -238,7 +235,6 @@ def test_local_shell_sandbox_defaults_to_backend_data_root() -> None:
 def test_runtime_permissions_include_custom_upload_dir_outside_default_data_root() -> None:
     custom_upload_dir = Path("/tmp/open-deepagents-uploads").resolve()
     settings = Settings(
-        deepagents_default_model="openai/gpt-5-4",
         upload_storage_dir=custom_upload_dir,
     )
 
@@ -248,11 +244,7 @@ def test_runtime_permissions_include_custom_upload_dir_outside_default_data_root
 
 
 def test_runtime_config_uses_agent_builtin_tool_allowlist_without_env() -> None:
-    settings = Settings(
-        deepagents_default_model="openai/gpt-5-4",
-        deepagents_builtin_tools=None,
-        deepagents_disabled_builtin_tools=None,
-    )
+    settings = Settings()
 
     runtime_config = settings.to_runtime_config()
 
@@ -267,23 +259,6 @@ def test_runtime_config_uses_agent_builtin_tool_allowlist_without_env() -> None:
     assert runtime_config.builtin_tool_blocklist == ("execute", "write_file", "edit_file")
 
 
-def test_env_builtin_tool_allowlist_overrides_agent_default() -> None:
-    settings = Settings(
-        deepagents_default_model="openai/gpt-5-4",
-        deepagents_builtin_tools="ls,read_file",
-        deepagents_disabled_builtin_tools="execute",
-    )
-
-    runtime_config = settings.to_runtime_config()
-
-    assert runtime_config.builtin_tool_allowlist == ("ls", "read_file")
-    assert runtime_config.builtin_tool_blocklist == (
-        "execute",
-        "write_file",
-        "edit_file",
-    )
-
-
 def test_runtime_config_hides_task_builtin_tool_when_agent_has_no_subagents(
     monkeypatch,
     tmp_path,
@@ -291,14 +266,17 @@ def test_runtime_config_hides_task_builtin_tool_when_agent_has_no_subagents(
     package = tmp_path / "no_subagents_agent"
     package.mkdir()
     (package / "__init__.py").write_text(
-        "AGENT = {'id': 'main', 'system_prompt': 'main', 'subagents': []}\n",
+        "AGENT = {\n"
+        "    'id': 'main',\n"
+        "    'system_prompt': 'main',\n"
+        "    'builtin_tools': ['ls', 'read_file', 'task'],\n"
+        "    'subagents': [],\n"
+        "}\n",
         encoding="utf-8",
     )
     monkeypatch.syspath_prepend(str(tmp_path))
     settings = Settings(
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_main_agent="no_subagents_agent:AGENT",
-        deepagents_builtin_tools="ls,read_file,task",
     )
 
     runtime_config = settings.to_runtime_config()
@@ -317,7 +295,6 @@ def test_runtime_config_rejects_invalid_agent_permissions(monkeypatch, tmp_path)
     monkeypatch.syspath_prepend(str(tmp_path))
 
     settings = Settings(
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_main_agent="invalid_permissions_agent:AGENT",
     )
 
@@ -327,7 +304,6 @@ def test_runtime_config_rejects_invalid_agent_permissions(monkeypatch, tmp_path)
 
 def test_runtime_permissions_default_deny_unmatched_write_paths() -> None:
     settings = Settings(
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_sandbox_kind="filesystem",
         deepagents_sandbox_root_dir="/tmp/sandbox",
     )
@@ -371,7 +347,6 @@ def test_runtime_config_preserves_agent_native_lifecycle_fields(monkeypatch, tmp
     monkeypatch.syspath_prepend(str(tmp_path))
 
     settings = Settings(
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_main_agent="native_runtime_agent:AGENT",
     )
 
@@ -384,7 +359,7 @@ def test_runtime_config_preserves_agent_native_lifecycle_fields(monkeypatch, tmp
 
 
 def test_runtime_config_does_not_expose_native_lifecycle_env_defaults() -> None:
-    runtime_config = Settings(deepagents_default_model="openai/gpt-5-4").to_runtime_config()
+    runtime_config = Settings().to_runtime_config()
 
     assert runtime_config.checkpointer is None
     assert runtime_config.store is None
@@ -414,7 +389,6 @@ def test_agent_native_lifecycle_strings_resolve_like_env(monkeypatch, tmp_path) 
     monkeypatch.syspath_prepend(str(tmp_path))
 
     runtime_config = Settings(
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_main_agent="native_string_agent:AGENT",
     ).to_runtime_config()
 
@@ -444,7 +418,6 @@ def test_agent_native_lifecycle_none_disables_default_checkpointer(monkeypatch, 
     monkeypatch.syspath_prepend(str(tmp_path))
 
     runtime_config = Settings(
-        deepagents_default_model="openai/gpt-5-4",
         deepagents_main_agent="native_none_agent:AGENT",
     ).to_runtime_config()
 

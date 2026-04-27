@@ -72,8 +72,6 @@ class Settings(BaseSettings):
     deepagents_agent_name: str = "deepagents-web"
     deepagents_debug: bool = False
     deepagents_default_timezone: str = "Asia/Shanghai"
-    deepagents_builtin_tools: str | None = None
-    deepagents_disabled_builtin_tools: str | None = None
     deepagents_recursion_limit: int = 500
     deepagents_stream_idle_timeout: float = 180
     deepagents_sandbox_kind: str = "state"
@@ -238,11 +236,9 @@ class Settings(BaseSettings):
         agent_builtin_allowlist = _optional_string_tuple(
             runtime_resolution.agent.get("builtin_tool_allowlist")
         )
-        env_builtin_allowlist = self._optional_csv(self.deepagents_builtin_tools)
         agent_builtin_blocklist = _string_tuple(
             runtime_resolution.agent.get("builtin_tool_blocklist")
         )
-        env_builtin_blocklist = self._split_csv(self.deepagents_disabled_builtin_tools)
         if not runtime_resolution.subagents:
             agent_builtin_blocklist = _dedupe_tuple((*agent_builtin_blocklist, "task"))
         agent_permissions = _mapping_tuple(runtime_resolution.agent.get("permissions"))
@@ -255,14 +251,8 @@ class Settings(BaseSettings):
             middleware=agent_middleware,
             run_input_hooks=agent_run_input_hooks,
             upload_hooks=agent_upload_hooks,
-            builtin_tool_allowlist=(
-                env_builtin_allowlist
-                if env_builtin_allowlist is not None
-                else agent_builtin_allowlist
-            ),
-            builtin_tool_blocklist=_dedupe_tuple(
-                (*agent_builtin_blocklist, *env_builtin_blocklist)
-            ),
+            builtin_tool_allowlist=agent_builtin_allowlist,
+            builtin_tool_blocklist=agent_builtin_blocklist,
             skills=tuple(source.source_path for source in agent_skill_sources),
             skill_sources=agent_skill_sources,
             memory=agent_memory,
@@ -286,8 +276,11 @@ class Settings(BaseSettings):
         )
 
     def load_deepagents_system_prompt(self, agent: Mapping[str, Any] | None = None) -> str:
-        if agent is not None and agent.get("system_prompt_path"):
-            return Path(agent["system_prompt_path"]).read_text(encoding="utf-8").strip()
+        if agent is not None:
+            if isinstance(agent.get("system_prompt"), str):
+                return str(agent["system_prompt"])
+            if agent.get("system_prompt_path"):
+                return Path(agent["system_prompt_path"]).read_text(encoding="utf-8").strip()
         if DEFAULT_AGENT_SYSTEM_PROMPT_PATH.is_file():
             return DEFAULT_AGENT_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
         raise FileNotFoundError(
@@ -349,11 +342,7 @@ class Settings(BaseSettings):
 
     def runtime_options(self) -> dict[str, Any]:
         model_catalog = self.load_model_catalog_for_runtime()
-        options = runtime_options(
-            model_catalog=model_catalog,
-            default_model_id=model_catalog.default_model_id if model_catalog is not None else None,
-        )
-        return options
+        return runtime_options(model_catalog=model_catalog)
 
     def resolve_model(
         self,
@@ -424,12 +413,6 @@ class Settings(BaseSettings):
         if not value:
             return ()
         return tuple(item.strip() for item in value.split(",") if item.strip())
-
-    @staticmethod
-    def _optional_csv(value: str | None) -> tuple[str, ...] | None:
-        if value is None:
-            return None
-        return Settings._split_csv(value)
 
 
 def normalize_sandbox_permission_path(path: str | Path | PurePath) -> str:

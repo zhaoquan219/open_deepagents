@@ -244,8 +244,7 @@ def is_prompt_injection(record: MessageRecord) -> bool:
     return str(record.message_type or MESSAGE_TYPE_MESSAGE) == MESSAGE_TYPE_PROMPT_INJECTION
 
 
-def is_transcript_visible(record: MessageRecord, *, include_hidden: bool = False) -> bool:
-    _ = include_hidden
+def is_transcript_visible(record: MessageRecord) -> bool:
     return not is_prompt_injection(record)
 
 
@@ -354,22 +353,17 @@ class PromptInjectionService:
             if owns_session:
                 active_db.close()
 
-    def append_injection(self, **kwargs: Any) -> MessageRecord | PromptInjectionDraft:
-        return self.inject_prompt(**kwargs)
-
     def list_transcript_records(
         self,
         *,
         session_id: str,
-        include_hidden: bool = False,
         db: Session | None = None,
     ) -> list[MessageRecord]:
         owns_session = db is None
         active_db = db or self.database.session_factory()
         try:
             query = active_db.query(MessageRecord).filter(MessageRecord.session_id == session_id)
-            if not include_hidden:
-                query = query.filter(MessageRecord.message_type != MESSAGE_TYPE_PROMPT_INJECTION)
+            query = query.filter(MessageRecord.message_type != MESSAGE_TYPE_PROMPT_INJECTION)
             return list(
                 query.order_by(MessageRecord.created_at.asc(), MessageRecord.id.asc()).all()
             )

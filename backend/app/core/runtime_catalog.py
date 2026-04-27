@@ -65,15 +65,11 @@ def resolve_runtime(
     )
 
 
-def runtime_options(
-    *,
-    model_catalog: ModelCatalog | None,
-    default_model_id: str | None,
-) -> dict[str, Any]:
+def runtime_options(*, model_catalog: ModelCatalog | None) -> dict[str, Any]:
     return (
         model_catalog.safe_options()
         if model_catalog is not None
-        else {"default_model_id": default_model_id or "", "models": []}
+        else {"default_model_id": "", "models": []}
     )
 
 
@@ -196,35 +192,29 @@ def _resolve_agent_package(raw: Mapping[str, Any]) -> Mapping[str, Any]:
     root = _agent_root(raw)
     package_name = _package_name(root)
     resolved = _normalize_agent_fields(raw)
-    if "system_prompt" in raw and "system_prompt_path" not in raw:
+    if isinstance(raw.get("system_prompt"), Path) and "system_prompt_path" not in raw:
         resolved["system_prompt_path"] = raw["system_prompt"]
     if root is not None and package_name:
         subagent_package = f"{package_name}.subagents"
         resolved["_agent_root"] = root
         resolved["_subagent_package"] = subagent_package
         resolved["tools"] = _resolve_python_selection(
-            root=root,
             package=f"{package_name}.tools",
-            folder="tools",
             value=raw.get("tools"),
             names=("TOOLS", "TOOL"),
         )
         resolved["middleware"] = _resolve_python_selection(
-            root=root,
             package=f"{package_name}.middleware",
-            folder="middleware",
             value=raw.get("middleware"),
             names=("MIDDLEWARE", "MIDDLEWARE_ITEM"),
         )
         resolved["hooks"] = _resolve_hooks(
-            root=root,
             package=package_name,
             raw_hooks=raw.get("hooks"),
         )
         resolved["skill_sources"] = _resolve_skill_selection(root, raw.get("skills"))
         resolved["memory"] = _resolve_memory_selection(root, raw.get("memory"))
         resolved["subagents"] = _resolve_subagent_selection(
-            root=root,
             package=subagent_package,
             value=raw.get("subagents"),
         )
@@ -269,9 +259,7 @@ def _package_name(root: Path | None) -> str:
 
 def _resolve_python_selection(
     *,
-    root: Path,
     package: str,
-    folder: str,
     value: Any,
     names: tuple[str, ...],
 ) -> list[Any]:
@@ -287,28 +275,22 @@ def _resolve_python_selection(
             resolved.extend(_exports_from_module(f"{package}.{item}", names))
         else:
             resolved.append(item)
-    if value == "*" and not (root / folder).exists():
-        raise ValueError(f"Cannot select all from missing {folder} directory")
     return resolved
 
 
-def _resolve_hooks(*, root: Path, package: str, raw_hooks: Any) -> dict[str, tuple[Any, ...]]:
+def _resolve_hooks(*, package: str, raw_hooks: Any) -> dict[str, tuple[Any, ...]]:
     hooks = raw_hooks if isinstance(raw_hooks, Mapping) else {}
     return {
         "run_input": tuple(
             _resolve_python_selection(
-                root=root,
                 package=f"{package}.hooks",
-                folder="hooks",
                 value=hooks.get("run_input", ()),
                 names=("RUN_INPUT_HOOKS",),
             )
         ),
         "upload": tuple(
             _resolve_python_selection(
-                root=root,
                 package=f"{package}.hooks",
-                folder="hooks",
                 value=hooks.get("upload", ()),
                 names=("UPLOAD_HOOKS",),
             )
@@ -343,7 +325,7 @@ def _resolve_memory_selection(root: Path, value: Any) -> tuple[str, ...]:
     return tuple(str(item) for item in flattened)
 
 
-def _resolve_subagent_selection(*, root: Path, package: str, value: Any) -> list[Any]:
+def _resolve_subagent_selection(*, package: str, value: Any) -> list[Any]:
     if value is None:
         return []
     if value == "*":

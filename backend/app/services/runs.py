@@ -473,13 +473,10 @@ class RunService:
                 run_id=run_id,
                 session_id=session_id,
                 duration_ms=events.elapsed_ms(started_at),
-                message_delta_events=runtime_event_counts["message.delta"],
-                runtime_event_count=sum(runtime_event_counts.values()),
-                sandbox_event_count=events.count_runtime_events(runtime_event_counts, "sandbox."),
-                skill_event_count=events.count_runtime_events(runtime_event_counts, "skill."),
-                skipped_event_view_count=event_view_buffer.skipped_count,
-                tool_event_count=events.count_runtime_events(runtime_event_counts, "tool."),
-                persisted_event_view_count=event_view_buffer.persisted_count,
+                **_runtime_event_log_fields(
+                    runtime_event_counts,
+                    event_view_buffer=event_view_buffer,
+                ),
             )
 
             if final_message and not saw_message_delta and assistant_message_count == 0:
@@ -559,14 +556,14 @@ class RunService:
                 detail=completion_detail,
                 data=completion_data,
             )
-            events.persist_single_event(
+            events.publish_persisted_event(
                 self.database,
                 run_id=run_id,
                 session_id=session_id,
+                state=state,
                 envelope=completion_envelope,
             )
-            state.publish(completion_envelope)
-            state.finish("completed")
+            state.terminalize("completed")
             _log_run(
                 logging.INFO,
                 "run completed with "
@@ -578,15 +575,13 @@ class RunService:
                 session_id=session_id,
                 assistant_chars=len(final_message),
                 duration_ms=events.elapsed_ms(started_at),
-                message_delta_events=runtime_event_counts["message.delta"],
-                runtime_event_count=sum(runtime_event_counts.values()),
-                sandbox_event_count=events.count_runtime_events(runtime_event_counts, "sandbox."),
-                skill_event_count=events.count_runtime_events(runtime_event_counts, "skill."),
                 status="completed",
-                tool_event_count=events.count_runtime_events(runtime_event_counts, "tool."),
-                ui_event_count=len(state.envelopes),
-                skipped_event_view_count=event_view_buffer.skipped_count,
-                persisted_event_view_count=event_view_buffer.persisted_count + 1,
+                **_runtime_event_log_fields(
+                    runtime_event_counts,
+                    state=state,
+                    event_view_buffer=event_view_buffer,
+                    persisted_event_count_offset=1,
+                ),
             )
         except asyncio.CancelledError:
             event_view_buffer.flush()
@@ -620,7 +615,7 @@ class RunService:
                 fallback_message=fallback_message,
                 warning=str(exc),
             )
-            state.finish("completed")
+            state.terminalize("completed")
             _log_run(
                 logging.WARNING,
                 "run completed with a fallback response after the recursion limit was reached",
@@ -633,12 +628,8 @@ class RunService:
                 assistant_chars=len(fallback_message),
                 duration_ms=events.elapsed_ms(started_at),
                 error_type=type(exc).__name__,
-                runtime_event_count=sum(runtime_event_counts.values()),
-                sandbox_event_count=events.count_runtime_events(runtime_event_counts, "sandbox."),
-                skill_event_count=events.count_runtime_events(runtime_event_counts, "skill."),
                 status="completed",
-                tool_event_count=events.count_runtime_events(runtime_event_counts, "tool."),
-                ui_event_count=len(state.envelopes),
+                **_runtime_event_log_fields(runtime_event_counts, state=state),
             )
         except Exception as exc:
             event_view_buffer.flush()
@@ -649,7 +640,7 @@ class RunService:
                 state=state,
                 error_text=str(exc),
             )
-            state.finish("failed")
+            state.terminalize("failed")
             _log_run(
                 logging.ERROR,
                 f"run failed while {phase}",
@@ -662,12 +653,8 @@ class RunService:
                 exc_info=True,
                 duration_ms=events.elapsed_ms(started_at),
                 error_type=type(exc).__name__,
-                runtime_event_count=sum(runtime_event_counts.values()),
-                sandbox_event_count=events.count_runtime_events(runtime_event_counts, "sandbox."),
-                skill_event_count=events.count_runtime_events(runtime_event_counts, "skill."),
                 status="failed",
-                tool_event_count=events.count_runtime_events(runtime_event_counts, "tool."),
-                ui_event_count=len(state.envelopes),
+                **_runtime_event_log_fields(runtime_event_counts, state=state),
             )
         finally:
             event_view_buffer.flush()
@@ -769,6 +756,30 @@ class RunService:
             attachments=generated_attachments,
             message_id=assistant_record.id,
         )
+
+
+def _runtime_event_log_fields(
+    counter: Counter[str],
+    *,
+    state: RunState | None = None,
+    event_view_buffer: events.RunEventViewBuffer | None = None,
+    persisted_event_count_offset: int = 0,
+) -> dict[str, Any]:
+    fields = {
+        "message_delta_events": counter["message.delta"],
+        "runtime_event_count": sum(counter.values()),
+        "sandbox_event_count": events.count_runtime_events(counter, "sandbox."),
+        "skill_event_count": events.count_runtime_events(counter, "skill."),
+        "tool_event_count": events.count_runtime_events(counter, "tool."),
+    }
+    if state is not None:
+        fields["ui_event_count"] = len(state.envelopes)
+    if event_view_buffer is not None:
+        fields["skipped_event_view_count"] = event_view_buffer.skipped_count
+        fields["persisted_event_view_count"] = (
+            event_view_buffer.persisted_count + persisted_event_count_offset
+        )
+    return fields
 
 
 def _log_run(

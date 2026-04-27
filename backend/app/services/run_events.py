@@ -339,10 +339,6 @@ def count_runtime_events(counter: Counter[str], prefix: str) -> int:
 MAX_REPLAY_BACKLOG_EVENTS = 500
 
 
-def new_run_id() -> str:
-    return f"run-{uuid4()}"
-
-
 @dataclass(frozen=True)
 class RunSubscriber:
     queue: asyncio.Queue[dict[str, Any] | None]
@@ -378,9 +374,6 @@ class RunState:
         for subscriber in subscribers:
             subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, envelope)
         return True
-
-    def finish(self, status: str) -> None:
-        self.terminalize(status)
 
     def terminalize(self, status: str, envelope: dict[str, Any] | None = None) -> bool:
         with self.lock:
@@ -469,7 +462,7 @@ class RunManager:
         self.keepalive_interval = keepalive_interval
 
     def create(self, session_id: str) -> RunState:
-        state = RunState(run_id=new_run_id(), session_id=session_id)
+        state = RunState(run_id=f"run-{uuid4()}", session_id=session_id)
         self._runs[state.run_id] = state
         return state
 
@@ -563,6 +556,18 @@ def persist_single_event(
     )
 
 
+def publish_persisted_event(
+    database: DatabaseState,
+    *,
+    run_id: str,
+    session_id: str,
+    state: RunState,
+    envelope: dict[str, Any],
+) -> None:
+    persist_single_event(database, run_id=run_id, session_id=session_id, envelope=envelope)
+    state.publish(envelope)
+
+
 def persist_runtime_link(
     database: DatabaseState,
     *,
@@ -625,6 +630,43 @@ def create_message_record(
         return str(record.id)
 
 
+def mark_run_terminal(
+    database: DatabaseState,
+    *,
+    run_id: str,
+    session_id: str,
+    status: str,
+    event_count: int,
+    error_text: str | None = None,
+    final_output_text: str | None = None,
+    message_role: str | None = None,
+    message_content: str | None = None,
+) -> None:
+    with database.session_factory() as db:
+        session = require_session_record(db, session_id=session_id)
+        if message_role is not None and message_content is not None:
+            db.add(
+                MessageRecord(
+                    session_id=session_id,
+                    role=message_role,
+                    content=message_content,
+                    run_id=run_id,
+                    is_final=True,
+                )
+            )
+        session.last_run_id = run_id
+        run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
+        if run_record is not None:
+            run_record.status = status
+            run_record.error_text = error_text
+            run_record.final_output_text = final_output_text
+            run_record.event_count = event_count
+            run_record.completed_at = event_now()
+            db.add(run_record)
+        db.add(session)
+        db.commit()
+
+
 def persist_recursion_fallback(
     database: DatabaseState,
     *,
@@ -647,12 +689,17 @@ def persist_recursion_fallback(
             "id": f"final:{run_id}",
             "role": "assistant",
             "content": fallback_message,
-                "createdAt": event_now().isoformat(),
+            "createdAt": event_now().isoformat(),
             "attachments": [],
         },
     )
-    persist_single_event(database, run_id=run_id, session_id=session_id, envelope=fallback_event)
-    state.publish(fallback_event)
+    publish_persisted_event(
+        database,
+        run_id=run_id,
+        session_id=session_id,
+        state=state,
+        envelope=fallback_event,
+    )
     completion_event = ui_envelope(
         run_id=run_id,
         session_id=session_id,
@@ -663,30 +710,24 @@ def persist_recursion_fallback(
         detail="DeepAgents run completed with a fallback response.",
         data={"warning": warning},
     )
-    persist_single_event(database, run_id=run_id, session_id=session_id, envelope=completion_event)
-    state.publish(completion_event)
-    with database.session_factory() as db:
-        session = require_session_record(db, session_id=session_id)
-        db.add(
-            MessageRecord(
-                session_id=session_id,
-                role="assistant",
-                content=fallback_message,
-                run_id=run_id,
-                is_final=True,
-            )
-        )
-        session.last_run_id = run_id
-        run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
-        if run_record is not None:
-            run_record.status = "completed"
-            run_record.error_text = warning
-            run_record.final_output_text = fallback_message
-            run_record.event_count = len(state.envelopes)
-            run_record.completed_at = event_now()
-            db.add(run_record)
-        db.add(session)
-        db.commit()
+    publish_persisted_event(
+        database,
+        run_id=run_id,
+        session_id=session_id,
+        state=state,
+        envelope=completion_event,
+    )
+    mark_run_terminal(
+        database,
+        run_id=run_id,
+        session_id=session_id,
+        status="completed",
+        event_count=len(state.envelopes),
+        error_text=warning,
+        final_output_text=fallback_message,
+        message_role="assistant",
+        message_content=fallback_message,
+    )
 
 
 def persist_failed_run(
@@ -707,29 +748,23 @@ def persist_failed_run(
         detail=error_text,
         data={"error": error_text},
     )
-    persist_single_event(database, run_id=run_id, session_id=session_id, envelope=error_envelope)
-    state.publish(error_envelope)
-    with database.session_factory() as db:
-        failed_session = require_session_record(db, session_id=session_id)
-        failed_session.last_run_id = run_id
-        db.add(
-            MessageRecord(
-                session_id=session_id,
-                role="system",
-                content=f"Run failed: {error_text}",
-                run_id=run_id,
-                is_final=True,
-            )
-        )
-        run_record = db.query(AgentRunRecord).filter(AgentRunRecord.id == run_id).first()
-        if run_record is not None:
-            run_record.status = "failed"
-            run_record.error_text = error_text
-            run_record.event_count = len(state.envelopes)
-            run_record.completed_at = event_now()
-            db.add(run_record)
-        db.add(failed_session)
-        db.commit()
+    publish_persisted_event(
+        database,
+        run_id=run_id,
+        session_id=session_id,
+        state=state,
+        envelope=error_envelope,
+    )
+    mark_run_terminal(
+        database,
+        run_id=run_id,
+        session_id=session_id,
+        status="failed",
+        event_count=len(state.envelopes),
+        error_text=error_text,
+        message_role="system",
+        message_content=f"Run failed: {error_text}",
+    )
 
 
 def finalize_cancelled_run(
