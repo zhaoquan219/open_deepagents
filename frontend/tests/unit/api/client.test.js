@@ -129,7 +129,7 @@ describe('createApiClient.openRunStream', () => {
 })
 
 describe('createApiClient session normalization', () => {
-  it('normalizes runtime options and sends run selections', async () => {
+  it('normalizes runtime options and sends model selection only', async () => {
     const storage = {
       getItem: vi.fn(() => 'token-123'),
       setItem: vi.fn(),
@@ -142,7 +142,6 @@ describe('createApiClient session normalization', () => {
         status: 200,
         json: async () => ({
           default_model_id: 'openai/gpt-5-4',
-          default_profile_id: 'default',
           models: [{ id: 'openai/gpt-5-4', name: 'GPT-5.4', provider_name: 'OpenAI' }],
           profiles: [{ id: 'default', label: 'Default', subagent_ids: ['reviewer'] }],
           subagents: [{ id: 'reviewer', name: 'reviewer', description: 'Review code' }],
@@ -172,7 +171,8 @@ describe('createApiClient session normalization', () => {
     expect(options.models[0]).toEqual(
       expect.objectContaining({ id: 'openai/gpt-5-4', providerName: 'OpenAI' }),
     )
-    expect(options.profiles[0].subagentIds).toEqual(['reviewer'])
+    expect(options).not.toHaveProperty('profiles')
+    expect(options).not.toHaveProperty('subagents')
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
       session_id: 'session-1',
       prompt: 'hello',
@@ -252,6 +252,51 @@ describe('createApiClient session normalization', () => {
         downloadUrl: '',
       }),
     ])
+  })
+
+  it('ignores backend-only prompt injection metadata on normalized messages', async () => {
+    const storage = {
+      getItem: vi.fn(() => 'token-123'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    }
+
+    vi.stubGlobal('window', {
+      location: { origin: 'http://localhost:5173' },
+      localStorage: storage,
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          messages: [{
+            id: 'msg-1',
+            role: 'system',
+            content: 'guardrail',
+            message_type: 'prompt_injection',
+            visibility: 'hidden',
+            source: 'middleware.test',
+            injection_position: 'after_system',
+          }],
+        }),
+      })),
+    )
+
+    const messages = await createApiClient('/api').getSessionMessages('session-1')
+
+    expect(messages).toEqual([
+      expect.objectContaining({
+        id: 'msg-1',
+        role: 'system',
+        content: 'guardrail',
+      }),
+    ])
+    expect(messages[0]).not.toHaveProperty('messageType')
+    expect(messages[0]).not.toHaveProperty('visibility')
+    expect(messages[0]).not.toHaveProperty('source')
+    expect(messages[0]).not.toHaveProperty('injectionPosition')
   })
 
   it('adds authenticated download URLs to returned attachments', async () => {

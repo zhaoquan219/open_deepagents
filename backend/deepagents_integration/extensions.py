@@ -119,9 +119,11 @@ def discover_memory(path_or_file: str | Path) -> SelectablePathRegistry:
 
 def build_builtin_tool_selection_middleware(
     *,
-    allowlist: tuple[str, ...] | None,
-    blocklist: tuple[str, ...],
+    allowlist: Any,
+    blocklist: Any,
 ) -> AgentMiddleware[Any, Any, Any] | None:
+    allowlist = _optional_string_tuple(allowlist)
+    blocklist = _string_tuple(blocklist)
     if allowlist is None and not blocklist:
         return None
     return BuiltinToolSelectionMiddleware(
@@ -252,6 +254,22 @@ def _flatten_loaded_specs(specs: list[str] | tuple[str, ...]) -> list[Any]:
         value = load_object_from_spec(spec)
         loaded.extend(flatten_components(value))
     return loaded
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return tuple(item.strip() for item in value.split(",") if item.strip())
+    if not isinstance(value, list | tuple) or not all(isinstance(item, str) for item in value):
+        raise ValueError("Expected a string or list of strings")
+    return tuple(item.strip() for item in value if item.strip())
+
+
+def _optional_string_tuple(value: Any) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    return _string_tuple(value)
 
 
 def _exports_from_module(module: ModuleType, names: tuple[str, ...]) -> list[Any]:

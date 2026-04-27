@@ -49,7 +49,7 @@ const isWideLayout = ref(true)
 const stoppingRunId = ref('')
 const timelinePanelOpen = ref(true)
 const messageSendScrollKey = ref(0)
-const runtimeOptions = ref({ models: [], profiles: [], subagents: [], defaultModelId: '', defaultProfileId: '' })
+const runtimeOptions = ref({ models: [], defaultModelId: '' })
 const runtimeOptionsError = ref('')
 const selectedModelId = ref('')
 let viewportMediaQuery = null
@@ -420,6 +420,7 @@ function connectRunStream(runId, sessionId) {
       }
       logRuntime('sse.error', error.message, { runId, sessionId }, 'error')
       runStore.markErrored(runId, error.message)
+      closeStream()
       sessionStore.addSystemNotice(String(sessionId), uiCopy.app.stream.recoveryFailure(error.message))
     },
   })

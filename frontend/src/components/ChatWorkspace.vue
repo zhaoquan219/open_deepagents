@@ -60,7 +60,7 @@ const props = defineProps({
   },
   runtimeOptions: {
     type: Object,
-    default: () => ({ models: [], profiles: [] }),
+    default: () => ({ models: [] }),
   },
   selectedModelId: {
     type: String,

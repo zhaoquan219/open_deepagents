@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -50,6 +51,7 @@ async def stream_sse_envelopes(
     bridge_run_id: str,
     config: Any = None,
     context: Any = None,
+    event_idle_timeout: float | None = None,
 ) -> AsyncIterator[SseEventEnvelope]:
     sequence = 1
     yield _make_envelope(
@@ -72,7 +74,26 @@ async def stream_sse_envelopes(
             config=config,
             context=context,
         )
-    async for raw_event in event_stream:
+    while True:
+        try:
+            if event_idle_timeout is not None and event_idle_timeout > 0:
+                raw_event = await asyncio.wait_for(
+                    anext(event_stream),
+                    timeout=event_idle_timeout,
+                )
+            else:
+                raw_event = await anext(event_stream)
+        except StopAsyncIteration:
+            break
+        except TimeoutError as exc:
+            close_stream = getattr(event_stream, "aclose", None)
+            if callable(close_stream):
+                await close_stream()
+            raise TimeoutError(
+                "DeepAgents runtime produced no events for "
+                f"{event_idle_timeout:g} seconds; marking the run failed so it does not hang."
+            ) from exc
+
         sequence += 1
         normalized = normalize_runtime_event(
             raw_event,

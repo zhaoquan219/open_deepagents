@@ -1,13 +1,8 @@
-import mermaid from 'mermaid'
 import { marked } from 'marked'
 
 const DISALLOWED_TAGS = new Set(['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta'])
-
-mermaid.initialize({
-  startOnLoad: false,
-  securityLevel: 'strict',
-  theme: 'neutral',
-})
+/** @type {Promise<import('mermaid').Mermaid> | undefined} */
+let mermaidModulePromise
 
 function sanitizeHtml(html) {
   const parser = new DOMParser()
@@ -51,6 +46,22 @@ export function renderMarkdownFragmentToHtml(markdown) {
 }
 
 export async function renderMermaidSvg(id, source) {
+  const mermaid = await loadMermaid()
   const result = await mermaid.render(id, source)
   return typeof result === 'string' ? result : result.svg
+}
+
+async function loadMermaid() {
+  if (!mermaidModulePromise) {
+    mermaidModulePromise = import('mermaid').then((module) => {
+      const mermaid = module.default
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme: 'neutral',
+      })
+      return mermaid
+    })
+  }
+  return mermaidModulePromise
 }

@@ -10,15 +10,17 @@ from app.schemas.upload import UploadRead
 
 
 class SessionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str = "New session"
-    runtime_thread_id: str | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
 class SessionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str | None = None
     status: str | None = None
-    runtime_thread_id: str | None = None
     last_run_id: str | None = None
     extra: dict[str, Any] | None = None
 
@@ -29,7 +31,6 @@ class SessionRead(BaseModel):
     id: str
     title: str
     status: str
-    runtime_thread_id: str | None
     last_run_id: str | None
     extra: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime

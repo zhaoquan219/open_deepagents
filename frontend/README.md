@@ -38,8 +38,8 @@ The backend API defaults to `http://127.0.0.1:8000/api`. Configure CORS in
 
 - The sidebar lists sessions and lets users create, refresh, select, and delete
   sessions.
-- The workspace shows the current transcript, upload controls, model/profile
-  selection, and the composer.
+- The workspace shows the current transcript, upload controls, model selection,
+  and the composer.
 - Uploaded files appear as pending attachments before the run starts.
 - Streaming assistant text appears in the transcript as it arrives.
 - The runtime timeline shows connection, status, step, tool, skill, sandbox, and
@@ -67,7 +67,7 @@ The frontend expects these core endpoints:
 | --- | --- |
 | `POST /api/admin/login` | Login and receive a bearer token. |
 | `GET /api/admin/me` | Check the current admin session. |
-| `GET /api/runtime/options` | Load model and subagent profile options. |
+| `GET /api/runtime/options` | Load model options. |
 | `GET /api/sessions` | List sessions for the current user. |
 | `POST /api/sessions` | Create a session. |
 | `GET /api/sessions/:sessionId/messages` | Load transcript messages. |

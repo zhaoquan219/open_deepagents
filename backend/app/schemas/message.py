@@ -16,10 +16,12 @@ class MessageBase(BaseModel):
 
 
 class MessageCreate(MessageBase):
-    pass
+    model_config = ConfigDict(extra="forbid")
 
 
 class MessageUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     content: str | None = None
     is_final: bool | None = None
     run_id: str | None = None

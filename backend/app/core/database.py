@@ -48,7 +48,8 @@ class DatabaseState:
 
     def migrate_schema(self) -> None:
         inspector = inspect(self.engine)
-        if "sessions" not in inspector.get_table_names():
+        table_names = set(inspector.get_table_names())
+        if "sessions" not in table_names:
             return
 
         columns = {str(column["name"]) for column in inspector.get_columns("sessions")}
@@ -59,6 +60,10 @@ class DatabaseState:
             if "owner_username" not in columns:
                 connection.execute(
                     text("ALTER TABLE sessions ADD COLUMN owner_username VARCHAR(255) NULL")
+                )
+            if "runtime_thread_id" not in columns:
+                connection.execute(
+                    text("ALTER TABLE sessions ADD COLUMN runtime_thread_id VARCHAR(255) NULL")
                 )
 
             connection.execute(
@@ -73,6 +78,66 @@ class DatabaseState:
             if owner_index_name not in indexes:
                 connection.execute(
                     text("CREATE INDEX ix_sessions_owner_username ON sessions (owner_username)")
+                )
+
+        if "messages" not in table_names:
+            return
+
+        message_columns = {str(column["name"]) for column in inspector.get_columns("messages")}
+        message_indexes = {str(index["name"]) for index in inspector.get_indexes("messages")}
+        message_type_index_name = "ix_messages_message_type"
+
+        with self.engine.begin() as connection:
+            if "message_type" not in message_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE messages ADD COLUMN message_type "
+                        "VARCHAR(32) DEFAULT 'message' NOT NULL"
+                    )
+                )
+            if "visibility" not in message_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE messages ADD COLUMN visibility "
+                        "VARCHAR(16) DEFAULT 'visible' NOT NULL"
+                    )
+                )
+            if "source" not in message_columns:
+                connection.execute(text("ALTER TABLE messages ADD COLUMN source VARCHAR(255) NULL"))
+            if "injection_position" not in message_columns:
+                connection.execute(
+                    text("ALTER TABLE messages ADD COLUMN injection_position VARCHAR(32) NULL")
+                )
+
+            connection.execute(
+                text(
+                    "UPDATE messages SET message_type = 'message' "
+                    "WHERE message_type IS NULL OR message_type = ''"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE messages SET visibility = 'visible' "
+                    "WHERE visibility IS NULL OR visibility = ''"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE messages SET injection_position = CASE injection_position "
+                    "WHEN 'before_history' THEN 'before_system' "
+                    "WHEN 'before_run_prompt' THEN 'before_user' "
+                    "WHEN 'after_run_prompt' THEN 'after_user' "
+                    "WHEN 'after_history' THEN 'after_user' "
+                    "ELSE injection_position END "
+                    "WHERE injection_position IN ("
+                    "'before_history', 'before_run_prompt', 'after_run_prompt', 'after_history'"
+                    ")"
+                )
+            )
+
+            if message_type_index_name not in message_indexes:
+                connection.execute(
+                    text("CREATE INDEX ix_messages_message_type ON messages (message_type)")
                 )
 
     def session(self) -> Iterator[Session]:

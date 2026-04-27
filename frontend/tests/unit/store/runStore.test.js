@@ -143,6 +143,23 @@ describe('runStore reducer', () => {
     })
   })
 
+  it('marks abnormal stream termination as a terminal failed state', () => {
+    const store = createRunStore()
+    store.beginRun({ runId: 'run-error', sessionId: 'session-error' })
+    store.markConnected('run-error')
+
+    store.markErrored('run-error', 'stream closed unexpectedly')
+
+    expect(store.state.activeRun).toMatchObject({
+      runId: 'run-error',
+      status: 'failed',
+      connectionState: 'error',
+      connected: false,
+      lastError: 'stream closed unexpectedly',
+    })
+    expect(store.state.activeRun.finishedAt).not.toBe('')
+  })
+
   it('coalesces consecutive message delta entries in the timeline', () => {
     const started = createInitialRun('run-3', 'session-3')
     const afterFirstDelta = reduceRunState(started, {

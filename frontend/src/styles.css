@@ -769,6 +769,7 @@ button {
   align-items: flex-start;
   gap: 12px;
   justify-content: space-between;
+  flex-wrap: wrap;
 }
 
 .upload-row-main {

@@ -34,6 +34,9 @@ export async function copyBlob(blob, mimeType) {
     }
   }
   if (mimeType === 'image/png') {
+    if (isWindowsPlatform()) {
+      throw new Error('Image clipboard is not supported.')
+    }
     return copyPngBlobWithExecCommand(blob)
   }
   throw new Error('Image clipboard is not supported.')
@@ -133,11 +136,19 @@ async function copyPngBlobWithClipboard(blob, ClipboardItemCtor) {
 
 function blobToDataUrl(blob) {
   return new Promise((resolve, reject) => {
+    if (typeof globalThis.FileReader !== 'function') {
+      reject(new Error('Image clipboard is not supported.'))
+      return
+    }
     const reader = new globalThis.FileReader()
     reader.onload = () => resolve(String(reader.result || ''))
     reader.onerror = () => reject(new Error('Unable to prepare PNG image.'))
     reader.readAsDataURL(blob)
   })
+}
+
+function isWindowsPlatform() {
+  return /^win/i.test(String(navigator.platform || ''))
 }
 
 function loadImage(url) {

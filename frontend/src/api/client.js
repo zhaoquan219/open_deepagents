@@ -94,26 +94,9 @@ function normalizeRuntimeOptions(payload) {
     ...model,
     displayName: model.provider ? `${model.provider}/${model.id.split('/').at(-1)}` : model.id,
   }))
-  const profiles = unwrapCollection(record.profiles ?? [], 'profiles').map((profile) => ({
-    id: String(profile.id ?? ''),
-    label: String(profile.label ?? profile.name ?? profile.id ?? ''),
-    modelId: String(profile.model_id ?? profile.modelId ?? ''),
-    subagentIds: Array.isArray(profile.subagent_ids) ? profile.subagent_ids.map(String) : [],
-  })).filter((profile) => profile.id)
-  const subagents = unwrapCollection(record.subagents ?? [], 'subagents').map((subagent) => ({
-    id: String(subagent.id ?? subagent.name ?? ''),
-    name: String(subagent.name ?? subagent.id ?? ''),
-    label: String(subagent.label ?? subagent.name ?? subagent.id ?? ''),
-    description: String(subagent.description ?? ''),
-    type: String(subagent.type ?? 'sync'),
-    workspace: String(subagent.workspace ?? ''),
-  })).filter((subagent) => subagent.id)
   return {
     defaultModelId: String(record.default_model_id ?? record.defaultModelId ?? models[0]?.id ?? ''),
-    defaultProfileId: String(record.default_profile_id ?? record.defaultProfileId ?? profiles[0]?.id ?? ''),
     models,
-    profiles,
-    subagents,
   }
 }
 
