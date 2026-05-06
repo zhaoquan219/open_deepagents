@@ -12,7 +12,6 @@ backend/agents/
 ├── prompts/system.md            Main system prompt
 ├── tools/__init__.py            Custom tools
 ├── middleware/__init__.py       Runtime middleware
-├── hooks/__init__.py            Run-input and upload hooks
 ├── skills/__init__.py           Selected DeepAgents skills
 ├── memory/__init__.py           Selected memory files
 ├── memory/*.md                  Markdown memory resources
@@ -37,7 +36,6 @@ subagents/<name>/
 ```python
 from pathlib import Path
 
-from agents.hooks import RUN_INPUT_HOOKS, UPLOAD_HOOKS
 from agents.memory import MEMORY
 from agents.middleware import MIDDLEWARE
 from agents.skills import SKILLS
@@ -46,13 +44,14 @@ from agents.tools import TOOLS
 
 ROOT = Path(__file__).parent
 
-READ_ONLY_BUILTIN_TOOLS = (
+DEFAULT_BUILTIN_TOOLS = (
     "write_todos",
     "ls",
     "read_file",
     "glob",
     "grep",
     "task",
+    "execute",
 )
 
 AGENT = {
@@ -60,10 +59,9 @@ AGENT = {
     "system_prompt": ROOT / "prompts" / "system.md",
     "workspace": "/workspace/main",
     "tools": TOOLS,
-    "builtin_tools": READ_ONLY_BUILTIN_TOOLS,
-    "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
+    "builtin_tools": DEFAULT_BUILTIN_TOOLS,
+    "disabled_builtin_tools": ("write_file", "edit_file"),
     "middleware": MIDDLEWARE,
-    "hooks": {"run_input": RUN_INPUT_HOOKS, "upload": UPLOAD_HOOKS},
     "skills": SKILLS,
     "memory": MEMORY,
     "subagents": SUBAGENTS,
@@ -83,16 +81,12 @@ AGENT = {
     "tools": TOOLS,
     "builtin_tools": ("ls", "read_file", "glob", "grep", "task"),
     "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
-    "hooks": {"run_input": RUN_INPUT_HOOKS, "upload": UPLOAD_HOOKS},
     "skills": ["skill-creator"],
     "memory": ["project"],
     "subagents": ["code_reviewer"],
     # Optional:
     "model": "openai/gpt-5-4",
     "workspace": "/workspace/main",
-    "permissions": [
-        {"operations": ["read"], "paths": ["/workspace/main"]},
-    ],
     "permissions": [
         {"operations": ["read"], "paths": ["/workspace/main"]},
     ],
@@ -103,6 +97,7 @@ AGENT = {
 - `workspace` 只是给 UI/日志/作者看的描述字段，不是权限边界。
 - `permissions` 才是文件读写边界。
 - `skills` / `memory` / `subagents` 直接写列表，默认最容易看懂。
+- 这些选择会相对于当前 agent package 解析，而不是错误地从 `backend/` 根目录拼接。
 
 ## Subagent Shape
 
@@ -115,8 +110,8 @@ SUBAGENT = {
     "system_prompt": ROOT / "prompts" / "system.md",
     "workspace": "/workspace/reviews",
     "tools": TOOLS,
-    "builtin_tools": READ_ONLY_BUILTIN_TOOLS,
-    "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
+    "builtin_tools": DEFAULT_BUILTIN_TOOLS,
+    "disabled_builtin_tools": ("write_file", "edit_file"),
     "middleware": MIDDLEWARE,
     "skills": SKILLS,
     "memory": MEMORY,
@@ -241,53 +236,25 @@ Tool visibility and permissions must both allow an action:
 - If a path is writable but `write_file` and `edit_file` are hidden, the model
   still cannot write through those built-ins.
 
-## Hooks
+## Middleware-First Customization
 
-Run-input hooks can rewrite or enrich message content before the runtime sees it.
-They receive session/run IDs, role, content, attachments, and whether the message
-is for the current run.
-
-Upload hooks receive upload metadata only. They can return extra metadata to
-store on the upload record.
-
-Default hook examples live in `hooks/attachment_hooks.py`.
-
-## Prompt Injections
-
-Prompt injections are still supported. The implementation moved to
-`app.core.session_scope.PromptInjectionService`; it was not removed.
-
-They are backend-controlled runtime instructions and are intentionally not
-accepted through the public message or run payloads.
-
-Programmatic use:
+不要再维护单独的 hooks 目录。运行时输入增强、上下文查看、工具调用审计、
+以及提示词补充都统一放在 middleware。
 
 ```python
-app.state.prompt_injections.inject_prompt(
-    session_id=session_id,
-    content="Always verify the attachment before answering.",
-    visibility="hidden",   # hidden or visible
-    position="before_user",  # before_system / after_system / before_user / after_user
-    source="backend.rule",
-)
+from langchain.agents.middleware import before_agent
+from langgraph.runtime import Runtime
+
+@before_agent(name="ReadSessionContext")
+async def read_session_context(state, runtime: Runtime[object]) -> None:
+    del state
+    context = runtime.context or {}
+    session_id = context.get("session_id", "")
+    metadata = context.get("session_metadata", {})
+    _ = (session_id, metadata)
 ```
 
-Scoped to one run only:
-
-```python
-app.state.prompt_injections.inject_prompt(
-    session_id=session_id,
-    run_id=run_id,
-    content="Use the uploaded CSV as the source of truth.",
-    position="after_user",
-)
-```
-
-Behavior:
-
-- hidden injections affect runtime input but do not appear in the default transcript
-- visible injections still persist as injection records, but the public transcript stays clean
-- run-scoped injections apply only to the target run
+需要的上下文字段直接从 runtime context 读取，不再额外配置 hooks。
 
 ## Skills and Memory
 

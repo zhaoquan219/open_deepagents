@@ -3,8 +3,8 @@ from collections.abc import Iterator
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.config import Settings
 from app.main import create_app
+from app.settings import Settings
 
 
 @pytest.fixture
@@ -15,7 +15,12 @@ def client(tmp_path) -> Iterator[TestClient]:
         admin_username="admin",
         admin_password="secret",
         admin_token_secret="test-secret-key-with-32-bytes-minimum",
-        upload_storage_dir=tmp_path / "uploads",
+        deepagents_model_config_path=str(tmp_path / "models.json"),
+    )
+    (tmp_path / "models.json").write_text(
+        '{"model":"test/fake","provider":{"test":{"name":"Test","options":{},'
+        '"models":{"fake":{"name":"Fake","model":"fake"}}}}}',
+        encoding="utf-8",
     )
     app = create_app(settings)
     with TestClient(app) as test_client:
@@ -33,6 +38,6 @@ def test_model_catalog(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 @pytest.fixture
 def auth_headers(client: TestClient) -> dict[str, str]:
-    response = client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+    response = client.post("/api/auth/login", json={"username": "admin", "password": "secret"})
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}

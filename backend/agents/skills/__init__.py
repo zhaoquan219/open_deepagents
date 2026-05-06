@@ -1,3 +1,3 @@
-SKILLS = ["skill-creator"]
+SKILLS = ["/skills"]
 
 __all__ = ["SKILLS"]

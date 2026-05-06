@@ -5,6 +5,11 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
 import { copyText } from '../lib/clipboard.js'
 import { uiCopy } from '../lib/copy.js'
+import {
+  groupProcessLogs,
+  thinkingEntriesFromContent,
+  visibleAssistantContent,
+} from '../lib/processLog.js'
 import { isNearBottom, scrollMetrics, shouldForceFollowLatest } from '../lib/scroll.js'
 import { formatDateTime } from '../lib/time.js'
 import MarkdownContent from './MarkdownContent.vue'
@@ -87,29 +92,56 @@ function displayContent(message) {
   const content = flattenMessageContent(
     message?.content ?? message?.text ?? message?.detail ?? message?.extra?.content ?? '',
   )
-  if (content.trim()) {
-    return content
+  const visible = message?.role === 'assistant' ? visibleAssistantContent(content) : content
+  if (visible.trim()) {
+    return visible
   }
   if (message?.streaming) {
-    return uiCopy.messageThread.streaming
+    return ''
+  }
+  if (message?.role === 'assistant' && hasProcesses(message)) {
+    return ''
   }
   return uiCopy.messageThread.empty
+}
+
+function processStatusLabel(status) {
+  if (status === 'completed') return uiCopy.common.completed
+  if (status === 'failed') return uiCopy.common.failed
+  if (status === 'cancelled') return uiCopy.common.cancelled
+  return uiCopy.common.running
+}
+
+function hasProcesses(message) {
+  return processGroups(message).length > 0
+}
+
+function processGroups(message) {
+  if (!message || message.role !== 'assistant') {
+    return []
+  }
+  const content = flattenMessageContent(
+    message?.content ?? message?.text ?? message?.detail ?? message?.extra?.content ?? '',
+  )
+  return groupProcessLogs([
+    ...thinkingEntriesFromContent(content, message.startedAt || message.createdAt),
+    ...(Array.isArray(message.processes) ? message.processes : []),
+  ])
+}
+
+function groupSummary(group) {
+  return uiCopy.messageThread.process.groupSummary(group.items.length)
+}
+
+function itemText(item) {
+  return [item.title, item.summary].filter(Boolean).join('\n')
 }
 
 function attachmentDownloadUrl(attachment) {
   if (attachment?.downloadUrl) {
     return attachment.downloadUrl
   }
-  const id = String(attachment?.id || '')
-  if (!id || id.startsWith('attachment-')) {
-    return ''
-  }
-  const token = globalThis.localStorage?.getItem?.('deepagents.admin.token') || ''
-  const url = new URL(`/api/uploads/${encodeURIComponent(id)}/content`, globalThis.location?.origin || 'http://localhost')
-  if (token) {
-    url.searchParams.set('access_token', token)
-  }
-  return url.toString()
+  return ''
 }
 
 async function copyMessage(message) {
@@ -277,6 +309,31 @@ onMounted(async () => {
             @click="copyMessage(message)"
           />
         </div>
+        <details v-if="hasProcesses(message)" class="process-block">
+          <summary>
+            <span>{{ uiCopy.messageThread.process.title }}</span>
+            <span>{{ uiCopy.messageThread.process.count(processGroups(message).length) }}</span>
+          </summary>
+          <div class="process-list">
+            <details
+              v-for="group in processGroups(message)"
+              :key="group.id"
+              class="process-group"
+              :data-kind="group.kind"
+              :data-status="group.status"
+            >
+              <summary>
+                <strong>{{ group.title }}</strong>
+                <span>{{ groupSummary(group) }} · {{ processStatusLabel(group.status) }}</span>
+              </summary>
+              <ol class="process-group-items">
+                <li v-for="item in group.items" :key="item.id">
+                  <pre>{{ itemText(item) }}</pre>
+                </li>
+              </ol>
+            </details>
+          </div>
+        </details>
         <MarkdownContent :content="displayContent(message)" @content-rendered="handleRenderedContent" />
         <p v-if="message.streaming" class="streaming-indicator">{{ uiCopy.messageThread.streaming }}</p>
         <ul v-if="message.attachments && message.attachments.length" class="attachment-list">

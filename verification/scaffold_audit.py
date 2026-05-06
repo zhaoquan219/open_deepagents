@@ -6,14 +6,19 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 REQUIRED_DOC_FILES = ("docs/sandbox.md",)
-REQUIRED_BACKEND_DIRS = (
-    "backend/app/api",
-    "backend/app/core",
-    "backend/app/db",
-    "backend/app/schemas",
-    "backend/app/services",
-    "backend/app/storage",
-    "backend/deepagents_integration",
+REQUIRED_BACKEND_FILES = (
+    "backend/app/main.py",
+    "backend/app/routes.py",
+    "backend/app/settings.py",
+    "backend/app/db.py",
+    "backend/app/auth.py",
+    "backend/app/catalog.py",
+    "backend/app/agent.py",
+    "backend/app/runtime/__init__.py",
+    "backend/app/runtime/agent_factory.py",
+    "backend/app/runtime/config.py",
+    "backend/app/runtime/extensions.py",
+    "backend/app/runtime/sse_bridge.py",
 )
 REQUIRED_FRONTEND_DIRS = (
     "frontend/src/api",
@@ -22,7 +27,7 @@ REQUIRED_FRONTEND_DIRS = (
     "frontend/src/store",
 )
 REQUIRED_CONTRACT_FILES = (
-    "packages/contracts/deepagents-sse-event-v1.json",
+    "packages/contracts/deepagents-sse-event.json",
     "packages/extension-manifest.template.json",
 )
 REQUIRED_AGENT_PACKAGE_TEMPLATES = (
@@ -33,11 +38,8 @@ REQUIRED_AGENT_PACKAGE_TEMPLATES = (
     "backend/agents/tools/echo_tool.py",
     "backend/agents/middleware/__init__.py",
     "backend/agents/middleware/audit_middleware.py",
-    "backend/agents/hooks/__init__.py",
-    "backend/agents/hooks/attachment_hooks.py",
     "backend/agents/skills/skill-creator/SKILL.md",
     "backend/agents/memory/project.md",
-    "backend/app/storage/minio.py",
 )
 @dataclass(frozen=True)
 class AuditCheck:
@@ -72,7 +74,7 @@ def _check_paths(root: Path, name: str, relative_paths: Iterable[str]) -> AuditC
 def audit_repo(root: Path) -> AuditReport:
     checks = (
         _check_paths(root, "project-docs", REQUIRED_DOC_FILES),
-        _check_paths(root, "backend-scaffold", REQUIRED_BACKEND_DIRS),
+        _check_paths(root, "backend-scaffold", REQUIRED_BACKEND_FILES),
         _check_paths(root, "frontend-scaffold", REQUIRED_FRONTEND_DIRS),
         _check_paths(root, "contract-files", REQUIRED_CONTRACT_FILES),
         _check_paths(root, "agent-package-templates", REQUIRED_AGENT_PACKAGE_TEMPLATES),

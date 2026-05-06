@@ -25,7 +25,7 @@ class ScaffoldAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self._write(root, "docs/sandbox.md", "sandbox")
-            self._write(root, "packages/contracts/deepagents-sse-event-v1.json", "{}")
+            self._write(root, "packages/contracts/deepagents-sse-event.json", "{}")
             self._write(root, "packages/extension-manifest.template.json", "{}")
             self._write(root, "backend/agents/__init__.py", "AGENT = {}")
             self._write(root, "backend/agents/README.md", "agents")
@@ -38,27 +38,24 @@ class ScaffoldAuditTests(unittest.TestCase):
                 "backend/agents/middleware/audit_middleware.py",
                 "MIDDLEWARE = []",
             )
-            self._write(
-                root,
-                "backend/agents/hooks/__init__.py",
-                "RUN_INPUT_HOOKS = []\nUPLOAD_HOOKS = []",
-            )
-            self._write(
-                root,
-                "backend/agents/hooks/attachment_hooks.py",
-                "RUN_INPUT_HOOKS = []\nUPLOAD_HOOKS = []",
-            )
             self._write(root, "backend/agents/skills/skill-creator/SKILL.md", "skill")
             self._write(root, "backend/agents/memory/project.md", "memory")
-            self._write(root, "backend/app/storage/minio.py", "class MinioStoragePlaceholder: ...")
+            for relative_file in (
+                "backend/app/main.py",
+                "backend/app/routes.py",
+                "backend/app/settings.py",
+                "backend/app/db.py",
+                "backend/app/auth.py",
+                "backend/app/catalog.py",
+                "backend/app/agent.py",
+                "backend/app/runtime/__init__.py",
+                "backend/app/runtime/agent_factory.py",
+                "backend/app/runtime/config.py",
+                "backend/app/runtime/extensions.py",
+                "backend/app/runtime/sse_bridge.py",
+            ):
+                self._write(root, relative_file, "pass")
             for relative_dir in (
-                "backend/app/api",
-                "backend/app/core",
-                "backend/app/db",
-                "backend/app/schemas",
-                "backend/app/services",
-                "backend/app/storage",
-                "backend/deepagents_integration",
                 "frontend/src/api",
                 "frontend/src/components",
                 "frontend/src/lib",

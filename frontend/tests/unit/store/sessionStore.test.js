@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   createSessionStore,
+  appendProcessEvent,
   finalizeAssistantMessage,
   mergeAssistantDelta,
   reconcileMessages,
+  settleStreamingMessage,
 } from '../../../src/store/sessionStore.js'
+import { normalizeStreamEnvelope } from '../../../src/lib/sseContract.js'
 
 describe('sessionStore transcript helpers', () => {
   it('merges assistant deltas into a transient streaming message', () => {
@@ -21,7 +24,19 @@ describe('sessionStore transcript helpers', () => {
   })
 
   it('replaces the transient message with the finalized assistant row', () => {
-    const streaming = mergeAssistantDelta([], { runId: 'run-2', delta: 'Partial' })
+    const streaming = appendProcessEvent(
+      mergeAssistantDelta([], { runId: 'run-2', delta: 'Partial' }),
+      {
+        runId: 'run-2',
+        event: {
+          id: 'tool-1',
+          kind: 'tool',
+          title: 'search',
+          summary: 'looked up docs',
+          status: 'completed',
+        },
+      },
+    )
     const finalized = finalizeAssistantMessage(streaming, {
       runId: 'run-2',
       message: {
@@ -35,6 +50,67 @@ describe('sessionStore transcript helpers', () => {
         id: 'msg-final',
         content: 'Final answer',
         streaming: false,
+        processes: [
+          expect.objectContaining({
+            id: 'tool-1',
+            title: 'search',
+          }),
+        ],
+      }),
+    ])
+  })
+
+  it('settles a streaming assistant row when the run completes without another final message', () => {
+    const streaming = mergeAssistantDelta([], { runId: 'run-terminal', delta: '完成内容' })
+    const settled = settleStreamingMessage(streaming, { runId: 'run-terminal' })
+
+    expect(settled).toEqual([
+      expect.objectContaining({
+        id: 'stream:run-terminal',
+        content: '完成内容',
+        streaming: false,
+      }),
+    ])
+  })
+
+  it('adds key process events to the assistant message instead of the side panel only', () => {
+    const apiClient = {
+      createSession: vi.fn(),
+      deleteSession: vi.fn(),
+      getSessionMessages: vi.fn(async () => []),
+      listSessions: vi.fn(),
+      uploadFiles: vi.fn(),
+    }
+    const store = createSessionStore(apiClient)
+
+    store.consumeRunEvent({
+      eventId: 'evt-tool',
+      type: 'tool',
+      runId: 'run-tool',
+      sessionId: 'session-tool',
+      timestamp: '2026-05-04T14:00:00.000Z',
+      status: 'completed',
+      label: 'tool.completed',
+      detail: 'search_docs',
+      data: {
+        tool_name: 'search_docs',
+        output: { text: 'found 2 matches' },
+      },
+    })
+
+    expect(store.state.messagesBySession['session-tool']).toEqual([
+      expect.objectContaining({
+        id: 'stream:run-tool',
+        role: 'assistant',
+        processes: [
+          expect.objectContaining({
+            id: 'evt-tool',
+            kind: 'tool',
+            title: 'search_docs',
+            summary: 'found 2 matches',
+            status: 'completed',
+          }),
+        ],
       }),
     ])
   })
@@ -99,6 +175,115 @@ describe('sessionStore transcript helpers', () => {
         content: '完整回复',
         streaming: false,
       }),
+    ])
+  })
+
+  it('covers the basic chat path from optimistic user message to final assistant reply', () => {
+    const apiClient = {
+      createSession: vi.fn(),
+      deleteSession: vi.fn(),
+      getSessionMessages: vi.fn(async () => []),
+      listSessions: vi.fn(),
+      uploadFiles: vi.fn(),
+    }
+    const store = createSessionStore(apiClient)
+
+    store.addOptimisticUserMessage('session-1', '你好')
+    store.consumeRunEvent({
+      type: 'message.delta',
+      runId: 'run-chat',
+      sessionId: 'session-1',
+      delta: '你',
+    })
+    store.consumeRunEvent({
+      type: 'message.final',
+      runId: 'run-chat',
+      sessionId: 'session-1',
+      timestamp: '2026-04-29T14:35:00.000Z',
+      message: {
+        id: 'msg-chat',
+        role: 'assistant',
+        content: '你好，我在。',
+      },
+      data: {},
+    })
+
+    expect(store.state.messagesBySession['session-1']).toEqual([
+      expect.objectContaining({ role: 'user', content: '你好' }),
+      expect.objectContaining({ id: 'msg-chat', role: 'assistant', content: '你好，我在。' }),
+    ])
+  })
+
+  it('ignores nested runtime completion noise and keeps the real assistant final reply', () => {
+    const apiClient = {
+      createSession: vi.fn(),
+      deleteSession: vi.fn(),
+      getSessionMessages: vi.fn(async () => []),
+      listSessions: vi.fn(),
+      uploadFiles: vi.fn(),
+    }
+    const store = createSessionStore(apiClient)
+    store.addOptimisticUserMessage('session-1', '请直接回复已修复')
+
+    const payloads = [
+      {
+        event_id: 'evt-1',
+        type: 'status',
+        run_id: 'run-1',
+        session_id: 'session-1',
+        timestamp: '2026-04-29T15:29:57Z',
+        label: 'run.completed',
+        detail: "{'skills_metadata': []}",
+        data: { status: 'completed', node: 'SkillsMiddleware.before_agent' },
+      },
+      {
+        event_id: 'evt-2',
+        type: 'message.delta',
+        run_id: 'run-1',
+        session_id: 'session-1',
+        timestamp: '2026-04-29T15:29:58Z',
+        label: 'assistant.delta',
+        detail: '已',
+        data: { delta: '已' },
+      },
+      {
+        event_id: 'evt-3',
+        type: 'message.delta',
+        run_id: 'run-1',
+        session_id: 'session-1',
+        timestamp: '2026-04-29T15:29:59Z',
+        label: 'assistant.delta',
+        detail: '修复',
+        data: { delta: '修复' },
+      },
+      {
+        event_id: 'evt-4',
+        type: 'message.final',
+        run_id: 'run-1',
+        session_id: 'session-1',
+        timestamp: '2026-04-29T15:30:00Z',
+        label: 'assistant.message',
+        detail: '已修复',
+        data: {
+          message: {
+            id: 'msg-final',
+            role: 'assistant',
+            content: '已修复',
+          },
+        },
+      },
+    ]
+
+    for (const payload of payloads) {
+      const envelope = normalizeStreamEnvelope(payload)
+      if (envelope) {
+        store.consumeRunEvent(envelope)
+      }
+    }
+
+    expect(store.state.messagesBySession['session-1']).toEqual([
+      expect.objectContaining({ role: 'user', content: '请直接回复已修复' }),
+      expect.objectContaining({ id: 'msg-final', role: 'assistant', content: '已修复' }),
     ])
   })
 

@@ -5,6 +5,7 @@ import {
   isPlaceholderSessionTitle,
   normalizeSessionTitle,
 } from '../lib/sessionTitle.js'
+import { logEntryFromEnvelope } from '../lib/processLog.js'
 import { uiCopy } from '../lib/copy.js'
 
 function createClientId() {
@@ -79,6 +80,10 @@ function normalizeAttachments(attachments) {
   }))
 }
 
+function normalizeProcesses(processes) {
+  return Array.isArray(processes) ? processes.filter(Boolean) : []
+}
+
 function messageSignature(message) {
   const attachments = Array.isArray(message?.attachments)
     ? message.attachments.map((attachment) => attachment?.name || attachment?.id || '').join('|')
@@ -122,8 +127,10 @@ export function mergeAssistantDelta(messages, { runId, delta }) {
       role: 'assistant',
       content: delta,
       createdAt: new Date().toISOString(),
+      startedAt: new Date().toISOString(),
       streaming: true,
       attachments: [],
+      processes: [],
     })
     return transcript
   }
@@ -138,6 +145,7 @@ export function mergeAssistantDelta(messages, { runId, delta }) {
 
 export function finalizeAssistantMessage(messages, { runId, message }) {
   const streamId = `stream:${runId}`
+  const streamingMessage = messages.find((entry) => entry.id === streamId)
   const transcript = messages.filter((entry) => entry.id !== streamId)
   const extra = message?.extra && typeof message.extra === 'object' ? message.extra : {}
   const nextMessage = {
@@ -145,7 +153,9 @@ export function finalizeAssistantMessage(messages, { runId, message }) {
     role: String(message.role ?? 'assistant'),
     content: normalizeContent(message.content ?? message.text ?? extra.content ?? ''),
     createdAt: String(message.createdAt ?? message.created_at ?? new Date().toISOString()),
+    startedAt: String(streamingMessage?.startedAt ?? streamingMessage?.createdAt ?? message.createdAt ?? message.created_at ?? new Date().toISOString()),
     attachments: normalizeAttachments(message.attachments ?? extra.attachments),
+    processes: normalizeProcesses(message.processes ?? extra.processes ?? streamingMessage?.processes),
     streaming: false,
   }
   const existingIndex = transcript.findIndex((entry) => entry.id === nextMessage.id)
@@ -157,6 +167,56 @@ export function finalizeAssistantMessage(messages, { runId, message }) {
   transcript[existingIndex] = {
     ...transcript[existingIndex],
     ...nextMessage,
+  }
+  return transcript
+}
+
+export function settleStreamingMessage(messages, { runId }) {
+  const streamId = `stream:${runId}`
+  const index = messages.findIndex((message) => message.id === streamId)
+  if (index === -1) {
+    return messages
+  }
+  const transcript = [...messages]
+  transcript[index] = {
+    ...transcript[index],
+    streaming: false,
+  }
+  return transcript
+}
+
+export function appendProcessEvent(messages, { runId, event }) {
+  if (!event) {
+    return messages
+  }
+  const streamId = `stream:${runId}`
+  const transcript = [...messages]
+  let targetIndex = transcript.findIndex((message) => message.id === streamId)
+  if (targetIndex === -1) {
+    transcript.push({
+      id: streamId,
+      role: 'assistant',
+      content: '',
+      createdAt: event.timestamp || new Date().toISOString(),
+      startedAt: event.timestamp || new Date().toISOString(),
+      attachments: [],
+      processes: [],
+      streaming: true,
+    })
+    targetIndex = transcript.length - 1
+  }
+
+  const message = transcript[targetIndex]
+  const processes = normalizeProcesses(message.processes)
+  const existingIndex = processes.findIndex((item) => item.id === event.id)
+  const nextProcesses =
+    existingIndex === -1
+      ? [...processes, event]
+      : processes.map((item, index) => (index === existingIndex ? { ...item, ...event } : item))
+
+  transcript[targetIndex] = {
+    ...message,
+    processes: nextProcesses,
   }
   return transcript
 }
@@ -379,6 +439,13 @@ export function createSessionStore(apiClient) {
     state.submitting = Boolean(submitting)
   }
 
+  function discardStreamingMessage(sessionId, runId) {
+    const normalizedSessionId = String(sessionId)
+    const streamId = `stream:${runId}`
+    const transcript = ensureTranscriptMap(state.messagesBySession, normalizedSessionId)
+    state.messagesBySession[normalizedSessionId] = transcript.filter((message) => message.id !== streamId)
+  }
+
   function consumeRunEvent(envelope) {
     if (!envelope.sessionId) {
       return
@@ -386,6 +453,18 @@ export function createSessionStore(apiClient) {
 
     const sessionId = String(envelope.sessionId)
     const transcript = ensureTranscriptMap(state.messagesBySession, sessionId)
+    const processEvent = logEntryFromEnvelope(envelope)
+
+    if (processEvent) {
+      state.messagesBySession[sessionId] = appendProcessEvent(transcript, {
+        runId: envelope.runId,
+        event: processEvent,
+      })
+      touchSession(sessionId)
+      if (envelope.type !== 'error') {
+        return
+      }
+    }
 
     if (envelope.type === 'message.delta' && envelope.delta) {
       state.messagesBySession[sessionId] = mergeAssistantDelta(transcript, {
@@ -416,9 +495,17 @@ export function createSessionStore(apiClient) {
       return
     }
 
+    if (envelope.terminal) {
+      state.messagesBySession[sessionId] = settleStreamingMessage(
+        ensureTranscriptMap(state.messagesBySession, sessionId),
+        { runId: envelope.runId },
+      )
+      touchSession(sessionId)
+    }
+
     if (envelope.type === 'error') {
       state.messagesBySession[sessionId] = addSystemNotice(
-        transcript,
+        ensureTranscriptMap(state.messagesBySession, sessionId),
         envelope.detail || uiCopy.store.session.runFailed,
       )
       touchSession(sessionId)
@@ -435,6 +522,7 @@ export function createSessionStore(apiClient) {
     clearPendingUploads,
     deletePendingUpload,
     deleteSession,
+    discardStreamingMessage,
     getCurrentMessages,
     getCurrentSession,
     getPendingUploads,

@@ -1,9 +1,8 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
 
 import ChatWorkspace from './components/ChatWorkspace.vue'
-import ProgressTimeline from './components/ProgressTimeline.vue'
 import SessionSidebar from './components/SessionSidebar.vue'
 import { createApiClient } from './api/client.js'
 import { localeState, setLocale, uiCopy } from './lib/copy.js'
@@ -45,14 +44,11 @@ const authError = ref('')
 const authLoading = ref(false)
 const authChecked = ref(false)
 const isAuthenticated = ref(false)
-const isWideLayout = ref(true)
 const stoppingRunId = ref('')
-const timelinePanelOpen = ref(true)
 const messageSendScrollKey = ref(0)
 const runtimeOptions = ref({ models: [], defaultModelId: '' })
 const runtimeOptionsError = ref('')
 const selectedModelId = ref('')
-let viewportMediaQuery = null
 
 function scheduleSessionDeltaFlush() {
   if (pendingSessionDeltaFlush) {
@@ -109,14 +105,8 @@ const combinedError = computed(
   () => runtimeOptionsError.value || runStore.state.error || sessionStore.state.error || sessionStore.state.uploadError,
 )
 const activeRun = computed(() => runStore.state.activeRun)
-const connectionState = computed(
-  () => runStore.state.activeRun?.connectionState || runStore.state.connectionState,
-)
-const runtimeDiagnostics = computed(() => runStore.state.diagnostics)
-const runError = computed(() => runStore.state.error)
 const runStatus = computed(() => runStore.state.activeRun?.status || 'idle')
 const currentLocale = computed(() => localeState.current)
-const appShell = ref(null)
 const canStopRun = computed(
   () => ['queued', 'running'].includes(runStatus.value) && Boolean(activeRun.value?.runId),
 )
@@ -149,11 +139,6 @@ const runStatusLabel = computed(() => {
   if (status === 'failed') return uiCopy.common.failed
   return uiCopy.common.running
 })
-const showTimelinePanel = computed(() => isWideLayout.value || timelinePanelOpen.value)
-const timelineToggleLabel = computed(() =>
-  showTimelinePanel.value ? uiCopy.app.timelineToggle.close : uiCopy.app.timelineToggle.open,
-)
-let headerResizeObserver = null
 
 function handleLocaleChange(locale) {
   setLocale(locale)
@@ -174,107 +159,7 @@ async function loadRuntimeOptions() {
   }
 }
 
-function collectPanelHeaders() {
-  if (!appShell.value) {
-    return []
-  }
-  return [...appShell.value.querySelectorAll('.sidebar-header, .workspace-header, .runtime-header')]
-}
-
-function syncPanelHeaderHeights() {
-  if (!appShell.value) {
-    return
-  }
-  if (!isWideLayout.value) {
-    appShell.value.style.removeProperty('--panel-header-row-height')
-    return
-  }
-  const headers = collectPanelHeaders().filter((element) => element.offsetParent !== null)
-  if (headers.length === 0) {
-    appShell.value.style.removeProperty('--panel-header-row-height')
-    return
-  }
-  const maxHeight = Math.max(...headers.map((element) => Math.ceil(element.getBoundingClientRect().height)))
-  appShell.value.style.setProperty('--panel-header-row-height', `${maxHeight}px`)
-}
-
-function teardownHeaderResizeObserver() {
-  if (headerResizeObserver) {
-    headerResizeObserver.disconnect()
-    headerResizeObserver = null
-  }
-}
-
-function setupHeaderResizeObserver() {
-  teardownHeaderResizeObserver()
-  const ResizeObserverCtor = globalThis.ResizeObserver
-  if (typeof ResizeObserverCtor === 'undefined') {
-    syncPanelHeaderHeights()
-    return
-  }
-  headerResizeObserver = new ResizeObserverCtor(() => {
-    syncPanelHeaderHeights()
-  })
-  for (const header of collectPanelHeaders()) {
-    headerResizeObserver.observe(header)
-  }
-  syncPanelHeaderHeights()
-}
-
-function applyViewportLayout(matches) {
-  isWideLayout.value = matches
-  timelinePanelOpen.value = matches
-}
-
-function handleViewportChange(event) {
-  applyViewportLayout(Boolean(event.matches))
-}
-
-function setupViewportTracking() {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
-    applyViewportLayout(true)
-    return
-  }
-
-  viewportMediaQuery = window.matchMedia('(min-width: 1320px)')
-  applyViewportLayout(viewportMediaQuery.matches)
-
-  if (typeof viewportMediaQuery.addEventListener === 'function') {
-    viewportMediaQuery.addEventListener('change', handleViewportChange)
-  } else {
-    viewportMediaQuery.addListener(handleViewportChange)
-  }
-}
-
-function teardownViewportTracking() {
-  if (!viewportMediaQuery) {
-    return
-  }
-
-  if (typeof viewportMediaQuery.removeEventListener === 'function') {
-    viewportMediaQuery.removeEventListener('change', handleViewportChange)
-  } else {
-    viewportMediaQuery.removeListener(handleViewportChange)
-  }
-
-  viewportMediaQuery = null
-}
-
-function toggleTimelinePanel() {
-  if (isWideLayout.value) {
-    return
-  }
-  timelinePanelOpen.value = !timelinePanelOpen.value
-}
-
-function closeTimelinePanel() {
-  if (isWideLayout.value) {
-    return
-  }
-  timelinePanelOpen.value = false
-}
-
-function closeStream({ markDisconnected = false, detail = '' } = {}) {
+function closeStream({ markDisconnected = false } = {}) {
   flushSessionDeltas()
   const runId = runStore.state.activeRun?.runId || ''
   if (activeStream.value) {
@@ -282,7 +167,7 @@ function closeStream({ markDisconnected = false, detail = '' } = {}) {
     activeStream.value = null
   }
   if (markDisconnected && runId) {
-    runStore.markDisconnected(runId, detail || uiCopy.app.stream.disconnected)
+    runStore.markDisconnected(runId)
   }
 }
 
@@ -296,7 +181,7 @@ function syncSessionTranscript(sessionId) {
 function isTerminalEnvelope(envelope) {
   return (
     envelope.type === 'error' ||
-    (envelope.type === 'status' && ['completed', 'failed', 'cancelled'].includes(envelope.status))
+    (envelope.type === 'status' && envelope.terminal === true)
   )
 }
 
@@ -322,108 +207,6 @@ async function handleLogin() {
   } finally {
     authLoading.value = false
   }
-}
-
-function connectRunStream(runId, sessionId) {
-  closeStream()
-  logRuntime('sse.connect', uiCopy.app.logs.sseConnect, { runId, sessionId })
-  const terminalDetail = (envelope) =>
-    envelope.type === 'error'
-      ? uiCopy.app.stream.terminalError
-      : envelope.status === 'cancelled'
-        ? uiCopy.app.stream.terminalCancelled
-      : uiCopy.app.stream.terminalCompleted
-  activeStream.value = apiClient.openRunStream(runId, {
-    lastEventId: runStore.getLastEventId(runId),
-    onOpen() {
-      logRuntime('sse.open', uiCopy.app.logs.sseOpen, { runId, sessionId })
-      runStore.markConnected(runId)
-    },
-    onRetry() {
-      logRuntime('sse.retry', uiCopy.app.logs.sseRetry, { runId, sessionId }, 'warn')
-      runStore.markConnecting(runId, uiCopy.app.stream.retrying)
-    },
-    onEvent(payload) {
-      const envelope = normalizeStreamEnvelope(payload)
-      if (!envelope) {
-        logRuntime('sse.drop', uiCopy.app.logs.sseDrop, payload, 'warn')
-        return
-      }
-
-      logRuntime('sse.event', `${envelope.type}`, {
-        eventId: envelope.eventId,
-        label: envelope.label,
-        status: envelope.status,
-        type: envelope.type,
-      })
-
-      const accepted = runStore.consume(envelope)
-      if (!accepted) {
-        if (isTerminalEnvelope(envelope)) {
-          if (envelope.type === 'status' && envelope.status === 'completed') {
-            runStore.markCompleted(runId, uiCopy.app.stream.replayCompleted)
-          } else if (envelope.type === 'status' && envelope.status === 'cancelled') {
-            runStore.markCancelled(runId, uiCopy.app.stream.replayCancelled)
-            syncSessionTranscript(sessionId)
-          } else if (envelope.type === 'error') {
-            syncSessionTranscript(sessionId)
-          }
-          closeStream({
-            markDisconnected: true,
-            detail: terminalDetail(envelope),
-          })
-        }
-        return
-      }
-
-      if (envelope.sessionId && envelope.sessionId !== String(sessionId)) {
-        return
-      }
-
-      consumeSessionRunEvent(envelope)
-      if (envelope.type === 'message.final' && !String(envelope.message?.content || '').trim()) {
-        syncSessionTranscript(sessionId)
-      }
-
-      if (isTerminalEnvelope(envelope)) {
-        if (
-          envelope.type === 'status' &&
-          envelope.status === 'completed' &&
-          Array.isArray(envelope.data?.generated_attachments) &&
-          envelope.data.generated_attachments.length > 0
-        ) {
-          syncSessionTranscript(sessionId)
-        }
-        if (
-          envelope.type === 'status' &&
-          ['failed', 'cancelled'].includes(envelope.status)
-        ) {
-          syncSessionTranscript(sessionId)
-        }
-        closeStream({
-          markDisconnected: true,
-          detail: terminalDetail(envelope),
-        })
-      }
-    },
-    onError(error) {
-      if (['completed', 'cancelled'].includes(runStore.state.activeRun?.status || '')) {
-        logRuntime('sse.closed', uiCopy.app.logs.sseClosed, { runId, sessionId })
-        closeStream({
-          markDisconnected: true,
-          detail:
-            runStore.state.activeRun?.status === 'cancelled'
-              ? uiCopy.app.stream.cancelledClosed
-              : uiCopy.app.stream.completedClosed,
-        })
-        return
-      }
-      logRuntime('sse.error', error.message, { runId, sessionId }, 'error')
-      runStore.markErrored(runId, error.message)
-      closeStream()
-      sessionStore.addSystemNotice(String(sessionId), uiCopy.app.stream.recoveryFailure(error.message))
-    },
-  })
 }
 
 async function ensureSession() {
@@ -526,24 +309,59 @@ async function handleSubmit({ prompt }) {
 
   const session = await ensureSession()
   const sessionId = String(session.id)
-  sessionStore.addOptimisticUserMessage(sessionId, text)
   sessionStore.setSubmitting(true)
-  logRuntime('run.start', uiCopy.app.logs.runStart, {
-    sessionId,
-    attachmentCount: sessionStore.getPendingUploads(sessionId).length,
-  })
 
   try {
+    sessionStore.addOptimisticUserMessage(sessionId, text)
+    logRuntime('run.start', uiCopy.app.logs.runStart, {
+      sessionId,
+      attachmentCount: sessionStore.getPendingUploads(sessionId).length,
+    })
     const run = await apiClient.startRun({
       sessionId,
       prompt: text,
       attachments: sessionStore.getPendingUploads(sessionId),
       modelId: selectedModelId.value,
+      onOpen() {
+        logRuntime('fetch-stream.open', uiCopy.app.logs.sseOpen, { sessionId })
+      },
+      onEvent(payload) {
+        const envelope = normalizeStreamEnvelope(payload)
+        if (!envelope) {
+          logRuntime('fetch-stream.drop', uiCopy.app.logs.sseDrop, payload, 'warn')
+          return
+        }
+        if (!runStore.state.activeRun || runStore.state.activeRun.runId !== envelope.runId) {
+          runStore.beginRun({ runId: envelope.runId, sessionId })
+        }
+        runStore.consume(envelope)
+        consumeSessionRunEvent(envelope)
+        if (isTerminalEnvelope(envelope)) {
+          closeStream({
+            markDisconnected: true,
+            detail:
+              envelope.type === 'error'
+                ? uiCopy.app.stream.terminalError
+                : envelope.status === 'cancelled'
+                  ? uiCopy.app.stream.terminalCancelled
+                  : uiCopy.app.stream.terminalCompleted,
+          })
+        }
+      },
+      onError(error) {
+        const message = error instanceof Error ? error.message : uiCopy.app.stream.retrying
+        logRuntime('fetch-stream.error', message, { sessionId }, 'error')
+        runStore.markErrored(runStore.state.activeRun?.runId || 'pending', message)
+        sessionStore.addSystemNotice(sessionId, uiCopy.app.stream.recoveryFailure(message))
+      },
     })
 
     sessionStore.clearPendingUploads(sessionId)
     messageSendScrollKey.value += 1
-    runStore.beginRun({ runId: run.runId, sessionId })
+    if (!runStore.state.activeRun || runStore.state.activeRun.runId !== run.runId) {
+      runStore.beginRun({ runId: run.runId, sessionId })
+    }
+    activeStream.value = run
     runStore.recordClientNotice({
       sessionId,
       runId: run.runId,
@@ -551,7 +369,6 @@ async function handleSubmit({ prompt }) {
       detail: uiCopy.app.notices.runCreatedDetail,
       status: 'completed',
     })
-    connectRunStream(run.runId, sessionId)
   } catch (error) {
     const message = error instanceof Error ? error.message : uiCopy.app.logs.runStartError
     logRuntime('run.start.error', message, { sessionId }, 'error')
@@ -577,9 +394,11 @@ async function handleStopRun() {
   stoppingRunId.value = runId
   runStore.markCancelling(runId, uiCopy.common.cancelling)
   try {
+    activeStream.value?.close?.()
     const result = await apiClient.cancelRun(runId)
     if (result.status === 'cancelled') {
       runStore.markCancelled(runId, uiCopy.app.notices.stopped)
+      sessionStore.discardStreamingMessage(sessionId, runId)
       closeStream({
         markDisconnected: true,
         detail: uiCopy.app.stream.terminalCancelled,
@@ -628,7 +447,6 @@ async function handleStopRun() {
 }
 
 onMounted(async () => {
-  setupViewportTracking()
   try {
     await apiClient.getAdminProfile()
     isAuthenticated.value = true
@@ -643,27 +461,15 @@ onMounted(async () => {
   } finally {
     authChecked.value = true
   }
-  await nextTick()
-  setupHeaderResizeObserver()
 })
 
 onBeforeUnmount(() => {
   closeStream()
-  teardownHeaderResizeObserver()
-  teardownViewportTracking()
 })
-
-watch(
-  () => [isWideLayout.value, showTimelinePanel.value, currentLocale.value],
-  async () => {
-    await nextTick()
-    setupHeaderResizeObserver()
-  },
-)
 </script>
 
 <template>
-  <div ref="appShell" class="app-shell">
+  <div class="app-shell">
     <template v-if="isAuthenticated">
       <header class="app-toolbar">
         <div class="toolbar-brand">
@@ -704,9 +510,6 @@ watch(
           >
             {{ runStatusLabel }}
           </el-tag>
-          <el-button v-if="!isWideLayout" size="small" plain @click="toggleTimelinePanel">
-            {{ timelineToggleLabel }}
-          </el-button>
         </div>
       </header>
 
@@ -727,7 +530,6 @@ watch(
 
         <section
           class="workspace-shell"
-          :class="{ 'workspace-shell--wide': isWideLayout }"
           :aria-label="uiCopy.app.workspaceAriaLabel"
         >
           <ChatWorkspace
@@ -753,30 +555,6 @@ watch(
             @upload="handleUpload"
             @delete-upload="handleDeletePendingUpload"
           />
-
-          <div
-            v-if="!isWideLayout && showTimelinePanel"
-            class="timeline-backdrop"
-            @click="closeTimelinePanel"
-          />
-
-          <aside
-            v-if="showTimelinePanel"
-            class="timeline-shell"
-            :class="{ 'timeline-shell--overlay': !isWideLayout }"
-            :aria-label="uiCopy.app.timelineAriaLabel"
-          >
-            <ProgressTimeline
-              :active-run="activeRun"
-              :can-stop="canStopRun"
-              :connection-state="connectionState"
-              :diagnostics="runtimeDiagnostics"
-              :runtime-error="runError"
-              :dismissible="!isWideLayout"
-              :stopping="stoppingRun"
-              @close="closeTimelinePanel"
-            />
-          </aside>
         </section>
       </main>
     </template>

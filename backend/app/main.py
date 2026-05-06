@@ -1,48 +1,29 @@
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import inspect
 
-from app.api.router import api_router
-from app.core.config import Settings, get_settings, set_runtime_timezone
-from app.core.database import DatabaseState
-from app.core.logging import format_log_message
-from app.services.runs import RunManager, RunService
-from deepagents_integration import build_deep_agent
-
-logger = logging.getLogger(__name__)
-
-
-def configure_logging() -> None:
-    root = logging.getLogger()
-    if not root.handlers:
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
+from app.auth import sync_configured_users
+from app.catalog import load_model_catalog, resolve_agent, validate_model_catalog
+from app.db import PRODUCT_TABLES, Database
+from app.routes import router
+from app.runtime.extensions import SandboxConfig
+from app.settings import Settings, get_settings
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    configure_logging()
     resolved_settings = settings or get_settings()
-    set_runtime_timezone(resolved_settings.deepagents_default_timezone)
-    database = DatabaseState.from_settings(resolved_settings)
-    startup_summary = resolved_settings.logging_summary()
-    logger.info(
-        "%s",
-        format_log_message(
-            f"application config loaded for {startup_summary['database_backend']} backend",
-            event="app.config_loaded",
-            phase="startup",
-            **startup_summary,
-        ),
-    )
+    resolved_settings.validate_startup()
+    database = Database(resolved_settings.database_url)
 
     @asynccontextmanager
-    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        if resolved_settings.sqlite_file_path is not None:
-            resolved_settings.sqlite_file_path.parent.mkdir(parents=True, exist_ok=True)
-        resolved_settings.upload_storage_dir.mkdir(parents=True, exist_ok=True)
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        resolved_settings.prepare_paths()
         database.initialize_schema()
+        with database.session() as db:
+            sync_configured_users(db, resolved_settings)
         yield
         database.dispose()
 
@@ -60,18 +41,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = resolved_settings
     app.state.database = database
-    app.state.run_manager = RunManager()
-    app.state.run_service = RunService(
-        database=database,
-        manager=app.state.run_manager,
-        builder=build_deep_agent,
-    )
-    app.state.prompt_injections = app.state.run_service.prompt_injections
-    app.include_router(api_router, prefix=resolved_settings.api_prefix)
+    app.include_router(router, prefix=resolved_settings.api_prefix)
 
     @app.get("/health", tags=["system"])
     def healthcheck() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/ready", tags=["system"])
+    def readiness() -> dict[str, object]:
+        checks: dict[str, object] = {}
+        with database.engine.connect() as conn:
+            conn.exec_driver_sql("SELECT 1")
+        checks["product_db"] = "ok"
+        product_tables = set(inspect(database.engine).get_table_names())
+        if product_tables != PRODUCT_TABLES:
+            checks["schema"] = "invalid"
+            return {
+                "status": "error",
+                "checks": checks,
+                "expected_product_tables": sorted(PRODUCT_TABLES),
+                "actual_tables": sorted(product_tables),
+            }
+        checks["schema"] = "ok"
+        catalog = load_model_catalog(resolved_settings)
+        validate_model_catalog(catalog, selected_model_id=None, production=False)
+        checks["model_catalog"] = "ok"
+        resolved_settings.assert_runtime_persistence_allowed()
+        checks["runtime_persistence"] = resolved_settings.runtime_driver_mode()
+        SandboxConfig.from_mapping(resolved_settings.sandbox_settings())
+        checks["sandbox"] = "ok"
+        resolve_agent(resolved_settings)
+        checks["agent_package"] = "ok"
+        return {"status": "ok", "checks": checks}
 
     return app
 

@@ -1,11 +1,9 @@
 # open_deepagents
 
-`open_deepagents` is a ready-to-run, user-facing open-source framework for
-building production-grade DeepAgents applications. It includes a FastAPI backend,
-a Vue chat workspace, persistent sessions, uploads and generated-file downloads,
-streamed runtime events, model selection, Mermaid rendering, sandbox controls,
-and a recursive agent package you can customize without
-changing the app shell.
+`open_deepagents` is a FastAPI + Vue scaffold for building DeepAgents
+applications with a browser chat workspace, authenticated sessions, streamed
+runtime events, a model selector, Mermaid rendering, and a customizable
+recursive `backend/agents/` package.
 
 Chinese documentation: [README_CH.md](README_CH.md)
 
@@ -14,46 +12,50 @@ Chinese documentation: [README_CH.md](README_CH.md)
 ## What You Get
 
 - Admin login with optional multi-user configuration.
-- Session history with stored user and assistant messages.
-- File upload support with attachment context passed into agent runs.
-- Streaming chat responses over SSE.
-- Runtime timeline for run, tool, skill, sandbox, and subagent activity.
+- Per-user sessions backed by a SQL `users` / `sessions` / `events` ledger.
+- A single fetch-stream run endpoint that starts a DeepAgents run and streams UI
+  events.
+- Runtime timeline for status, tool, subagent, sandbox, and assistant-message
+  activity.
 - Markdown and Mermaid rendering in assistant messages.
-- PNG copy support for rendered Mermaid diagrams when the browser supports image
-  clipboard writes.
 - Model catalog configuration for OpenAI-compatible providers.
-- A recursive `backend/agents/` package for prompts, tools, middleware, hooks,
-  skills, memory, and subagents.
-- Sandbox backends for virtual state, filesystem access, local shell, or custom
-  DeepAgents backends.
+- Recursive agent package support for prompts, tools, middleware, skills,
+  memory, permissions, built-in tool visibility, and subagents.
+- Native DeepAgents/LangGraph runtime wiring for `thread_id`, checkpointer,
+  store, cache, and backend selection.
+
+The current native backend keeps the runtime surface intentionally small:
+sessions, ordered events, and one fetch-stream run endpoint. Upload/download,
+generated-file export, split run management, and prompt-injection services are
+not part of this scaffold. The frontend still displays attachment-shaped
+message metadata when present in history, but file upload is currently a local
+pending-attachment placeholder.
 
 ## How It Fits Together
 
 ```text
-frontend/                 Vue 3 UI: login, sessions, chat, uploads, timeline
-backend/                  FastAPI API: auth, persistence, uploads, run orchestration
+frontend/                 Vue 3 UI: login, sessions, chat, stream timeline
+backend/                  FastAPI API: auth, sessions, event ledger, DeepAgents
 backend/agents/           Recursive agent package loaded by the backend
 backend/models.json       Model catalog shown in the UI model selector
 docs/                     User guides and screenshots
-packages/contracts/       Shared event contract fixtures
-tests/                    Repository-level backend integration tests
+packages/contracts/       Shared UI SSE contract fixtures
+tests/                    Repository-level integration tests
 verification/             Scaffold and contract audit helpers
 ```
 
 Run flow:
 
-1. The frontend logs in and stores an API token.
+1. The frontend logs in and stores a bearer token.
 2. The user selects or creates a session.
-3. The user uploads files and sends a message.
-4. The backend stores the user message and starts a DeepAgents run.
-5. `backend/agents:AGENT` is resolved into prompt, tools, middleware, hooks,
-   skills, memory, permissions, and subagents.
-6. The run input is assembled from transcript history, attachments, hooks, and
-   runtime configuration.
-7. Runtime events are normalized into UI SSE events and streamed to the browser.
-8. The frontend updates the transcript and runtime timeline.
-9. Files produced by the `state` backend are exported to uploads and attached to
-   the final assistant message.
+3. The frontend sends a prompt to
+   `POST /api/sessions/{session_id}/runs/stream`.
+4. The backend persists `run.started` and `user.message` events.
+5. `backend/agents:AGENT` is resolved into DeepAgents runtime inputs.
+6. DeepAgents streams runtime events through `graph.astream_events(...)`.
+7. The backend stores normalized event rows and emits SSE envelopes.
+8. The frontend updates the transcript from message events and the timeline from
+   status/tool/runtime events.
 
 ## Quick Start
 
@@ -65,34 +67,65 @@ cp backend/models.example.json backend/models.json
 ```
 
 Edit `backend/models.json` and provide credentials through environment
-placeholders such as `${OPENAI_API_KEY}`. App settings are read from
-`backend/.env`.
+placeholders such as `${OPENAI_API_KEY}`.
 
 Important `.env` settings:
 
 | Setting | Purpose |
 | --- | --- |
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD` | Default login credentials. |
-| `ADMIN_USERS` | Optional JSON map for multiple users. |
-| `UPLOAD_STORAGE_DIR` | Upload and generated-file storage directory. |
+| `ADMIN_USERS` | Optional JSON map or comma-separated `username=password` pairs. |
+| `ADMIN_TOKEN_SECRET` | JWT signing secret. Use a long random value outside local dev. |
+| `DATABASE_URL` | SQLite or MySQL SQLAlchemy URL for the product ledger. |
 | `DEEPAGENTS_MAIN_AGENT` | Main agent import spec. Default: `agents:AGENT`. |
 | `DEEPAGENTS_MODEL_CONFIG_PATH` | Model catalog path. Default: `./models.json`. |
-| `DEEPAGENTS_DEFAULT_TIMEZONE` | Backend timezone for persisted timestamps and auth/session events. |
-| `DEEPAGENTS_STREAM_IDLE_TIMEOUT` | Seconds without runtime/model/tool events before a run fails instead of hanging. Set `0` to disable. |
+| `DEEPAGENTS_RUNTIME_DRIVER` | Runtime mode: `memory`, `sqlite`, `postgres`, or `factory`. |
+| `DEEPAGENTS_RUNTIME_DATABASE_URL` | Required for official `sqlite` or `postgres` runtime modes. Must not target `DATABASE_URL`. |
+| `DEEPAGENTS_RUNTIME_FACTORY` | Optional advanced durable runtime factory/object import spec. |
+| `DEEPAGENTS_RUNTIME_PERSISTENCE` | Backward-compatible low-level runtime mode. |
+| `DEEPAGENTS_RUNTIME_SPEC` | Backward-compatible low-level runtime bundle hook. |
+| `DEEPAGENTS_SANDBOX_PROFILE` | High-level sandbox preset: `safe`, `files`, `shell`, or `custom`. |
 | `DEEPAGENTS_SANDBOX_KIND` | `state`, `filesystem`, `local_shell`, or `custom`. |
-| `DEEPAGENTS_SANDBOX_ROOT_DIR` | Root directory for filesystem/local-shell file tools. |
-| `DEEPAGENTS_SANDBOX_BACKEND_SPEC` | Import spec for a custom backend factory. |
+| `DEEPAGENTS_SANDBOX_MAX_OUTPUT_BYTES` | Max captured shell output for `local_shell`. |
+| `DEEPAGENTS_SANDBOX_INHERIT_ENV` | Whether `local_shell` inherits host environment variables. |
+| `DEEPAGENTS_SANDBOX_ENV` | Optional JSON object of extra environment variables for `local_shell`. |
+| `DEEPAGENTS_BACKEND_SPEC` | Import spec for a custom DeepAgents backend. |
+
+Recommended setup:
+
+- Local development: set `DEEPAGENTS_RUNTIME_DRIVER=memory` and `DEEPAGENTS_SANDBOX_PROFILE=safe`.
+- Standard durable deployment: set `ENVIRONMENT=production`,
+  `DEEPAGENTS_RUNTIME_DRIVER=postgres`, and a separate
+  `DEEPAGENTS_RUNTIME_DATABASE_URL` for LangGraph runtime persistence.
+- Advanced override: set `DEEPAGENTS_RUNTIME_FACTORY` only if you want to
+  provide your own durable checkpointer/store/cache bundle.
+- Legacy `DEEPAGENTS_RUNTIME_PERSISTENCE`, `DEEPAGENTS_RUNTIME_SPEC`, and the low-level `*_SPEC` settings still work as advanced compatibility escape hatches.
+
+Product state and runtime state are deliberately separate. `DATABASE_URL`
+stores exactly the four product tables (`users`, `sessions`, `runs`, `events`);
+official sqlite/postgres runtime modes require a distinct
+`DEEPAGENTS_RUNTIME_DATABASE_URL` for LangGraph checkpoint/store tables.
+
+MySQL example for the product ledger:
+
+```dotenv
+DATABASE_URL=mysql+pymysql://app:change-me@127.0.0.1:3306/open_deepagents?charset=utf8mb4
+```
+
+The backend creates the database if needed, then initializes the scaffold
+tables. This MySQL connection stores users, sessions, runs, and events;
+LangGraph runtime persistence is configured separately via the runtime settings
+above.
 
 ### 2. Start the backend
 
 ```bash
 cd backend
 uv sync --group dev
-uv run python -m app.db.manage init
 uv run uvicorn app.main:app --reload
 ```
 
-The API defaults to:
+The app initializes the schema on startup. The API defaults to:
 
 - `http://127.0.0.1:8000/api`
 - `http://127.0.0.1:8000/health`
@@ -107,11 +140,26 @@ npm run dev
 
 The frontend dev server defaults to `http://127.0.0.1:5173`.
 
+## API Contract
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/auth/login` | Login and receive a bearer token. |
+| `GET /api/auth/me` | Return the current user. |
+| `GET /api/models` | Return safe model selector metadata. |
+| `GET /api/sessions` | List the current user's sessions. |
+| `POST /api/sessions` | Create a session. |
+| `PATCH /api/sessions/{session_id}` | Update title or metadata. |
+| `DELETE /api/sessions/{session_id}` | Delete an owned session and events. |
+| `GET /api/sessions/{session_id}/events?after_seq=N` | Load durable ordered history. |
+| `POST /api/sessions/{session_id}/runs/stream` | Start and stream one run. |
+
+There is no split `/api/runs` endpoint. The client cancels by aborting the fetch
+stream.
+
 ## Model Catalog
 
 `backend/models.json` controls the model selector shown in the UI.
-
-Example:
 
 ```json
 {
@@ -126,9 +174,7 @@ Example:
       "models": {
         "gpt-5-4": {
           "name": "GPT-5.4",
-          "model": "gpt-5.4",
-          "temperature": null,
-          "extra_body": {}
+          "model": "gpt-5.4"
         }
       }
     }
@@ -136,8 +182,8 @@ Example:
 }
 ```
 
-Provider `options` and model fields are passed to `ChatOpenAI`. Keep
-model-specific fields flat in each model entry.
+Provider `options` and model fields are passed to `ChatOpenAI`. Keep secrets in
+environment variables; public model metadata omits secret values.
 
 ## Agent Package
 
@@ -147,125 +193,35 @@ The default main agent is `backend/agents:AGENT`.
 AGENT = {
     "id": "main",
     "system_prompt": ROOT / "prompts" / "system.md",
-    "workspace": "/workspace/main",
     "tools": TOOLS,
     "builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
     "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
     "middleware": MIDDLEWARE,
-    "hooks": {"run_input": RUN_INPUT_HOOKS, "upload": UPLOAD_HOOKS},
     "skills": SKILLS,
     "memory": MEMORY,
     "subagents": SUBAGENTS,
 }
 ```
 
-This is the smallest recommended shape. Add `model`, `workspace`, `permissions`,
-or inline `subagents` only when you actually need them.
-
-Subagents can use the same fields and may set their own `model`, `workspace`,
-tools, built-in tool filtering, permissions, skills, memory, and nested
-subagents.
-`workspace` is descriptive metadata for UI/logging and agent authoring. It is not
-a filesystem or tool-access boundary; use sandbox backend selection plus
-`permissions` for enforcement.
-
-Use these files first:
-
-- Main prompt: [backend/agents/prompts/system.md](backend/agents/prompts/system.md)
-- Tools: [backend/agents/tools](backend/agents/tools)
-- Middleware: [backend/agents/middleware](backend/agents/middleware)
-- Hooks: [backend/agents/hooks](backend/agents/hooks)
-- Skills: [backend/agents/skills](backend/agents/skills)
-- Memory: [backend/agents/memory](backend/agents/memory)
-- Subagents: [backend/agents/subagents](backend/agents/subagents)
+Use `permissions` when you expose file tools. `workspace` is metadata only; it is
+not a security boundary.
+Package-local `skills`, `memory`, and `subagents` resolve relative to the
+current agent package, so selectors like `SKILLS = ["skill-creator"]` work out
+of the box.
 
 See [backend/agents/README.md](backend/agents/README.md) for package examples.
-
-## Tool Visibility and Permissions
-
-Built-in tools and file permissions are separate controls:
-
-- `builtin_tools` and `disabled_builtin_tools` decide which DeepAgents built-in
-  tool names are visible to the model.
-- `permissions` decide what visible file tools may do after they are called.
-- If a built-in appears in both lists, `disabled_builtin_tools` wins.
-- If no subagents are active, the backend automatically hides the built-in
-  `task` tool.
-
-The default scaffold now uses explicit `skills` and `subagents` lists.
-
-`operations=["read"]` covers `ls`, `read_file`, `glob`, and `grep`.
-`operations=["write"]` covers `write_file` and `edit_file`.
-
-Example:
-
-```python
-"builtin_tools": ("ls", "read_file", "glob", "grep", "task"),
-"disabled_builtin_tools": ("execute", "write_file", "edit_file"),
-"permissions": [
-    {"operations": ["read"], "paths": ["/workspace/main"]},
-],
-```
-
-## Uploads and Generated Files
-
-- Uploaded files are stored under `UPLOAD_STORAGE_DIR`.
-- Upload metadata is passed to run-input hooks.
-- In `state` sandbox mode, uploads are copied into virtual `/uploads/...` files.
-- Generated or changed state files are exported after run completion.
-- Exported files become downloadable assistant-message attachments.
-
-## Prompt Injections
-
-Prompt injection support is still present. The implementation now lives in
-`backend/app/core/session_scope.py` under `PromptInjectionService`.
-
-Use it from backend code or hooks:
-
-```python
-app.state.prompt_injections.inject_prompt(
-    session_id=session_id,
-    content="Always inspect the uploaded file before answering.",
-    visibility="hidden",
-    position="before_user",
-    source="backend.rule",
-)
-```
-
-Key points:
-
-- hidden injections affect runtime input but do not appear in the default transcript
-- visible injections still persist as injection records without polluting the public transcript
-- `run_id=...` makes an injection apply only to one run
-- the public message and run APIs intentionally reject hidden injection metadata
-
-## Runtime State
-
-Each web session owns an internal stable LangGraph thread id. The database
-remains the product ledger for sessions, messages, uploads, and replayable UI
-event views.
 
 ## Sandbox Backends
 
 | Kind | Best for | Notes |
 | --- | --- | --- |
-| `state` | Safe default virtual file state. | No host shell. Generated files are exported after completion. |
-| `filesystem` | File tools over a controlled directory. | Uses virtual paths rooted at `DEEPAGENTS_SANDBOX_ROOT_DIR`. |
-| `local_shell` | Trusted local command execution. | Runs commands on the host; restrict tools and users carefully. |
-| `custom` | Bring-your-own backend. | Set `DEEPAGENTS_SANDBOX_BACKEND_SPEC`. |
+| `state` | Default virtual file state. | No host shell. |
+| `files` | File tools over a controlled directory. | Set `DEEPAGENTS_SANDBOX_ROOT_DIR`. |
+| `local_shell` | Trusted local command execution. | Runs commands on the host. |
+| `custom` | Bring your own backend. | Set `DEEPAGENTS_BACKEND_SPEC`. |
 
 Read [docs/sandbox.md](docs/sandbox.md) before enabling filesystem or shell
 access for untrusted users.
-
-## Frontend Behavior
-
-- The transcript follows the bottom while the user is already at the bottom.
-- If the user scrolls upward, streaming output does not pull the view down.
-- Sending a new user message jumps the transcript back to the bottom.
-- Runtime events are batched and capped in the timeline so long tool-heavy runs
-  remain responsive.
-- Mermaid code blocks render as diagrams. The image-copy button writes PNG data
-  through the browser Clipboard API when available.
 
 ## Verification
 
@@ -274,8 +230,8 @@ Backend:
 ```bash
 cd backend
 uv run ruff check .
+uv run mypy app
 uv run pytest
-uv run mypy app/core/config.py app/core/runtime_catalog.py app/services/runs.py deepagents_integration
 ```
 
 Frontend:
@@ -285,9 +241,9 @@ cd frontend
 npm run check
 ```
 
-Repository-level integration tests:
+Repository-level checks:
 
 ```bash
-cd backend
-uv run pytest ../tests/backend/test_deepagents_integration.py
+PYTHONPATH=backend backend/.venv/bin/python -m pytest tests tests/backend
+python verification/scaffold_audit.py
 ```

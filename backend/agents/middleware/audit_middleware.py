@@ -10,8 +10,6 @@ from langchain_core.messages import ToolMessage
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
-from deepagents_integration.context import DeepAgentsRunContext
-
 logger = logging.getLogger(__name__)
 ToolCallResult = ToolMessage | Command[object]
 ToolCallHandler = Callable[[ToolCallRequest], Any]
@@ -20,7 +18,7 @@ ToolCallHandler = Callable[[ToolCallRequest], Any]
 @before_agent(name="LogRunContext")
 async def log_run_context(
     state: AgentState[object],
-    runtime: Runtime[DeepAgentsRunContext],
+    runtime: Runtime[Any],
 ) -> None:
     """Async middleware example for run-scoped context access."""
 
