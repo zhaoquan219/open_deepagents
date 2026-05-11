@@ -2,24 +2,25 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from deepagents.backends import LocalShellBackend, StateBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.middleware.permissions import _check_fs_permission
 from deepagents.middleware.skills import _list_skills
 
 from app.agent import DeepAgentsRunContext, build_deep_agent
 from app.runtime.extensions import (
+    BUILTIN_TOOL_ORDER,
     BuiltinToolSelectionMiddleware,
     SandboxConfig,
     build_permissions,
+    builtin_tool_allowlist_from_permissions,
     load_object_from_spec,
     resolve_backend,
 )
-from app.runtime.sse_bridge import DEEPAGENTS_EVENT_STREAM_API, normalize_runtime_event
+from app.runtime.sse_bridge import normalize_runtime_event
 from app.settings import Settings
 
 
-def test_runtime_exports_current_event_stream_contract() -> None:
-    assert DEEPAGENTS_EVENT_STREAM_API == "v2"
+def test_runtime_normalizes_current_event_stream_contract() -> None:
     envelope = normalize_runtime_event(
         {
             "event": "on_tool_end",
@@ -64,7 +65,7 @@ def test_runtime_normalizes_skill_and_final_message_events() -> None:
 
     assert skill_event is not None
     assert skill_event.type == "skill"
-    assert skill_event.detail == "Loaded 1 skills"
+    assert skill_event.detail == "1 skills ready"
     assert skill_event.data["skills"][0]["name"] == "skill-creator"
     assert message_event is not None
     assert message_event.type == "message.final"
@@ -90,8 +91,8 @@ def test_builtin_tool_selection_filters_only_deepagents_builtin_tools() -> None:
 def test_permissions_make_configured_filesystem_rules_restrictive() -> None:
     rules = build_permissions(
         (
-            {"operations": ["read"], "paths": ["/workspace"]},
-            {"operations": ["write"], "paths": ["/workspace/out"]},
+            {"builtin_tools": ["read_file"], "paths": ["/workspace"]},
+            {"builtin_tools": ["write_file"], "paths": ["/workspace/out"]},
         )
     )
 
@@ -101,12 +102,27 @@ def test_permissions_make_configured_filesystem_rules_restrictive() -> None:
     assert _check_fs_permission(rules, "write", "/workspace/input.txt") == "deny"
 
 
-def test_shell_profile_loads_local_skill_source_from_virtual_skills_root() -> None:
-    settings = Settings(deepagents_sandbox_profile="shell")
-    backend = resolve_backend(SandboxConfig.from_mapping(settings.sandbox_settings()))
+def test_permissions_builtin_tools_star_expands_all_builtins() -> None:
+    specs = ({"builtin_tools": ["*"], "paths": ["/workspace"]},)
 
-    assert isinstance(backend, LocalShellBackend)
-    assert [skill["name"] for skill in _list_skills(backend, "/skills")] == ["skill-creator"]
+    assert builtin_tool_allowlist_from_permissions(specs) == BUILTIN_TOOL_ORDER
+    rules = build_permissions(specs)
+    assert _check_fs_permission(rules, "read", "/workspace/input.txt") == "allow"
+    assert _check_fs_permission(rules, "write", "/workspace/out.txt") == "allow"
+
+
+def test_sandbox_profiles_load_local_skill_source_from_virtual_skills_root() -> None:
+    for profile, expected_default in (
+        ("safe", StateBackend),
+        ("files", FilesystemBackend),
+        ("shell", LocalShellBackend),
+    ):
+        settings = Settings(deepagents_sandbox_profile=profile)
+        backend = resolve_backend(SandboxConfig.from_mapping(settings.sandbox_settings()))
+
+        assert isinstance(backend, CompositeBackend)
+        assert isinstance(backend.default, expected_default)
+        assert [skill["name"] for skill in _list_skills(backend, "/skills")] == ["skill-creator"]
 
 
 def test_backend_resolution_supports_state_shell_and_custom_specs(tmp_path) -> None:
@@ -140,7 +156,8 @@ def test_build_deep_agent_omits_permissions_for_shell_backends() -> None:
         build_deep_agent(settings)
 
     assert captured["permissions"] is None
-    assert isinstance(captured["backend"], LocalShellBackend)
+    assert isinstance(captured["backend"], CompositeBackend)
+    assert isinstance(captured["backend"].default, LocalShellBackend)
     assert captured["context_schema"] is DeepAgentsRunContext
     assert all(
         "permissions" not in subagent or subagent["permissions"] is None

@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -12,19 +13,29 @@ from app.routes import router
 from app.runtime.extensions import SandboxConfig
 from app.settings import Settings, get_settings
 
+LOGGER = logging.getLogger("app.main")
+
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings or get_settings()
+    configure_backend_logging(resolved_settings)
     resolved_settings.validate_startup()
     database = Database(resolved_settings.database_url)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         resolved_settings.prepare_paths()
+        await resolved_settings.ainitialize_runtime_components()
         database.initialize_schema()
         with database.session() as db:
             sync_configured_users(db, resolved_settings)
+        LOGGER.info(
+            "backend started checkpoint_backend=%s product_db=%s",
+            resolved_settings.runtime_driver_mode(),
+            resolved_settings.database_url,
+        )
         yield
+        await resolved_settings.aclose_runtime_components()
         database.dispose()
 
     app = FastAPI(
@@ -50,17 +61,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/ready", tags=["system"])
     def readiness() -> dict[str, object]:
         checks: dict[str, object] = {}
+        database.initialize_schema()
         with database.engine.connect() as conn:
             conn.exec_driver_sql("SELECT 1")
         checks["product_db"] = "ok"
         product_tables = set(inspect(database.engine).get_table_names())
-        if product_tables != PRODUCT_TABLES:
+        missing_tables = PRODUCT_TABLES - product_tables
+        if missing_tables:
             checks["schema"] = "invalid"
             return {
                 "status": "error",
                 "checks": checks,
                 "expected_product_tables": sorted(PRODUCT_TABLES),
                 "actual_tables": sorted(product_tables),
+                "missing_product_tables": sorted(missing_tables),
             }
         checks["schema"] = "ok"
         catalog = load_model_catalog(resolved_settings)
@@ -75,6 +89,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok", "checks": checks}
 
     return app
+
+
+def configure_backend_logging(settings: Settings) -> None:
+    logging.basicConfig(
+        level=settings.backend_log_levelno(),
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
+    logging.getLogger().setLevel(settings.backend_log_levelno())
+    logging.getLogger("app").setLevel(settings.backend_log_levelno())
 
 
 app = create_app()

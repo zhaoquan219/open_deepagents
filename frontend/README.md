@@ -38,10 +38,10 @@ The backend API defaults to `http://127.0.0.1:8000/api`. Configure CORS in
 
 - The sidebar lists sessions and lets users create, refresh, select, and delete
   sessions.
-- The workspace shows the current transcript, pending attachment UI, model
+- The workspace shows the current transcript, uploaded attachment state, model
   selection, and the composer.
-- File upload/download is not part of the current backend API. Pending attachments
-  are local UI placeholders until a real upload extension is added.
+- Files are uploaded to the backend before a run and passed to the agent as
+  model-facing `/uploads/...` paths.
 - Streaming assistant text appears in the transcript as it arrives.
 - The runtime timeline shows connection, status, step, tool, skill, sandbox, and
   subagent events.
@@ -74,10 +74,13 @@ The frontend expects these core endpoints:
 | `PATCH /api/sessions/:sessionId` | Update title or metadata. |
 | `DELETE /api/sessions/:sessionId` | Delete a session. |
 | `GET /api/sessions/:sessionId/events` | Load transcript and runtime history. |
+| `POST /api/sessions/:sessionId/uploads` | Upload one file for the active session. |
 | `POST /api/sessions/:sessionId/runs/stream` | Start and stream one agent run. |
+| `GET /api/uploads/:uploadId/content` | Download an owned upload. |
+| `DELETE /api/uploads/:uploadId` | Delete an owned upload. |
 
-There is no `/api/runs` split endpoint or durable cancel endpoint. The client
-stops a run by aborting the fetch stream.
+The client can abort the active fetch stream locally; the backend also exposes
+durable run status and cancel endpoints for owned runs.
 
 ## SSE Events
 

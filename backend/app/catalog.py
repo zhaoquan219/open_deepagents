@@ -2,25 +2,25 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import warnings
+from functools import lru_cache
 from importlib import import_module
+from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
 
 from langchain_openai import ChatOpenAI
 
-from app.runtime.extensions import build_permissions as resolve_permissions
+from app.runtime.extensions import (
+    build_permissions as resolve_permissions,
+)
+from app.runtime.extensions import (
+    builtin_tool_allowlist_from_permissions,
+)
 from app.settings import BACKEND_ROOT, Settings, import_from_spec
 
-MODEL_OPTION_KEYS = {
-    "api_key",
-    "base_url",
-    "default_headers",
-    "default_query",
-    "max_retries",
-    "organization",
-    "timeout",
-}
-MODEL_KEYS = {"name", "model", "temperature", "extra_body"}
+MODEL_DISPLAY_KEYS = {"name"}
 
 
 def load_model_catalog(settings: Settings) -> dict[str, Any]:
@@ -96,12 +96,16 @@ def build_model(settings: Settings, model_id: str | None = None) -> Any:
     model = dict(dict(provider.get("models") or {}).get(model_key) or {})
     if not model:
         raise ValueError(f"Unknown model selection: {selected}")
-    options = dict(provider.get("options") or {})
-    unknown_options = set(options) - MODEL_OPTION_KEYS
-    if unknown_options:
-        raise ValueError(f"Unknown model provider option(s): {', '.join(sorted(unknown_options))}")
+    options = _chat_openai_options(
+        dict(provider.get("options") or {}),
+        path=f"provider.{provider_id}.options",
+    )
+    model_options = _chat_openai_options(
+        {key: value for key, value in model.items() if key not in MODEL_DISPLAY_KEYS},
+        path=f"provider.{provider_id}.models.{model_key}",
+    )
     runtime_options = _resolve_env(
-        {**options, **{key: value for key, value in model.items() if key != "name"}},
+        {**options, **model_options},
         public=False,
     )
     runtime_options.setdefault("model", model.get("model") or model_key)
@@ -115,10 +119,23 @@ def resolve_agent(settings: Settings) -> dict[str, Any]:
     return _resolve_agent_dict(root, seen=set(), package_root=package_root)
 
 
-def resolve_components(value: Any, *, package: str, export: str) -> list[Any]:
+def resolve_components(
+    value: Any,
+    *,
+    package: str,
+    export: str,
+    package_root: Path | None = None,
+    folder: str | None = None,
+) -> list[Any]:
     resolved: list[Any] = []
     for item in _items(value):
-        component = _resolve_component(item, package, export)
+        component = _resolve_component(
+            item,
+            package,
+            export,
+            package_root=package_root,
+            folder=folder,
+        )
         resolved.extend(component if isinstance(component, list | tuple) else [component])
     return resolved
 
@@ -136,12 +153,7 @@ def _validate_provider(provider_id: str, provider: dict[str, Any], production: b
     models = provider.get("models")
     if not isinstance(options, dict):
         raise ValueError(f"models.json provider {provider_id}.options must be an object")
-    unknown_options = set(options) - MODEL_OPTION_KEYS
-    if unknown_options:
-        raise ValueError(
-            "Unknown model provider option(s) at "
-            f"provider.{provider_id}.options: {', '.join(sorted(unknown_options))}"
-        )
+    _warn_unknown_chat_openai_keys(options, f"provider.{provider_id}.options")
     if (
         production
         and "api_key" in options
@@ -155,13 +167,58 @@ def _validate_provider(provider_id: str, provider: dict[str, Any], production: b
             raise ValueError(
                 f"models.json provider.{provider_id}.models.{model_id} must be an object"
             )
-        unknown_model_keys = set(model) - MODEL_KEYS
-        if unknown_model_keys:
-            raise ValueError(
-                "Unknown model field(s) at "
-                f"provider.{provider_id}.models.{model_id}: "
-                f"{', '.join(sorted(unknown_model_keys))}"
-            )
+        _warn_unknown_chat_openai_keys(
+            model,
+            f"provider.{provider_id}.models.{model_id}",
+            extra_allowed=MODEL_DISPLAY_KEYS,
+        )
+
+
+def _chat_openai_options(raw: dict[str, Any], *, path: str) -> dict[str, Any]:
+    allowed = _chat_openai_config_keys()
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        _warn_unknown_keys(path, unknown)
+    return {key: value for key, value in raw.items() if key in allowed}
+
+
+def _warn_unknown_chat_openai_keys(
+    raw: dict[str, Any],
+    path: str,
+    *,
+    extra_allowed: set[str] | None = None,
+) -> None:
+    unknown = sorted(set(raw) - _chat_openai_config_keys() - (extra_allowed or set()))
+    if unknown:
+        _warn_unknown_keys(path, unknown)
+
+
+def _warn_unknown_keys(path: str, keys: list[str]) -> None:
+    warnings.warn(
+        f"Ignoring unknown models.json key(s) at {path}: {', '.join(keys)}",
+        stacklevel=3,
+    )
+
+
+@lru_cache
+def _chat_openai_config_keys() -> frozenset[str]:
+    keys: set[str] = set(getattr(ChatOpenAI, "model_fields", {}))
+    for field in getattr(ChatOpenAI, "model_fields", {}).values():
+        for attr in ("alias", "validation_alias"):
+            alias = getattr(field, attr, None)
+            if isinstance(alias, str):
+                keys.add(alias)
+    for name, parameter in signature(ChatOpenAI).parameters.items():
+        if name in {"self", "args", "kwargs"}:
+            continue
+        if parameter.kind in {
+            Parameter.POSITIONAL_ONLY,
+            Parameter.VAR_POSITIONAL,
+            Parameter.VAR_KEYWORD,
+        }:
+            continue
+        keys.add(name)
+    return frozenset(keys)
 
 
 def _resolve_agent_dict(
@@ -173,30 +230,51 @@ def _resolve_agent_dict(
     agent_id = str(raw.get("id") or raw.get("name") or id(raw))
     if agent_id in seen:
         raise ValueError(f"Cyclic subagent reference: {agent_id}")
+    _reject_legacy_builtin_tool_fields(raw, agent_id)
     next_seen = {*seen, agent_id}
+    permission_specs = tuple(_items(raw.get("permissions")))
     return {
         "id": agent_id,
         "name": raw.get("name") or agent_id,
         "description": raw.get("description") or "",
         "system_prompt": read_text(raw.get("system_prompt") or ""),
-        "tools": resolve_components(raw.get("tools"), package="agents.tools", export="TOOLS"),
+        "tools": resolve_components(
+            raw.get("tools"),
+            package="agents.tools",
+            export="TOOLS",
+            package_root=package_root,
+            folder="tools",
+        ),
         "middleware": resolve_components(
             raw.get("middleware"),
             package="agents.middleware",
             export="MIDDLEWARE",
+            package_root=package_root,
+            folder="middleware",
         ),
-        "builtin_tool_allowlist": _builtin_tuple(
-            raw.get("builtin_tool_allowlist") or raw.get("builtin_tools")
-        ),
-        "builtin_tool_blocklist": _builtin_tuple(
-            raw.get("builtin_tool_blocklist") or raw.get("disabled_builtin_tools")
-        ),
+        "builtin_tool_allowlist": builtin_tool_allowlist_from_permissions(permission_specs),
+        "builtin_tool_blocklist": None,
         "skills": _registry_entries(raw.get("skills"), package_root, "skills", skill=True),
         "memory": _registry_entries(raw.get("memory"), package_root, "memory", skill=False),
-        "permissions": resolve_permissions(tuple(_items(raw.get("permissions")))),
+        "permissions": resolve_permissions(permission_specs),
         "subagents": _resolve_subagents(raw.get("subagents"), package_root, next_seen),
         "model": raw.get("model"),
     }
+
+
+def _reject_legacy_builtin_tool_fields(raw: dict[str, Any], agent_id: str) -> None:
+    legacy = {
+        "builtin_tools",
+        "disabled_builtin_tools",
+        "builtin_tool_allowlist",
+        "builtin_tool_blocklist",
+    } & set(raw)
+    if legacy:
+        names = ", ".join(sorted(legacy))
+        raise ValueError(
+            f"Agent {agent_id} uses unsupported built-in tool field(s): {names}. "
+            "Move built-in tool names under permissions[].builtin_tools."
+        )
 
 
 def _resolve_subagents(
@@ -274,14 +352,70 @@ def _import_agent_mapping(spec: str) -> tuple[Any, Path]:
     return getattr(module, attr), Path(module.__file__ or "").resolve().parent
 
 
-def _resolve_component(item: Any, package: str, export: str) -> Any:
+def _resolve_component(
+    item: Any,
+    package: str,
+    export: str,
+    *,
+    package_root: Path | None,
+    folder: str | None,
+) -> Any:
     if callable(item) or isinstance(item, dict):
         return item
     if item == "*":
-        return list(getattr(__import__(package, fromlist=[export]), export))
+        if package_root is not None and folder is not None:
+            return _discover_component_exports(package_root / folder, export)
+        package_module = __import__(package, fromlist=[export])
+        package_file = getattr(package_module, "__file__", "")
+        package_dir = Path(package_file).resolve().parent if package_file else None
+        if package_dir is not None:
+            discovered = _discover_component_exports(package_dir, export)
+            if discovered:
+                return discovered
+        exported = getattr(package_module, export)
+        return list(exported) if isinstance(exported, list | tuple) else [exported]
     if isinstance(item, str) and ":" in item:
         return import_from_spec(item)
     return item
+
+
+def _discover_component_exports(root: Path, export: str) -> list[Any]:
+    if not root.exists():
+        return []
+    package_name = _module_name_for_package_dir(root)
+    resolved: list[Any] = []
+    for path in sorted(root.rglob("*.py")):
+        if path.name == "__init__.py" or "__pycache__" in path.parts:
+            continue
+        if package_name is not None:
+            relative = path.relative_to(root).with_suffix("")
+            module_name = ".".join((package_name, *relative.parts))
+            module = import_module(module_name)
+        else:
+            module = import_from_spec(f"{path}:__name__")
+        if not hasattr(module, export):
+            continue
+        exported = getattr(module, export)
+        if exported == "*":
+            continue
+        resolved.extend(exported if isinstance(exported, list | tuple) else [exported])
+    return resolved
+
+
+def _module_name_for_package_dir(root: Path) -> str | None:
+    if not (root / "__init__.py").is_file():
+        return None
+    top = root.resolve()
+    while (top.parent / "__init__.py").is_file():
+        top = top.parent
+    import_base = top.parent
+    if str(import_base) not in sys.path:
+        sys.path.insert(0, str(import_base))
+    try:
+        relative = root.resolve().relative_to(import_base)
+    except ValueError:
+        return None
+    return ".".join(relative.parts)
 
 
 def _items(value: Any) -> list[Any]:

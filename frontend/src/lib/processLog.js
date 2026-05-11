@@ -1,7 +1,7 @@
 import { uiCopy } from './copy.js'
 import { parseMarkdownSegments } from './markdownSegments.js'
 
-const PROCESS_TYPES = new Set(['tool', 'skill', 'subagent', 'sandbox'])
+const PROCESS_TYPES = new Set(['tool', 'subagent', 'sandbox'])
 const INTERNAL_LABELS = new Set(['runtime.event', 'step.started', 'step.completed'])
 
 export function showInternalLogs() {
@@ -102,7 +102,7 @@ export function logEntryFromEnvelope(envelope) {
       return null
     }
   }
-  return {
+  const entry = {
     id: envelope.eventId || `${envelope.runId}:${envelope.type}:${envelope.timestamp}`,
     kind: PROCESS_TYPES.has(envelope.type) ? envelope.type : envelope.type === 'error' ? 'error' : 'step',
     title: String(titleFor(envelope) || uiCopy.processLog.kinds.step),
@@ -110,11 +110,13 @@ export function logEntryFromEnvelope(envelope) {
     status: envelope.status || (envelope.type === 'error' ? 'failed' : 'in_progress'),
     timestamp: envelope.timestamp,
   }
+  return processEntryHasContent(entry) ? entry : null
 }
 
 export function thinkingEntriesFromContent(content, startedAt) {
   return parseMarkdownSegments(content)
     .filter((segment) => segment.type === 'thinking')
+    .filter((segment) => String(segment.content || '').trim())
     .map((segment, index) => ({
       id: `thinking-${index}-${segment.key}`,
       kind: segment.kind === 'reasoning' ? 'reasoning' : 'thinking',
@@ -133,35 +135,42 @@ export function visibleAssistantContent(content) {
     .trim()
 }
 
-function sameGroup(previous, entry) {
-  if (!previous || previous.kind !== entry.kind) {
-    return false
+function processEntryHasContent(entry) {
+  return Boolean(String(entry?.title || '').trim() || String(entry?.summary || '').trim())
+}
+
+function aggregateStatus(entries) {
+  if (entries.some((entry) => entry.status === 'failed')) {
+    return 'failed'
   }
-  return ['thinking', 'reasoning', 'step'].includes(entry.kind) || previous.title === entry.title
+  if (entries.some((entry) => entry.status === 'cancelled')) {
+    return 'cancelled'
+  }
+  if (entries.some((entry) => !['completed', 'done'].includes(String(entry.status || '')))) {
+    return 'in_progress'
+  }
+  return 'completed'
 }
 
 export function groupProcessLogs(entries) {
-  const groups = []
-  for (const entry of [...entries].filter(Boolean).sort((left, right) => {
+  const items = [...entries].filter(processEntryHasContent).sort((left, right) => {
     const byTime = String(left.timestamp || '').localeCompare(String(right.timestamp || ''))
     return byTime || String(left.id).localeCompare(String(right.id))
-  })) {
-    const previous = groups.at(-1)
-    if (sameGroup(previous, entry)) {
-      previous.items.push(entry)
-      previous.status = entry.status || previous.status
-      previous.endedAt = entry.timestamp || previous.endedAt
-      continue
-    }
-    groups.push({
-      id: `group:${entry.id}`,
-      kind: entry.kind,
-      title: entry.title,
-      status: entry.status,
-      startedAt: entry.timestamp,
-      endedAt: entry.timestamp,
-      items: [entry],
-    })
+  })
+
+  if (items.length === 0) {
+    return []
   }
-  return groups
+
+  const first = items[0]
+  const last = items.at(-1)
+  return [{
+    id: `group:${first.id}:${last.id}`,
+    kind: 'process',
+    title: uiCopy.messageThread.process.intermediateTitle,
+    status: aggregateStatus(items),
+    startedAt: first.timestamp,
+    endedAt: last.timestamp,
+    items,
+  }]
 }

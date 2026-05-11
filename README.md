@@ -25,17 +25,17 @@ Chinese documentation: [README_CH.md](README_CH.md)
   store, cache, and backend selection.
 
 The current native backend keeps the runtime surface intentionally small:
-sessions, ordered events, and one fetch-stream run endpoint. Upload/download,
-generated-file export, split run management, and prompt-injection services are
-not part of this scaffold. The frontend still displays attachment-shaped
-message metadata when present in history, but file upload is currently a local
-pending-attachment placeholder.
+sessions, ordered events, session-owned uploads, and one fetch-stream run
+endpoint. Upload metadata is passed through runtime context; if a project wants
+to turn those paths into an extra model message, it does so explicitly in
+agent middleware.
 
 ## How It Fits Together
 
 ```text
 frontend/                 Vue 3 UI: login, sessions, chat, stream timeline
 backend/                  FastAPI API: auth, sessions, event ledger, DeepAgents
+backend/app/runtime/      Shared DeepAgents sandbox, permission, and SSE helpers
 backend/agents/           Recursive agent package loaded by the backend
 backend/models.json       Model catalog shown in the UI model selector
 docs/                     User guides and screenshots
@@ -76,46 +76,41 @@ Important `.env` settings:
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD` | Default login credentials. |
 | `ADMIN_USERS` | Optional JSON map or comma-separated `username=password` pairs. |
 | `ADMIN_TOKEN_SECRET` | JWT signing secret. Use a long random value outside local dev. |
-| `DATABASE_URL` | SQLite or MySQL SQLAlchemy URL for the product ledger. |
+| `DATABASE_URL` | SQLite, PostgreSQL, or MySQL SQLAlchemy URL for the product ledger. |
 | `DEEPAGENTS_MAIN_AGENT` | Main agent import spec. Default: `agents:AGENT`. |
 | `DEEPAGENTS_MODEL_CONFIG_PATH` | Model catalog path. Default: `./models.json`. |
-| `DEEPAGENTS_RUNTIME_DRIVER` | Runtime mode: `memory`, `sqlite`, `postgres`, or `factory`. |
-| `DEEPAGENTS_RUNTIME_DATABASE_URL` | Required for official `sqlite` or `postgres` runtime modes. Must not target `DATABASE_URL`. |
-| `DEEPAGENTS_RUNTIME_FACTORY` | Optional advanced durable runtime factory/object import spec. |
-| `DEEPAGENTS_RUNTIME_PERSISTENCE` | Backward-compatible low-level runtime mode. |
-| `DEEPAGENTS_RUNTIME_SPEC` | Backward-compatible low-level runtime bundle hook. |
 | `DEEPAGENTS_SANDBOX_PROFILE` | High-level sandbox preset: `safe`, `files`, `shell`, or `custom`. |
-| `DEEPAGENTS_SANDBOX_KIND` | `state`, `filesystem`, `local_shell`, or `custom`. |
-| `DEEPAGENTS_SANDBOX_MAX_OUTPUT_BYTES` | Max captured shell output for `local_shell`. |
-| `DEEPAGENTS_SANDBOX_INHERIT_ENV` | Whether `local_shell` inherits host environment variables. |
-| `DEEPAGENTS_SANDBOX_ENV` | Optional JSON object of extra environment variables for `local_shell`. |
-| `DEEPAGENTS_BACKEND_SPEC` | Import spec for a custom DeepAgents backend. |
+| `DEEPAGENTS_SANDBOX_ROOT_DIR` | Workspace root for `files` and `shell` sandbox profiles. |
+| `DEEPAGENTS_UPLOAD_ROOT_DIR` | Storage root mounted read-only at `/uploads`. |
+| `DEEPAGENTS_CHECKPOINT_BACKEND` | `sqlite` by default; supports `memory`, `sqlite`, and `postgresql`. |
+| `BACKEND_LOG_LEVEL` | `info` by default; `debug` logs every raw agent update. |
 
 Recommended setup:
 
-- Local development: set `DEEPAGENTS_RUNTIME_DRIVER=memory` and `DEEPAGENTS_SANDBOX_PROFILE=safe`.
-- Standard durable deployment: set `ENVIRONMENT=production`,
-  `DEEPAGENTS_RUNTIME_DRIVER=postgres`, and a separate
-  `DEEPAGENTS_RUNTIME_DATABASE_URL` for LangGraph runtime persistence.
-- Advanced override: set `DEEPAGENTS_RUNTIME_FACTORY` only if you want to
-  provide your own durable checkpointer/store/cache bundle.
-- Legacy `DEEPAGENTS_RUNTIME_PERSISTENCE`, `DEEPAGENTS_RUNTIME_SPEC`, and the low-level `*_SPEC` settings still work as advanced compatibility escape hatches.
+- Local development: copy `.env.example`, change the admin password and token
+  secret, then fill `models.json`.
+- Keep `DEEPAGENTS_SANDBOX_PROFILE=safe` unless you need filesystem writes or a
+  trusted local shell.
+- Production deployment: set `ENVIRONMENT=production`, strong auth secrets, and
+  `DEEPAGENTS_CHECKPOINT_BACKEND=sqlite` or `postgresql`.
 
 Product state and runtime state are deliberately separate. `DATABASE_URL`
 stores exactly the four product tables (`users`, `sessions`, `runs`, `events`);
-official sqlite/postgres runtime modes require a distinct
-`DEEPAGENTS_RUNTIME_DATABASE_URL` for LangGraph checkpoint/store tables.
+sqlite checkpoint state defaults to `./data/checkpoints.db`, while postgresql
+checkpoint state uses `DEEPAGENTS_CHECKPOINT_DATABASE_URL`.
 
-MySQL example for the product ledger:
+Product ledger examples:
 
 ```dotenv
+DATABASE_URL=sqlite+pysqlite:///./data/backend.db
+DATABASE_URL=postgresql+psycopg://app:change-me@127.0.0.1:5432/open_deepagents
 DATABASE_URL=mysql+pymysql://app:change-me@127.0.0.1:3306/open_deepagents?charset=utf8mb4
 ```
 
 The backend creates the database if needed, then initializes the scaffold
-tables. This MySQL connection stores users, sessions, runs, and events;
-LangGraph runtime persistence is configured separately via the runtime settings
-above.
+tables. `DATABASE_URL` stores users, sessions, runs, and events; LangGraph
+checkpoint/store persistence is configured separately via the checkpoint
+settings above.
 
 ### 2. Start the backend
 
@@ -152,6 +147,7 @@ The frontend dev server defaults to `http://127.0.0.1:5173`.
 | `PATCH /api/sessions/{session_id}` | Update title or metadata. |
 | `DELETE /api/sessions/{session_id}` | Delete an owned session and events. |
 | `GET /api/sessions/{session_id}/events?after_seq=N` | Load durable ordered history. |
+| `POST /api/sessions/{session_id}/uploads` | Store a session-owned upload and return `/uploads/{short_session_id}/{filename}`. |
 | `POST /api/sessions/{session_id}/runs/stream` | Start and stream one run. |
 
 There is no split `/api/runs` endpoint. The client cancels by aborting the fetch
@@ -194,20 +190,25 @@ AGENT = {
     "id": "main",
     "system_prompt": ROOT / "prompts" / "system.md",
     "tools": TOOLS,
-    "builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
-    "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
     "middleware": MIDDLEWARE,
     "skills": SKILLS,
     "memory": MEMORY,
+    "permissions": [
+        {"builtin_tools": ("write_todos", "task", "execute")},
+        {
+            "builtin_tools": ("ls", "read_file", "glob", "grep"),
+            "paths": ["/workspace/main", "/skills", "/uploads"],
+        },
+    ],
     "subagents": SUBAGENTS,
 }
 ```
 
-Use `permissions` when you expose file tools. `workspace` is metadata only; it is
-not a security boundary.
-Package-local `skills`, `memory`, and `subagents` resolve relative to the
-current agent package, so selectors like `SKILLS = ["skill-creator"]` work out
-of the box.
+Use `permissions[].builtin_tools` to expose built-in tools. Add `paths` to the
+same entry when the built-ins read or write files; `"*"` allows every built-in.
+Package-local `tools`, `middleware`, `skills`, `memory`, and `subagents` resolve
+relative to the current agent package. Selectors can be explicit lists or `"*"`
+to discover all component exports in that package folder.
 
 See [backend/agents/README.md](backend/agents/README.md) for package examples.
 
@@ -215,10 +216,10 @@ See [backend/agents/README.md](backend/agents/README.md) for package examples.
 
 | Kind | Best for | Notes |
 | --- | --- | --- |
-| `state` | Default virtual file state. | No host shell. |
-| `files` | File tools over a controlled directory. | Set `DEEPAGENTS_SANDBOX_ROOT_DIR`. |
-| `local_shell` | Trusted local command execution. | Runs commands on the host. |
-| `custom` | Bring your own backend. | Set `DEEPAGENTS_BACKEND_SPEC`. |
+| `safe` | Default virtual file state plus read-only `/skills` and `/uploads`. | No host shell. |
+| `files` | File tools over a controlled data directory plus read-only mounts. | Use only when file writes are needed. |
+| `shell` | Trusted local command execution. | Runs commands on the host. |
+| `custom` | Bring your own backend. | Advanced override. |
 
 Read [docs/sandbox.md](docs/sandbox.md) before enabling filesystem or shell
 access for untrusted users.

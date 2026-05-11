@@ -48,9 +48,6 @@ class ScaffoldAuditTests(unittest.TestCase):
                 "backend/app/auth.py",
                 "backend/app/catalog.py",
                 "backend/app/agent.py",
-                "backend/app/runtime/__init__.py",
-                "backend/app/runtime/agent_factory.py",
-                "backend/app/runtime/config.py",
                 "backend/app/runtime/extensions.py",
                 "backend/app/runtime/sse_bridge.py",
             ):

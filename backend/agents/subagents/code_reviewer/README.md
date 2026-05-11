@@ -27,15 +27,16 @@ SUBAGENT = {
     "label": "Code reviewer",
     "description": "Review implementation changes for defects, regressions, and missing tests.",
     "system_prompt": ROOT / "prompts" / "system.md",
-    "workspace": "/workspace/reviews",
     "tools": TOOLS,
-    "builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
-    "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
     "middleware": MIDDLEWARE,
     "skills": SKILLS,
     "memory": MEMORY,
     "permissions": [
-        {"operations": ["read"], "paths": ["/workspace/reviews", "/workspace/shared"]},
+        {"builtin_tools": ("write_todos", "task")},
+        {
+            "builtin_tools": ("ls", "read_file", "glob", "grep"),
+            "paths": ["/workspace/reviews", "/workspace/shared"],
+        },
     ],
 }
 ```
@@ -44,10 +45,9 @@ SUBAGENT = {
 
 - The subagent uses the default selected model unless `model` is added explicitly.
 - The system prompt tells it to lead with concrete findings.
-- Built-in write and shell tools are hidden.
+- Built-in write and shell tools are omitted from `permissions[].builtin_tools`.
 - File permissions allow read access only to review and shared workspace paths.
 - Local skills and memory provide review checklists and durable review guidance.
-- Add `workspace` only when the label helps the UI or authoring flow; it is metadata, not a boundary.
 
 ## Customizing
 

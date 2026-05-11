@@ -53,6 +53,7 @@ const isLiveRunSession = computed(
     props.sessionId === props.activeRunSessionId &&
     ['queued', 'running'].includes(props.runStatus),
 )
+const visibleMessages = computed(() => props.messages.filter(shouldRenderMessage))
 
 function flattenMessageContent(value) {
   if (value === undefined || value === null) {
@@ -102,7 +103,23 @@ function displayContent(message) {
   if (message?.role === 'assistant' && hasProcesses(message)) {
     return ''
   }
+  if (message?.role === 'assistant') {
+    return ''
+  }
   return uiCopy.messageThread.empty
+}
+
+function shouldRenderMessage(message) {
+  if (message?.role !== 'assistant') {
+    return true
+  }
+  if (message?.streaming || hasProcesses(message)) {
+    return true
+  }
+  if (Array.isArray(message?.attachments) && message.attachments.length > 0) {
+    return true
+  }
+  return Boolean(displayContent(message).trim())
 }
 
 function processStatusLabel(status) {
@@ -116,17 +133,63 @@ function hasProcesses(message) {
   return processGroups(message).length > 0
 }
 
-function processGroups(message) {
+function processEntries(message) {
   if (!message || message.role !== 'assistant') {
     return []
   }
   const content = flattenMessageContent(
     message?.content ?? message?.text ?? message?.detail ?? message?.extra?.content ?? '',
   )
-  return groupProcessLogs([
+  return [
     ...thinkingEntriesFromContent(content, message.startedAt || message.createdAt),
     ...(Array.isArray(message.processes) ? message.processes : []),
-  ])
+  ]
+}
+
+function processGroups(message) {
+  return groupProcessLogs(processEntries(message))
+}
+
+function timestampKey(value) {
+  return String(value || '')
+}
+
+function processBlocks(entries, prefix) {
+  return groupProcessLogs(entries).map((group) => ({
+    id: `${prefix}:${group.id}`,
+    type: 'process',
+    group,
+  }))
+}
+
+function messageBlocks(message) {
+  const content = displayContent(message)
+  const entries = processEntries(message)
+  const contentTimestamp = timestampKey(message.createdAt || message.startedAt)
+
+  if (!content.trim()) {
+    return processBlocks(entries, 'process-only')
+  }
+
+  const beforeContent = []
+  const afterContent = []
+  for (const entry of entries) {
+    if (timestampKey(entry.timestamp) <= contentTimestamp) {
+      beforeContent.push(entry)
+    } else {
+      afterContent.push(entry)
+    }
+  }
+
+  return [
+    ...processBlocks(beforeContent, 'before-content'),
+    {
+      id: `content:${message.id}`,
+      type: 'content',
+      content,
+    },
+    ...processBlocks(afterContent, 'after-content'),
+  ]
 }
 
 function groupSummary(group) {
@@ -134,7 +197,7 @@ function groupSummary(group) {
 }
 
 function itemText(item) {
-  return [item.title, item.summary].filter(Boolean).join('\n')
+  return String(item.summary || item.title || '').trim()
 }
 
 function attachmentDownloadUrl(attachment) {
@@ -289,7 +352,7 @@ onMounted(async () => {
 <template>
   <el-scrollbar ref="threadRef" class="message-thread" role="log" aria-live="polite" @scroll="handleThreadScroll">
     <article
-      v-for="message in props.messages"
+      v-for="message in visibleMessages"
       :key="message.id"
       class="message-row"
       :data-role="message.role"
@@ -309,32 +372,35 @@ onMounted(async () => {
             @click="copyMessage(message)"
           />
         </div>
-        <details v-if="hasProcesses(message)" class="process-block">
-          <summary>
-            <span>{{ uiCopy.messageThread.process.title }}</span>
-            <span>{{ uiCopy.messageThread.process.count(processGroups(message).length) }}</span>
-          </summary>
-          <div class="process-list">
-            <details
-              v-for="group in processGroups(message)"
-              :key="group.id"
-              class="process-group"
-              :data-kind="group.kind"
-              :data-status="group.status"
-            >
-              <summary>
-                <strong>{{ group.title }}</strong>
-                <span>{{ groupSummary(group) }} · {{ processStatusLabel(group.status) }}</span>
-              </summary>
-              <ol class="process-group-items">
-                <li v-for="item in group.items" :key="item.id">
-                  <pre>{{ itemText(item) }}</pre>
-                </li>
-              </ol>
-            </details>
-          </div>
-        </details>
-        <MarkdownContent :content="displayContent(message)" @content-rendered="handleRenderedContent" />
+        <template v-for="block in messageBlocks(message)" :key="block.id">
+          <details
+            v-if="block.type === 'process'"
+            class="process-block"
+            :data-kind="block.group.kind"
+            :data-status="block.group.status"
+          >
+            <summary>
+              <span>{{ block.group.title }}</span>
+              <span>{{ groupSummary(block.group) }} · {{ processStatusLabel(block.group.status) }}</span>
+            </summary>
+            <ol class="process-list">
+              <li v-for="item in block.group.items" :key="item.id">
+                <details class="process-item" :data-kind="item.kind" :data-status="item.status">
+                  <summary>
+                    <strong>{{ item.title }}</strong>
+                    <span>{{ processStatusLabel(item.status) }}</span>
+                  </summary>
+                  <pre v-if="itemText(item)">{{ itemText(item) }}</pre>
+                </details>
+              </li>
+            </ol>
+          </details>
+          <MarkdownContent
+            v-else-if="block.type === 'content'"
+            :content="block.content"
+            @content-rendered="handleRenderedContent"
+          />
+        </template>
         <p v-if="message.streaming" class="streaming-indicator">{{ uiCopy.messageThread.streaming }}</p>
         <ul v-if="message.attachments && message.attachments.length" class="attachment-list">
           <li v-for="attachment in message.attachments" :key="attachment.id">

@@ -21,12 +21,14 @@ English documentation: [README.md](README.md)
 - 原生 DeepAgents/LangGraph runtime wiring：`thread_id`、checkpointer、store、
   cache、backend。
 
-当前原生后端有意保持运行面很小：sessions、有序 events、以及一个 fetch-stream
-run 接口。upload/download、生成文件导出、拆分式 run manager、prompt-injection
-service 都不属于这个脚手架。前端仍能展示历史消息里的 attachment 元数据，但当前
-上传控件只是本地 pending attachment 占位。
+当前原生后端有意保持运行面很小：sessions、有序 events、session 归属的上传文件、
+以及一个 fetch-stream run 接口。上传文件信息会进入 runtime context；如果项目希望
+把这些路径转成额外 model message，请在 agent middleware 中显式实现。
 
 ## 工作流
+
+架构上，`backend/app/runtime/` 是仍在使用的运行时辅助层，负责 DeepAgents
+sandbox、permissions、内置工具过滤与 SSE 归一化；路由层不要重复实现这些逻辑。
 
 1. 前端登录并保存 bearer token。
 2. 用户选择或创建 session。
@@ -76,39 +78,37 @@ npm run dev
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD` | 默认登录用户。 |
 | `ADMIN_USERS` | 额外用户，支持 JSON map 或 `username=password` 逗号列表。 |
 | `ADMIN_TOKEN_SECRET` | JWT 签名密钥，生产环境请使用长随机值。 |
-| `DATABASE_URL` | 产品账本 SQLAlchemy URL，支持 SQLite/MySQL。 |
+| `DATABASE_URL` | 产品账本 SQLAlchemy URL，支持 SQLite/PostgreSQL/MySQL。 |
 | `DEEPAGENTS_MAIN_AGENT` | 主 agent import spec，默认 `agents:AGENT`。 |
 | `DEEPAGENTS_MODEL_CONFIG_PATH` | 模型配置文件，默认 `./models.json`。 |
-| `DEEPAGENTS_RUNTIME_DRIVER` | 更直观的 runtime 模式。本地用 `memory`，需要持久化时用内置数据库版 `durable`。 |
-| `DEEPAGENTS_RUNTIME_FACTORY` | 可选高级用法：指向你们自己的 durable runtime bundle 工厂。 |
-| `DEEPAGENTS_RUNTIME_PERSISTENCE` | 兼容保留的底层 runtime 模式。 |
-| `DEEPAGENTS_RUNTIME_SPEC` | 兼容保留的底层 runtime 工厂入口。 |
 | `DEEPAGENTS_SANDBOX_PROFILE` | 更直观的沙箱预设：`safe`、`files`、`shell`、`custom`。 |
-| `DEEPAGENTS_SANDBOX_KIND` | `state`、`filesystem`、`local_shell` 或 `custom`。 |
-| `DEEPAGENTS_SANDBOX_MAX_OUTPUT_BYTES` | `local_shell` 最大保留输出字节数。 |
-| `DEEPAGENTS_SANDBOX_INHERIT_ENV` | `local_shell` 是否继承宿主机环境变量。 |
-| `DEEPAGENTS_SANDBOX_ENV` | 传给 `local_shell` 的额外环境变量 JSON 对象。 |
-| `DEEPAGENTS_BACKEND_SPEC` | 自定义 DeepAgents backend import spec。 |
+| `DEEPAGENTS_SANDBOX_ROOT_DIR` | `files` 和 `shell` 沙箱使用的工作区根目录。 |
+| `DEEPAGENTS_UPLOAD_ROOT_DIR` | 上传文件保存根目录，并只读挂载到 `/uploads`。 |
+| `DEEPAGENTS_CHECKPOINT_BACKEND` | 默认 `sqlite`；支持 `memory`、`sqlite`、`postgresql`。 |
+| `BACKEND_LOG_LEVEL` | 默认 `info`；`debug` 会打印每个原始 agent update。 |
 
 推荐配置方式：
 
-- 本地开发：设置 `DEEPAGENTS_RUNTIME_DRIVER=memory` 和 `DEEPAGENTS_SANDBOX_PROFILE=safe`。
-- 标准持久化部署：设置 `ENVIRONMENT=production` 和 `DEEPAGENTS_RUNTIME_DRIVER=durable`。
-- 高级覆盖：只有在你们想替换掉内置数据库版 runtime 时，才设置 `DEEPAGENTS_RUNTIME_FACTORY`。
-- 旧的 `DEEPAGENTS_RUNTIME_PERSISTENCE`、`DEEPAGENTS_RUNTIME_SPEC` 以及低层 `*_SPEC` 仍保留为高级兼容入口。
+- 本地开发：复制 `.env.example`，修改管理员密码和 token secret，然后补好 `models.json`。
+- 除非需要文件写入或可信本地 shell，否则保持 `DEEPAGENTS_SANDBOX_PROFILE=safe`。
+- 生产部署：设置 `ENVIRONMENT=production`、强认证密钥，并使用
+  `DEEPAGENTS_CHECKPOINT_BACKEND=sqlite` 或 `postgresql`。
 
-内置 `durable` 会把 checkpoint/store 状态直接存进 `DATABASE_URL` 指向的数据库。
-如果你们需要别的后端，再用 `DEEPAGENTS_RUNTIME_FACTORY` 覆盖。
+产品状态和 LangGraph runtime 状态是分开的。`DATABASE_URL` 只保存产品表；
+sqlite checkpoint 默认写入 `./data/checkpoints.db`；postgresql checkpoint 使用
+`DEEPAGENTS_CHECKPOINT_DATABASE_URL`。
 
-MySQL 产品账本示例：
+产品账本示例：
 
 ```dotenv
+DATABASE_URL=sqlite+pysqlite:///./data/backend.db
+DATABASE_URL=postgresql+psycopg://app:change-me@127.0.0.1:5432/open_deepagents
 DATABASE_URL=mysql+pymysql://app:change-me@127.0.0.1:3306/open_deepagents?charset=utf8mb4
 ```
 
-后端启动时会按需自动创建数据库，再初始化 `users`、`sessions`、`events`
-三张表。这里的 MySQL 只负责产品账本；LangGraph 运行时持久化则由上面的 runtime
-配置单独控制。
+后端启动时会按需自动创建数据库，再初始化 `users`、`sessions`、`runs`、`events`
+四张表。`DATABASE_URL` 只负责产品账本；LangGraph checkpoint/store 持久化由
+checkpoint 配置单独控制。
 
 ## API Contract
 
@@ -135,18 +135,24 @@ AGENT = {
     "id": "main",
     "system_prompt": ROOT / "prompts" / "system.md",
     "tools": TOOLS,
-    "builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
-    "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
     "middleware": MIDDLEWARE,
     "skills": SKILLS,
     "memory": MEMORY,
+    "permissions": [
+        {"builtin_tools": ("write_todos", "task", "execute")},
+        {
+            "builtin_tools": ("ls", "read_file", "glob", "grep"),
+            "paths": ["/workspace/main", "/skills", "/uploads"],
+        },
+    ],
     "subagents": SUBAGENTS,
 }
 ```
 
-开放文件工具时请配置 `permissions`。`workspace` 只是元数据，不是安全边界。
-现在 `skills`、`memory`、`subagents` 都会相对于当前 agent package 解析，
-所以像 `SKILLS = ["skill-creator"]` 这样的写法可以直接工作。
+用 `permissions[].builtin_tools` 暴露内置工具；文件读写类内置工具在同一项里配置
+`paths`，`"*"` 表示允许全部内置工具。
+现在 `tools`、`middleware`、`skills`、`memory`、`subagents` 都会相对于当前
+agent package 解析，并支持用 `"*"` 发现该目录下的全部组件。
 
 详见 [backend/agents/README.md](backend/agents/README.md)。
 

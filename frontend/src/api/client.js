@@ -12,13 +12,19 @@ function resolveApiBaseUrl() {
 }
 
 function resolveAccessToken() {
+  if (typeof window === 'undefined') {
+    return ''
+  }
   return window.localStorage.getItem('deepagents.admin.token') || ''
 }
 
-function buildUploadContentUrl(baseUrl, uploadId) {
-  void baseUrl
-  void uploadId
-  return ''
+function buildUploadContentUrl(baseUrl, uploadId, accessToken = resolveAccessToken()) {
+  const path = `${baseUrl}/uploads/${encodeURIComponent(uploadId)}/content`
+  if (!accessToken) {
+    return path
+  }
+  const separator = path.includes('?') ? '&' : '?'
+  return `${path}${separator}access_token=${encodeURIComponent(accessToken)}`
 }
 
 function unwrapCollection(payload, preferredKey) {
@@ -77,6 +83,7 @@ function normalizeAttachments(attachments, baseUrl = '') {
       ),
       size: Number(attachment?.size ?? attachment?.size_bytes ?? attachment?.sizeBytes ?? 0),
       status: String(attachment?.status ?? 'uploaded'),
+      path: String(attachment?.path ?? ''),
       downloadUrl: baseUrl && rawId ? buildUploadContentUrl(baseUrl, id) : String(attachment?.download_url ?? attachment?.downloadUrl ?? ''),
     }
   })
@@ -133,6 +140,7 @@ function normalizeHistoryEnvelope(event) {
 function createHistoryAssistantPlaceholder(runId, timestamp, content = '') {
   return {
     id: `stream:${runId}`,
+    runId: String(runId || ''),
     role: 'assistant',
     content,
     createdAt: timestamp || new Date().toISOString(),
@@ -153,6 +161,11 @@ function appendHistoryProcessMessage(messages, envelope) {
   const streamId = `stream:${runId}`
   const transcript = [...messages]
   let targetIndex = transcript.findIndex((message) => message.id === streamId)
+  if (targetIndex === -1) {
+    targetIndex = transcript.findIndex(
+      (message) => message.role === 'assistant' && String(message.runId || '') === runId,
+    )
+  }
   if (targetIndex === -1) {
     transcript.push(createHistoryAssistantPlaceholder(runId, processEvent.timestamp))
     targetIndex = transcript.length - 1
@@ -206,6 +219,7 @@ function finalizeHistoryAssistantMessage(messages, event, baseUrl = '') {
   const transcript = streamId ? messages.filter((entry) => entry.id !== streamId) : [...messages]
   const nextMessage = {
     ...message,
+    runId,
     startedAt: String(streamingMessage?.startedAt ?? streamingMessage?.createdAt ?? message.createdAt),
     processes: Array.isArray(message.processes)
       ? message.processes
@@ -399,22 +413,47 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
     },
 
     async uploadFiles(sessionId, files) {
-      void sessionId
-      return files.map((file, index) => ({
-        id: `local-${Date.now()}-${index}`,
-        name: String(file.name || uiCopy.api.unnamedAttachment),
-        size: Number(file.size || 0),
-        status: 'submitted',
-        downloadUrl: '',
-      }))
+      const uploaded = []
+      for (const file of files) {
+        const formData = new globalThis.FormData()
+        formData.append('file', file)
+        const accessToken = resolveAccessToken()
+        const response = await fetch(`${baseUrl}/sessions/${encodeURIComponent(sessionId)}/uploads`, {
+          method: 'POST',
+          body: formData,
+          credentials: 'include',
+          headers: {
+            Accept: 'application/json',
+            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          },
+        })
+        if (!response.ok) {
+          const message = await readErrorMessage(response)
+          throw new Error(message || uiCopy.api.uploadFailedForFile(file.name))
+        }
+        const record = await response.json()
+        uploaded.push({
+          id: String(record.id ?? record.attachment_id ?? record.attachmentId ?? file.name),
+          name: String(record.name ?? record.filename ?? file.name ?? uiCopy.api.unnamedAttachment),
+          size: Number(record.size ?? file.size ?? 0),
+          status: String(record.status ?? 'uploaded'),
+          path: String(record.path ?? ''),
+          downloadUrl: buildUploadContentUrl(
+            baseUrl,
+            String(record.id ?? record.attachment_id ?? record.attachmentId ?? file.name),
+          ),
+        })
+      }
+      return uploaded
     },
 
     async deleteUpload(uploadId) {
-      void uploadId
+      await fetchJson(`${baseUrl}/uploads/${encodeURIComponent(uploadId)}`, {
+        method: 'DELETE',
+      })
     },
 
     async startRun({ sessionId, prompt, attachments, modelId, onOpen, onEvent, onError }) {
-      void attachments
       const accessToken = resolveAccessToken()
       const controller = new globalThis.AbortController()
       const response = await fetch(`${baseUrl}/sessions/${encodeURIComponent(sessionId)}/runs/stream`, {
@@ -428,6 +467,7 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
         },
         body: JSON.stringify({
           prompt,
+          attachments,
           model_id: modelId || null,
         }),
       })

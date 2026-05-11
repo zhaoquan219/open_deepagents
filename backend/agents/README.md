@@ -44,26 +44,20 @@ from agents.tools import TOOLS
 
 ROOT = Path(__file__).parent
 
-DEFAULT_BUILTIN_TOOLS = (
-    "write_todos",
-    "ls",
-    "read_file",
-    "glob",
-    "grep",
-    "task",
-    "execute",
-)
-
 AGENT = {
     "id": "main",
     "system_prompt": ROOT / "prompts" / "system.md",
-    "workspace": "/workspace/main",
     "tools": TOOLS,
-    "builtin_tools": DEFAULT_BUILTIN_TOOLS,
-    "disabled_builtin_tools": ("write_file", "edit_file"),
     "middleware": MIDDLEWARE,
     "skills": SKILLS,
     "memory": MEMORY,
+    "permissions": [
+        {"builtin_tools": ("write_todos", "task", "execute")},
+        {
+            "builtin_tools": ("ls", "read_file", "glob", "grep"),
+            "paths": ["/workspace/main", "/skills", "/uploads"],
+        },
+    ],
     "subagents": SUBAGENTS,
 }
 ```
@@ -79,23 +73,20 @@ AGENT = {
     "id": "main",
     "system_prompt": ROOT / "prompts" / "system.md",
     "tools": TOOLS,
-    "builtin_tools": ("ls", "read_file", "glob", "grep", "task"),
-    "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
     "skills": ["skill-creator"],
     "memory": ["project"],
     "subagents": ["code_reviewer"],
     # Optional:
     "model": "openai/gpt-5-4",
-    "workspace": "/workspace/main",
     "permissions": [
-        {"operations": ["read"], "paths": ["/workspace/main"]},
+        {"builtin_tools": ("write_todos", "task")},
+        {"builtin_tools": ("ls", "read_file", "glob", "grep"), "paths": ["/workspace/main"]},
     ],
 }
 ```
 
 - `model` 不写时，使用当前默认模型。
-- `workspace` 只是给 UI/日志/作者看的描述字段，不是权限边界。
-- `permissions` 才是文件读写边界。
+- `permissions[].builtin_tools` 同时控制内置工具可见性；文件工具还需要 `paths`。
 - `skills` / `memory` / `subagents` 直接写列表，默认最容易看懂。
 - 这些选择会相对于当前 agent package 解析，而不是错误地从 `backend/` 根目录拼接。
 
@@ -108,15 +99,16 @@ SUBAGENT = {
     "label": "Code reviewer",
     "description": "Review implementation changes for defects.",
     "system_prompt": ROOT / "prompts" / "system.md",
-    "workspace": "/workspace/reviews",
     "tools": TOOLS,
-    "builtin_tools": DEFAULT_BUILTIN_TOOLS,
-    "disabled_builtin_tools": ("write_file", "edit_file"),
     "middleware": MIDDLEWARE,
     "skills": SKILLS,
     "memory": MEMORY,
     "permissions": [
-        {"operations": ["read"], "paths": ["/workspace/reviews", "/workspace/shared"]},
+        {"builtin_tools": ("write_todos", "task")},
+        {
+            "builtin_tools": ("ls", "read_file", "glob", "grep"),
+            "paths": ["/workspace/reviews", "/workspace/shared"],
+        },
     ],
 }
 ```
@@ -124,14 +116,13 @@ SUBAGENT = {
 Subagents are resolved recursively. Nested subagents can define their own prompt,
 model, tools, built-in tool filter, permissions, skills, memory, middleware, and
 children.
-`workspace` is descriptive metadata for UI/logging and agent authoring. It does
-not narrow filesystem or tool access by itself; use sandbox backend selection and
-`permissions` for enforcement.
+Use sandbox backend selection and `permissions` for filesystem enforcement.
 
 ## Selection Patterns
 
-Selection files such as `skills/__init__.py`, `memory/__init__.py`, and
-`subagents/__init__.py` can export one item, a list, named presets, or `"*"`.
+Selection files such as `tools/__init__.py`, `middleware/__init__.py`,
+`skills/__init__.py`, `memory/__init__.py`, and `subagents/__init__.py` can
+export one item, a list, named presets, or `"*"`.
 
 For the default scaffold, keep them simple:
 
@@ -144,6 +135,8 @@ SUBAGENTS = ["code_reviewer"]
 Select everything in a directory:
 
 ```python
+TOOLS = "*"
+MIDDLEWARE = "*"
 SKILLS = "*"
 MEMORY = "*"
 SUBAGENTS = "*"
@@ -189,18 +182,23 @@ TOOLS = [search_docs]
 These are different from DeepAgents built-in tools. Custom tools are passed
 through by the built-in tool filter.
 
-## Built-in Tool Visibility
+## Built-in Tool Permissions
 
-Use `builtin_tools` to expose only the DeepAgents built-ins you want the model to
-see. Use `disabled_builtin_tools` to hide specific built-ins. If a built-in
-appears in both lists, `disabled_builtin_tools` wins.
+Use `permissions[].builtin_tools` to expose only the DeepAgents built-ins you
+want the model to see. File built-ins also use the same entry's `paths` for
+authorization. Use `"*"` to allow every known built-in.
 
 When no subagents are active, the backend automatically hides the built-in
-`task` tool even if it appears in `builtin_tools`.
+`task` tool even if it appears in `permissions[].builtin_tools`.
 
 ```python
-"builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
-"disabled_builtin_tools": ("execute", "write_file", "edit_file"),
+"permissions": [
+    {"builtin_tools": ("write_todos", "task", "execute")},
+    {
+        "builtin_tools": ("ls", "read_file", "glob", "grep"),
+        "paths": ["/workspace/main", "/skills", "/uploads"],
+    },
+]
 ```
 
 Useful built-in names include:
@@ -217,24 +215,25 @@ Useful built-in names include:
 
 ## Permissions
 
-Permissions are path authorization for visible file tools.
+Permissions are both built-in visibility and path authorization for visible file
+tools.
 
 ```python
 "permissions": [
-    {"operations": ["read"], "paths": ["/workspace/main"]},
-    {"operations": ["write"], "paths": ["/workspace/main/output"]},
+    {"builtin_tools": ("ls", "read_file", "glob", "grep"), "paths": ["/workspace/main"]},
+    {"builtin_tools": ("write_file", "edit_file"), "paths": ["/workspace/main/output"]},
 ]
 ```
 
-`operations=["read"]` covers `ls`, `read_file`, `glob`, and `grep`.
-`operations=["write"]` covers `write_file` and `edit_file`.
+`ls`, `read_file`, `glob`, and `grep` map to read permissions. `write_file` and
+`edit_file` map to write permissions.
 
-Tool visibility and permissions must both allow an action:
+The single permissions surface must allow an action:
 
-- If `read_file` is hidden, the model cannot call it.
-- If `read_file` is visible but the path is not permitted, the call is blocked.
-- If a path is writable but `write_file` and `edit_file` are hidden, the model
-  still cannot write through those built-ins.
+- If `read_file` is not listed, the model cannot call it.
+- If `read_file` is listed but the path is not permitted, the call is blocked.
+- If a path is writable but `write_file` and `edit_file` are not listed, the
+  model still cannot write through those built-ins.
 
 ## Middleware-First Customization
 
@@ -256,6 +255,24 @@ async def read_session_context(state, runtime: Runtime[object]) -> None:
 
 需要的上下文字段直接从 runtime context 读取，不再额外配置 hooks。
 
+上传文件也是同一路径：后端把文件信息放入
+`runtime.context.current_attachments`，不直接改写用户 prompt。如果确实要把上传
+文件路径注入成额外 message，可以在 middleware 中显式选择：
+
+```python
+from agents.middleware.audit_middleware import (
+    AuditAttachmentToolCall,
+    inject_attachment_context_message,
+    log_run_context,
+)
+
+MIDDLEWARE = [
+    log_run_context,
+    inject_attachment_context_message,
+    AuditAttachmentToolCall(),
+]
+```
+
 ## Skills and Memory
 
 Skills are exposed through DeepAgents skill paths. Memory files are Markdown
@@ -268,5 +285,5 @@ facts, policies, terminology, and reviewer context.
 
 Sandbox backend selection is global and configured through `backend/.env`.
 Agents and subagents do not define their own sandbox backend. They can define
-`workspace` as metadata, built-in tool visibility to shape model-visible tools,
-and permissions to enforce file access inside the global backend.
+built-in tool visibility to shape model-visible tools and permissions to enforce
+file access inside the global backend.

@@ -11,14 +11,12 @@ from app.catalog import build_model, resolve_agent
 from app.runtime.extensions import (
     SandboxConfig,
     build_builtin_tool_selection_middleware,
-    build_permissions,
     resolve_backend,
 )
-from app.runtime.sse_bridge import DEEPAGENTS_EVENT_STREAM_API, normalize_runtime_event
+from app.runtime.sse_bridge import normalize_runtime_event
 from app.settings import Settings
 
 __all__ = (
-    "DEEPAGENTS_EVENT_STREAM_API",
     "DeepAgentsRunContext",
     "build_deep_agent",
     "normalize_runtime_event",
@@ -55,16 +53,7 @@ def build_deep_agent(settings: Settings, model_id: str | None = None) -> Any:
         middleware.append(tool_selection)
     sandbox_config = SandboxConfig.from_mapping(settings.sandbox_settings())
     supports_permissions = sandbox_config.kind != "local_shell"
-    permissions = (
-        build_permissions(
-            tuple(
-                {"operations": rule.operations, "paths": rule.paths}
-                for rule in agent["permissions"]
-            )
-        )
-        if supports_permissions
-        else None
-    )
+    permissions = list(agent["permissions"]) if supports_permissions else None
     return create_deep_agent(
         model=build_model(settings, str(selected_model_id) if selected_model_id else None),
         tools=list(agent["tools"]),
@@ -127,8 +116,8 @@ def _deepagents_subagents(
 
 def _with_builtin_tool_selection_middleware(item: dict[str, Any]) -> dict[str, Any]:
     tool_selection = build_builtin_tool_selection_middleware(
-        allowlist=item.get("builtin_tool_allowlist") or item.get("builtin_tools"),
-        blocklist=item.get("builtin_tool_blocklist") or item.get("disabled_builtin_tools"),
+        allowlist=item.get("builtin_tool_allowlist"),
+        blocklist=item.get("builtin_tool_blocklist"),
     )
     if tool_selection is None:
         return item

@@ -152,20 +152,20 @@ class EventRecord(Base):
 class Database:
     def __init__(self, database_url: str) -> None:
         self.database_url = database_url
+        if self.database_url.startswith("mysql"):
+            self._ensure_mysql_database()
         connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
         self.engine = create_engine(database_url, future=True, connect_args=connect_args)
         self.session_factory = sessionmaker(self.engine, expire_on_commit=False, future=True)
 
     def initialize_schema(self) -> None:
-        if self.database_url.startswith("mysql"):
-            self._ensure_mysql_database()
         Base.metadata.create_all(self.engine)
 
     def _ensure_mysql_database(self) -> None:
         url = make_url(self.database_url)
         if not url.database:
             return
-        engine = create_engine(url.set(database=None), future=True)
+        engine = create_engine(url.set(database="mysql"), future=True)
         database = url.database.replace("`", "``")
         with engine.begin() as conn:
             conn.exec_driver_sql(f"CREATE DATABASE IF NOT EXISTS `{database}`")

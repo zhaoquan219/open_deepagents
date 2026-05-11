@@ -203,6 +203,7 @@ export const messages = {
       },
       process: {
         title: '过程日志',
+        intermediateTitle: '中间过程',
         count: (count) => `${count} 段`,
         groupSummary: (count) => `${count} 条`,
       },
@@ -425,6 +426,7 @@ export const messages = {
       },
       process: {
         title: 'Process log',
+        intermediateTitle: 'Intermediate process',
         count: (count) => `${count} segment${count === 1 ? '' : 's'}`,
         groupSummary: (count) => `${count} event${count === 1 ? '' : 's'}`,
       },

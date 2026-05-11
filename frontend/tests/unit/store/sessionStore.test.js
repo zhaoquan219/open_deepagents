@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createSessionStore,
   appendProcessEvent,
@@ -10,6 +10,10 @@ import {
 import { normalizeStreamEnvelope } from '../../../src/lib/sseContract.js'
 
 describe('sessionStore transcript helpers', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   it('merges assistant deltas into a transient streaming message', () => {
     const initial = []
     const firstPass = mergeAssistantDelta(initial, { runId: 'run-1', delta: 'Hello' })
@@ -139,8 +143,40 @@ describe('sessionStore transcript helpers', () => {
     expect(finalized).toEqual([
       expect.objectContaining({
         id: 'msg-final',
+        runId: 'run-2',
         content: '新内容',
         streaming: false,
+      }),
+    ])
+  })
+
+  it('keeps later process events on the finalized assistant row for the same run', () => {
+    const finalized = finalizeAssistantMessage(
+      mergeAssistantDelta([], { runId: 'run-log', delta: '完成' }),
+      {
+        runId: 'run-log',
+        message: {
+          id: 'msg-log',
+          content: '完成',
+        },
+      },
+    )
+
+    const withLateProcess = appendProcessEvent(finalized, {
+      runId: 'run-log',
+      event: {
+        id: 'tool-late',
+        kind: 'tool',
+        title: 'read_file',
+        summary: '读取完成',
+        status: 'completed',
+      },
+    })
+
+    expect(withLateProcess).toEqual([
+      expect.objectContaining({
+        id: 'msg-log',
+        processes: [expect.objectContaining({ id: 'tool-late', title: 'read_file' })],
       }),
     ])
   })
@@ -212,6 +248,86 @@ describe('sessionStore transcript helpers', () => {
       expect.objectContaining({ role: 'user', content: '你好' }),
       expect.objectContaining({ id: 'msg-chat', role: 'assistant', content: '你好，我在。' }),
     ])
+  })
+
+  it('keeps multiple finalized assistant outputs for one run instead of overwriting them', () => {
+    const apiClient = {
+      createSession: vi.fn(),
+      deleteSession: vi.fn(),
+      getSessionMessages: vi.fn(async () => []),
+      listSessions: vi.fn(),
+      uploadFiles: vi.fn(),
+    }
+    const store = createSessionStore(apiClient)
+
+    store.consumeRunEvent({
+      eventId: 'evt-final-1',
+      type: 'message.final',
+      runId: 'run-interleaved',
+      sessionId: 'session-1',
+      timestamp: '2026-05-05T00:00:01.000Z',
+      message: { role: 'assistant', content: '准备调用工具' },
+      data: {},
+    })
+    store.consumeRunEvent({
+      eventId: 'evt-tool',
+      type: 'sandbox',
+      runId: 'run-interleaved',
+      sessionId: 'session-1',
+      timestamp: '2026-05-05T00:00:02.000Z',
+      status: 'completed',
+      label: 'sandbox.completed',
+      detail: 'execute',
+      data: { input: { command: 'echo ok' }, output: { stdout: 'ok' } },
+    })
+    store.consumeRunEvent({
+      eventId: 'evt-final-2',
+      type: 'message.final',
+      runId: 'run-interleaved',
+      sessionId: 'session-1',
+      timestamp: '2026-05-05T00:00:03.000Z',
+      message: { role: 'assistant', content: '工具完成' },
+      data: {},
+    })
+
+    expect(store.state.messagesBySession['session-1']).toEqual([
+      expect.objectContaining({
+        id: 'final:run-interleaved:evt-final-1',
+        content: '准备调用工具',
+        processes: [expect.objectContaining({ title: 'echo ok' })],
+      }),
+      expect.objectContaining({
+        id: 'final:run-interleaved:evt-final-2',
+        content: '工具完成',
+      }),
+    ])
+  })
+
+  it('restores the selected session after a page refresh', async () => {
+    const storage = {
+      getItem: vi.fn(() => 'session-2'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    }
+    vi.stubGlobal('window', {
+      localStorage: storage,
+    })
+    const apiClient = {
+      createSession: vi.fn(),
+      deleteSession: vi.fn(),
+      getSessionMessages: vi.fn(async () => []),
+      listSessions: vi.fn(async () => [
+        { id: 'session-1', title: '最近会话', updatedAt: '2026-05-05T00:00:02Z' },
+        { id: 'session-2', title: '当前会话', updatedAt: '2026-05-05T00:00:01Z' },
+      ]),
+      uploadFiles: vi.fn(),
+    }
+    const store = createSessionStore(apiClient)
+
+    await store.loadSessions()
+
+    expect(store.state.currentSessionId).toBe('session-2')
+    expect(storage.setItem).toHaveBeenCalledWith('deepagents.currentSessionId', 'session-2')
   })
 
   it('ignores nested runtime completion noise and keeps the real assistant final reply', () => {
@@ -371,6 +487,25 @@ describe('sessionStore transcript helpers', () => {
 
     store.addOptimisticUserMessage('session-1', '第二条消息不能覆盖已有标题')
     expect(store.state.sessions[0].title).toBe('第一行标题候选')
+  })
+
+  it('also distills the first prompt for an English placeholder title', () => {
+    const apiClient = {
+      createSession: vi.fn(),
+      deleteSession: vi.fn(),
+      getSessionMessages: vi.fn(async () => []),
+      listSessions: vi.fn(),
+      uploadFiles: vi.fn(),
+    }
+    const store = createSessionStore(apiClient)
+
+    store.state.sessions = [
+      { id: 'session-1', title: 'New session', updatedAt: '2026-04-13T00:00:00Z', status: 'idle' },
+    ]
+
+    store.addOptimisticUserMessage('session-1', 'First prompt becomes title')
+
+    expect(store.state.sessions[0].title).toBe('First prompt becomes title')
   })
 
   it('clears pending uploads after a successful submission without stripping the user message attachments', () => {

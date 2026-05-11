@@ -65,8 +65,49 @@ describe('createApiClient session normalization', () => {
     expect(fetchMock.mock.calls[1][0]).toBe('/api/sessions/session-1/runs/stream')
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
       prompt: 'hello',
+      attachments: [],
       model_id: 'openai/gpt-5-4',
     })
+  })
+
+  it('sends attachments unchanged when starting a run', async () => {
+    const storage = {
+      getItem: vi.fn(() => 'token-123'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    }
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 201,
+      body: new globalThis.ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new globalThis.TextEncoder().encode(
+              'data: {"event_id":"1","type":"status","run_id":"run-1","session_id":"session-1","status":"running"}\n\n',
+            ),
+          )
+          controller.close()
+        },
+      }),
+    }))
+
+    vi.stubGlobal('window', {
+      location: { origin: 'http://localhost:5173' },
+      localStorage: storage,
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const attachments = [
+      { id: '13205c0e:notes.txt', name: 'notes.txt', path: '/uploads/13205c0e/notes.txt' },
+    ]
+
+    await createApiClient('/api').startRun({
+      sessionId: 'session-1',
+      prompt: 'read it',
+      attachments,
+      modelId: 'openai/gpt-5-4',
+    })
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).attachments).toEqual(attachments)
   })
 
   it('fails closed when the event stream ends without a run id', async () => {
@@ -395,12 +436,172 @@ describe('createApiClient session normalization', () => {
       expect.objectContaining({ role: 'user', content: '检查项目' }),
       expect.objectContaining({
         role: 'assistant',
+        runId: 'run-history',
         content: '验证完成',
         streaming: false,
         processes: [
           expect.objectContaining({ kind: 'tool', title: 'read_file', summary: '读取完成' }),
           expect.objectContaining({ kind: 'sandbox', title: 'npm test', summary: expect.stringContaining('passed') }),
         ],
+      }),
+    ])
+  })
+
+  it('keeps multiple historical assistant messages from one run in order', async () => {
+    const storage = {
+      getItem: vi.fn(() => 'token-123'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    }
+
+    vi.stubGlobal('window', {
+      location: { origin: 'http://localhost:5173' },
+      localStorage: storage,
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          events: [
+            {
+              id: 'user-1',
+              seq: 1,
+              session_id: 'session-history',
+              run_id: 'run-history',
+              kind: 'user.message',
+              type: 'step',
+              role: 'user',
+              content: '做两步',
+              payload: { message: { role: 'user', content: '做两步' } },
+              created_at: '2026-05-05T00:00:00.000Z',
+            },
+            {
+              id: 'assistant-1',
+              seq: 2,
+              session_id: 'session-history',
+              run_id: 'run-history',
+              kind: 'assistant.message',
+              type: 'message.final',
+              role: 'assistant',
+              payload: { message: { role: 'assistant', content: '先说明' } },
+              created_at: '2026-05-05T00:00:01.000Z',
+            },
+            {
+              id: 'tool-1',
+              seq: 3,
+              session_id: 'session-history',
+              run_id: 'run-history',
+              kind: 'tool.completed',
+              type: 'tool',
+              tool_name: 'read_file',
+              payload: { tool_name: 'read_file', status: 'completed', output: { text: 'ok' } },
+              created_at: '2026-05-05T00:00:02.000Z',
+            },
+            {
+              id: 'assistant-2',
+              seq: 4,
+              session_id: 'session-history',
+              run_id: 'run-history',
+              kind: 'assistant.message',
+              type: 'message.final',
+              role: 'assistant',
+              payload: { message: { role: 'assistant', content: '再总结' } },
+              created_at: '2026-05-05T00:00:03.000Z',
+            },
+          ],
+        }),
+      })),
+    )
+
+    const messages = await createApiClient('/api').getSessionMessages('session-history')
+
+    expect(messages).toEqual([
+      expect.objectContaining({ role: 'user', content: '做两步' }),
+      expect.objectContaining({
+        id: 'assistant-1',
+        role: 'assistant',
+        content: '先说明',
+        processes: [expect.objectContaining({ title: 'read_file' })],
+      }),
+      expect.objectContaining({
+        id: 'assistant-2',
+        role: 'assistant',
+        content: '再总结',
+      }),
+    ])
+  })
+
+  it('attaches late historical process events to the finalized assistant message', async () => {
+    const storage = {
+      getItem: vi.fn(() => 'token-123'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    }
+
+    vi.stubGlobal('window', {
+      location: { origin: 'http://localhost:5173' },
+      localStorage: storage,
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          events: [
+            {
+              id: 'user-1',
+              seq: 1,
+              session_id: 'session-history',
+              run_id: 'run-history',
+              kind: 'user.message',
+              type: 'step',
+              role: 'user',
+              content: '检查文件',
+              payload: { message: { role: 'user', content: '检查文件' } },
+              created_at: '2026-05-05T00:00:00.000Z',
+            },
+            {
+              id: 'assistant-1',
+              seq: 2,
+              session_id: 'session-history',
+              run_id: 'run-history',
+              kind: 'assistant.message',
+              type: 'message.final',
+              role: 'assistant',
+              payload: { message: { role: 'assistant', content: '读取完成' } },
+              created_at: '2026-05-05T00:00:01.000Z',
+            },
+            {
+              id: 'tool-1',
+              seq: 3,
+              session_id: 'session-history',
+              run_id: 'run-history',
+              kind: 'tool.completed',
+              type: 'tool',
+              tool_name: 'read_file',
+              payload: {
+                tool_name: 'read_file',
+                status: 'completed',
+                output: { text: 'AGENTS.md' },
+              },
+              created_at: '2026-05-05T00:00:02.000Z',
+            },
+          ],
+        }),
+      })),
+    )
+
+    const messages = await createApiClient('/api').getSessionMessages('session-history')
+
+    expect(messages).toEqual([
+      expect.objectContaining({ role: 'user', content: '检查文件' }),
+      expect.objectContaining({
+        role: 'assistant',
+        content: '读取完成',
+        processes: [expect.objectContaining({ kind: 'tool', title: 'read_file' })],
       }),
     ])
   })
@@ -484,18 +685,12 @@ describe('createApiClient session normalization', () => {
         role: 'assistant',
         content: '片段',
         streaming: false,
-        processes: [
-          expect.objectContaining({
-            kind: 'skill',
-            title: '已加载 1 个技能',
-            summary: 'runner: Run tasks',
-          }),
-        ],
+        processes: [],
       }),
     ])
   })
 
-  it('does not synthesize removed upload download URLs', async () => {
+  it('builds authenticated upload content URLs through the backend', async () => {
     const storage = {
       getItem: vi.fn(() => 'token-123'),
       setItem: vi.fn(),
@@ -507,7 +702,10 @@ describe('createApiClient session normalization', () => {
       localStorage: storage,
     })
 
-    expect(buildUploadContentUrl('/api', 'upload-1')).toBe('')
+    expect(buildUploadContentUrl('/api', 'upload-1')).toBe(
+      '/api/uploads/upload-1/content?access_token=token-123',
+    )
+    expect(buildUploadContentUrl('/api', 'upload-1', '')).toBe('/api/uploads/upload-1/content')
   })
 
   it('sends the bearer token without anonymous actor headers', async () => {
@@ -560,37 +758,67 @@ describe('createApiClient fallback errors', () => {
     await expect(createApiClient('/api').listSessions()).rejects.toThrow(uiCopy.api.requestFailedStatus(503))
   })
 
-  it('keeps selected files local because upload endpoints are not in the current backend API', async () => {
+  it('uploads selected files through the backend upload endpoint', async () => {
     const storage = {
       getItem: vi.fn(() => 'token-123'),
       setItem: vi.fn(),
       removeItem: vi.fn(),
     }
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 201,
+      json: async () => ({
+        id: '13205c0e:notes.txt',
+        name: 'notes.txt',
+        size: 5,
+        status: 'uploaded',
+        path: '/uploads/13205c0e/notes.txt',
+        download_url: '/api/uploads/13205c0e:notes.txt/content',
+      }),
+    }))
 
     vi.stubGlobal('window', {
       location: { origin: 'http://localhost:5173' },
       localStorage: storage,
     })
+    vi.stubGlobal('fetch', fetchMock)
     const file = Object.assign(new globalThis.Blob(['hello'], { type: 'text/plain' }), {
       name: 'notes.txt',
     })
 
     await expect(createApiClient('/api').uploadFiles('session-1', [file])).resolves.toEqual([
-      expect.objectContaining({ name: 'notes.txt', status: 'submitted', downloadUrl: '' }),
+      expect.objectContaining({
+        id: '13205c0e:notes.txt',
+        name: 'notes.txt',
+        status: 'uploaded',
+        path: '/uploads/13205c0e/notes.txt',
+        downloadUrl: '/api/uploads/13205c0e%3Anotes.txt/content?access_token=token-123',
+      }),
     ])
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/sessions/session-1/uploads')
+    expect(fetchMock.mock.calls[0][1].body).toBeInstanceOf(globalThis.FormData)
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer token-123')
   })
 
-  it('treats deleting local pending uploads as a client-only operation', async () => {
+  it('deletes pending uploads through the backend upload endpoint', async () => {
     const storage = {
       getItem: vi.fn(() => 'token-123'),
       setItem: vi.fn(),
       removeItem: vi.fn(),
     }
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 204,
+      text: async () => '',
+    }))
 
     vi.stubGlobal('window', {
       location: { origin: 'http://localhost:5173' },
       localStorage: storage,
     })
+    vi.stubGlobal('fetch', fetchMock)
     await expect(createApiClient('/api').deleteUpload('upload-1')).resolves.toBeUndefined()
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/uploads/upload-1')
+    expect(fetchMock.mock.calls[0][1].method).toBe('DELETE')
   })
 })

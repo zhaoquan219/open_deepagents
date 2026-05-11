@@ -1,3 +1,3 @@
-SUBAGENTS = ["code_reviewer"]
+SUBAGENTS = "*"
 
 __all__ = ["SUBAGENTS"]

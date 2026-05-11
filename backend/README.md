@@ -16,10 +16,7 @@ state via the configured `thread_id`, checkpointer, store, cache, and backend.
 - Support SQLite, PostgreSQL, and MySQL for the product database.
 - Resolve LangGraph runtime persistence through memory, official SQLite/Postgres
   packages, or an explicit `DEEPAGENTS_RUNTIME_FACTORY`.
-
-The native backend intentionally does not include upload/download storage or
-generated-file export. Those can be built as extensions on top of the event
-projection and native DeepAgents runtime.
+- Store session uploads and expose model-facing `/uploads/...` virtual paths.
 
 ## Directory Map
 
@@ -69,54 +66,46 @@ The backend reads `backend/.env`.
 | `CORS_ALLOWED_ORIGINS` | Comma-separated frontend origins. |
 | `DEEPAGENTS_MAIN_AGENT` | Main agent import spec. Default: `agents:AGENT`. |
 | `DEEPAGENTS_MODEL_CONFIG_PATH` | Model catalog path. Default: `./models.json`. |
-| `DEEPAGENTS_AGENT_NAME` | Name passed to `create_deep_agent`. |
-| `DEEPAGENTS_RECURSION_LIMIT` | LangGraph recursion limit for runs. |
-| `DEEPAGENTS_RUNTIME_DRIVER` | Runtime mode: `memory`, `sqlite`, `postgres`, or `factory`. |
-| `DEEPAGENTS_RUNTIME_DATABASE_URL` | Required for official `sqlite` or `postgres` runtime modes. Must differ from `DATABASE_URL`. |
-| `DEEPAGENTS_RUNTIME_FACTORY` | Optional `module:attribute` hook returning checkpointer, store, and optional cache. |
-| `DEEPAGENTS_RUNTIME_PERSISTENCE` | Backward-compatible runtime mode alias. |
-| `DEEPAGENTS_RUNTIME_SPEC` | Optional `module:attribute` factory/object that exposes `checkpointer`, `store`, and optional `cache`. |
 | `DEEPAGENTS_SANDBOX_PROFILE` | High-level sandbox preset: `safe`, `files`, `shell`, or `custom`. |
-| `DEEPAGENTS_SANDBOX_KIND` | `state`, `filesystem`, `local_shell`, or `custom`. |
-| `DEEPAGENTS_SANDBOX_MAX_OUTPUT_BYTES` | Max captured shell output for `local_shell`. |
-| `DEEPAGENTS_SANDBOX_INHERIT_ENV` | Whether `local_shell` inherits host environment variables. |
-| `DEEPAGENTS_SANDBOX_ENV` | Optional JSON object of extra environment variables for `local_shell`. |
-| `DEEPAGENTS_BACKEND_SPEC` | Optional custom DeepAgents backend import spec. |
+| `DEEPAGENTS_SANDBOX_ROOT_DIR` | Workspace root used by `files` and `shell` profiles. |
+| `DEEPAGENTS_UPLOAD_ROOT_DIR` | Session upload root mounted read-only at `/uploads`. |
+| `DEEPAGENTS_CHECKPOINT_BACKEND` | `sqlite` by default; supports `memory`, `sqlite`, and `postgresql`. |
+| `DEEPAGENTS_CHECKPOINT_DATABASE_URL` | Optional sqlite/postgresql checkpoint/store DSN. |
+| `BACKEND_LOG_LEVEL` | `info` by default; `debug` logs every raw agent update event. |
 | `AUDIT_COMPILED_PROMPTS` | `hash` by default; `redacted`, `full`, and `off` are explicit modes. |
 
 Recommended flow:
 
-- Local development: set `DEEPAGENTS_RUNTIME_DRIVER=memory` and `DEEPAGENTS_SANDBOX_PROFILE=safe`.
+- Local development: copy `.env.example`, change the admin password and token
+  secret, then fill `models.json`.
+- Keep `DEEPAGENTS_SANDBOX_PROFILE=safe` unless you need filesystem writes or a
+  trusted local shell.
 - Production deployment: set `ENVIRONMENT=production`, strong auth secrets, and
-  `DEEPAGENTS_RUNTIME_DRIVER=postgres` with official LangGraph persistence
-  packages plus a separate `DEEPAGENTS_RUNTIME_DATABASE_URL`, or provide
-  `DEEPAGENTS_RUNTIME_FACTORY`.
-- Advanced override: set `DEEPAGENTS_RUNTIME_FACTORY` when a custom durable
-  runtime bundle should replace the built-in resolver.
-- Legacy `DEEPAGENTS_RUNTIME_PERSISTENCE`, `DEEPAGENTS_RUNTIME_SPEC`, and the low-level `*_SPEC` settings remain as advanced compatibility escape hatches.
+  `DEEPAGENTS_CHECKPOINT_BACKEND=sqlite` or `postgresql`.
 
 Product tables never store checkpoint internals. Runtime state is restored by
 the LangGraph checkpointer/store through `sessions.thread_id`.
-The official sqlite/postgres runtime modes require their own runtime DSN and
-refuse to share `DATABASE_URL`; `/ready` validates that the product database
-contains exactly the four product tables.
+The sqlite checkpoint mode defaults to `./data/checkpoints.db`. Postgresql
+requires `DEEPAGENTS_CHECKPOINT_DATABASE_URL`. Checkpoint stores refuse to share
+`DATABASE_URL`; `/ready` validates that the product database contains exactly
+the four product tables.
 
-### MySQL Example
+### Product Database Examples
 
 ```dotenv
+DATABASE_URL=sqlite+pysqlite:///./data/backend.db
+DATABASE_URL=postgresql+psycopg://app:change-me@127.0.0.1:5432/open_deepagents
 DATABASE_URL=mysql+pymysql://app:change-me@127.0.0.1:3306/open_deepagents?charset=utf8mb4
 ```
 
-The backend creates the target MySQL database on startup when needed, then
-initializes the scaffold tables.
+The backend creates the target database on startup when needed, then initializes
+the scaffold tables.
 
 Important distinction:
 
 - `DATABASE_URL` stores users, sessions, runs, and ordered events.
-- `DEEPAGENTS_RUNTIME_DRIVER` and `DEEPAGENTS_RUNTIME_FACTORY` configure
-  LangGraph/DeepAgents runtime state.
-- `DEEPAGENTS_RUNTIME_PERSISTENCE` and `DEEPAGENTS_RUNTIME_SPEC` remain
-  backward-compatible low-level aliases.
+- `DEEPAGENTS_CHECKPOINT_BACKEND` and `DEEPAGENTS_CHECKPOINT_DATABASE_URL`
+  configure LangGraph/DeepAgents checkpoint and store state.
 
 ## API Contract
 
@@ -130,17 +119,21 @@ Important distinction:
 | `PATCH /api/sessions/{session_id}` | Update session `title` or `metadata`. |
 | `DELETE /api/sessions/{session_id}` | Delete an owned session and its events. |
 | `GET /api/sessions/{session_id}/events?after_seq=N` | Load durable ordered history. |
+| `POST /api/sessions/{session_id}/uploads` | Store one owned upload and return its model-facing `/uploads/...` path. |
 | `POST /api/sessions/{session_id}/runs` | Run to completion and return the final run row. |
 | `POST /api/sessions/{session_id}/runs/stream` | Start one run and stream SSE events. |
+| `GET /api/uploads/{upload_id}/content` | Download an owned upload. |
+| `DELETE /api/uploads/{upload_id}` | Delete an owned upload. |
 | `GET /api/runs/{run_id}` | Return run status and audit metadata. |
 | `POST /api/runs/{run_id}/cancel` | Mark a running run cancelled. |
 | `GET /api/runs/{run_id}/events` | Load durable ordered events for one run. |
 | `GET /health` | Process liveness. |
 | `GET /ready` | DB, schema, runtime, catalog, sandbox, and agent readiness. |
 
-Each run appends `run.started`, `user.message`, audit events, runtime events,
-and a terminal `run.completed`, `run.failed`, or `run.cancelled` event. Events
-are persisted before they are emitted to stream clients.
+Each run appends `run.started`, `user.message`, any middleware-generated
+`system.message` rows, audit events, runtime events, and a terminal
+`run.completed`, `run.failed`, or `run.cancelled` event. Events are persisted
+before they are emitted to stream clients.
 
 ## Agent Package Loading
 
@@ -153,14 +146,13 @@ The backend loads `backend/agents:AGENT` by default. The mapping can define:
 - `memory`
 - `permissions`
 - `subagents`
-- `builtin_tools`
-- `disabled_builtin_tools`
 
-`builtin_tools` and `disabled_builtin_tools` are converted into a small
-middleware that filters DeepAgents built-in tools before model calls.
-`permissions` are passed through to DeepAgents for file-tool authorization.
-Package-local `skills`, `memory`, and `subagents` are resolved relative to the
-current agent package instead of the backend root.
+`permissions[].builtin_tools` filters DeepAgents built-in tools before model
+calls. File built-ins use the same permission entries' `paths` for file-tool
+authorization; `"*"` allows every known built-in.
+Package-local `tools`, `middleware`, `skills`, `memory`, and `subagents` are
+resolved relative to the current agent package instead of the backend root.
+Use `"*"` to discover all exports in a component folder.
 
 See [agents/README.md](agents/README.md) for examples.
 
@@ -173,7 +165,6 @@ resolution. `app/runtime/` now holds the raw DeepAgents-facing helpers:
 - import-spec loading;
 - built-in tool filtering middleware;
 - permissions and sandbox backend resolution;
-- run-context schema utilities;
 - skill-source routing;
 - SSE normalization helpers used by backend runtime tests.
 

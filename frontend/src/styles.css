@@ -663,14 +663,14 @@ button {
   list-style: none;
 }
 
-.process-group {
+.process-item {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.78);
   overflow: hidden;
 }
 
-.process-group > summary {
+.process-item > summary {
   min-height: 34px;
   padding: 8px 9px;
   display: flex;
@@ -683,25 +683,20 @@ button {
   list-style: none;
 }
 
-.process-group > summary::-webkit-details-marker {
+.process-item > summary::-webkit-details-marker {
   display: none;
 }
 
-.process-group > summary span {
+.process-item > summary span {
   flex: 0 0 auto;
   color: var(--text-faint);
   font-size: 0.74rem;
   font-weight: 700;
 }
 
-.process-group-items {
-  margin: 0;
-  padding: 0 9px 9px;
-  list-style: none;
-}
-
-.process-group-items pre {
+.process-item pre {
   margin: 0 0 8px;
+  padding: 0 9px 9px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--text-soft);
@@ -710,7 +705,7 @@ button {
   font-family: inherit;
 }
 
-.process-group-items li:last-child pre {
+.process-list li:last-child pre {
   margin-bottom: 0;
 }
 

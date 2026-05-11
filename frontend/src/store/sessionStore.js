@@ -8,14 +8,34 @@ import {
 import { logEntryFromEnvelope } from '../lib/processLog.js'
 import { uiCopy } from '../lib/copy.js'
 
+const CURRENT_SESSION_STORAGE_KEY = 'deepagents.currentSessionId'
+
 function createClientId() {
   return globalThis.crypto?.randomUUID?.() || `session-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function readStoredSessionId() {
+  if (typeof window === 'undefined') {
+    return ''
+  }
+  return window.localStorage.getItem(CURRENT_SESSION_STORAGE_KEY) || ''
+}
+
+function writeStoredSessionId(sessionId) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  if (sessionId) {
+    window.localStorage.setItem(CURRENT_SESSION_STORAGE_KEY, String(sessionId))
+    return
+  }
+  window.localStorage.removeItem(CURRENT_SESSION_STORAGE_KEY)
 }
 
 function createEmptyState() {
   return {
     sessions: [],
-    currentSessionId: null,
+    currentSessionId: readStoredSessionId() || null,
     messagesBySession: {},
     pendingUploadsBySession: {},
     deletingUploadIds: {},
@@ -76,6 +96,7 @@ function normalizeAttachments(attachments) {
     name: String(attachment?.name ?? attachment?.filename ?? attachment?.title ?? uiCopy.api.unnamedAttachment),
     size: Number(attachment?.size ?? attachment?.size_bytes ?? attachment?.sizeBytes ?? 0),
     status: String(attachment?.status ?? 'uploaded'),
+    path: String(attachment?.path ?? ''),
     downloadUrl: String(attachment?.downloadUrl ?? attachment?.download_url ?? ''),
   }))
 }
@@ -150,6 +171,7 @@ export function finalizeAssistantMessage(messages, { runId, message }) {
   const extra = message?.extra && typeof message.extra === 'object' ? message.extra : {}
   const nextMessage = {
     id: String(message.id ?? `final:${runId}`),
+    runId: String(runId || message.runId || message.run_id || ''),
     role: String(message.role ?? 'assistant'),
     content: normalizeContent(message.content ?? message.text ?? extra.content ?? ''),
     createdAt: String(message.createdAt ?? message.created_at ?? new Date().toISOString()),
@@ -193,8 +215,14 @@ export function appendProcessEvent(messages, { runId, event }) {
   const transcript = [...messages]
   let targetIndex = transcript.findIndex((message) => message.id === streamId)
   if (targetIndex === -1) {
+    targetIndex = transcript.findIndex(
+      (message) => message.role === 'assistant' && String(message.runId || '') === String(runId),
+    )
+  }
+  if (targetIndex === -1) {
     transcript.push({
       id: streamId,
+      runId: String(runId || ''),
       role: 'assistant',
       content: '',
       createdAt: event.timestamp || new Date().toISOString(),
@@ -284,15 +312,22 @@ export function createSessionStore(apiClient) {
     state.error = ''
     try {
       state.sessions = sortSessions(await apiClient.listSessions())
+      const storedSessionId = readStoredSessionId()
       if (!preserveSelection) {
-        state.currentSessionId = state.sessions[0]?.id || null
+        state.currentSessionId = state.sessions.some((session) => session.id === storedSessionId)
+          ? storedSessionId
+          : state.sessions[0]?.id || null
       } else if (!state.sessions.some((session) => session.id === state.currentSessionId)) {
-        state.currentSessionId = state.sessions[0]?.id || null
+        state.currentSessionId = state.sessions.some((session) => session.id === storedSessionId)
+          ? storedSessionId
+          : state.sessions[0]?.id || null
       }
+      writeStoredSessionId(state.currentSessionId || '')
     } catch (error) {
       state.error = error instanceof Error ? error.message : uiCopy.store.session.loadSessionsFailed
       state.sessions = []
       state.currentSessionId = null
+      writeStoredSessionId('')
     } finally {
       state.loadingSessions = false
     }
@@ -303,6 +338,7 @@ export function createSessionStore(apiClient) {
     const session = await apiClient.createSession()
     state.sessions = sortSessions([session, ...state.sessions.filter((entry) => entry.id !== session.id)])
     state.currentSessionId = session.id
+    writeStoredSessionId(session.id)
     ensureTranscriptMap(state.messagesBySession, session.id)
     return session
   }
@@ -319,6 +355,7 @@ export function createSessionStore(apiClient) {
 
       if (state.currentSessionId === normalizedId) {
         state.currentSessionId = state.sessions[0]?.id || null
+        writeStoredSessionId(state.currentSessionId || '')
         if (state.currentSessionId) {
           await selectSession(state.currentSessionId)
         }
@@ -334,6 +371,7 @@ export function createSessionStore(apiClient) {
     const normalizedId = String(sessionId)
     const localMessages = state.messagesBySession[normalizedId] || []
     state.currentSessionId = normalizedId
+    writeStoredSessionId(normalizedId)
     state.loadingMessages = true
     clearErrors()
     try {
@@ -476,16 +514,19 @@ export function createSessionStore(apiClient) {
     }
 
     if (envelope.type === 'message.final') {
-      const finalMessage =
+      const rawFinalMessage =
         envelope.message ||
         (envelope.data?.message && typeof envelope.data.message === 'object' ? envelope.data.message : null) ||
         {
-          id: `final:${envelope.runId}`,
           role: 'assistant',
           content: envelope.data?.text ?? envelope.detail ?? '',
           createdAt: envelope.timestamp,
           attachments: [],
         }
+      const finalMessage = {
+        ...rawFinalMessage,
+        id: rawFinalMessage.id ?? `final:${envelope.runId}:${envelope.eventId || Date.now()}`,
+      }
 
       state.messagesBySession[sessionId] = finalizeAssistantMessage(transcript, {
         runId: envelope.runId,

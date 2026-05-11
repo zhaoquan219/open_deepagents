@@ -4,8 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-DEEPAGENTS_EVENT_STREAM_API = "v2"
-MAX_TEXT = 2048
+MAX_TEXT = 16384
 MAX_ITEMS = 25
 MAX_DEPTH = 5
 
@@ -37,7 +36,7 @@ def normalize_runtime_event(
             return _event(
                 "skill",
                 "skill.started",
-                "Loading skills",
+                "Skills preparing",
                 runtime_run_id=runtime_run_id,
                 node=node,
                 status="in_progress",
@@ -49,7 +48,7 @@ def normalize_runtime_event(
             return _event(
                 "skill",
                 "skill.completed",
-                f"Loaded {len(skills)} skills" if skills else "No skills loaded",
+                f"{len(skills)} skills ready" if skills else "Skills ready",
                 runtime_run_id=runtime_run_id,
                 node=node,
                 status="completed",
