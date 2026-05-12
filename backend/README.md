@@ -9,9 +9,9 @@ state via the configured `thread_id`, checkpointer, store, cache, and backend.
 
 - Login with JWT bearer tokens.
 - Sync configured admin users into SQL on startup.
-- Persist exactly four product tables: `users`, `sessions`, `runs`, and `events`.
+- Persist product tables: `users`, `sessions`, `runs`, `uploads`, and `events`.
 - Resolve `backend/agents:AGENT`, `backend/models.json`, tools, middleware,
-  skills, memory, permissions, subagents, and built-in tool visibility.
+  skills, memory, native filesystem permissions, and subagents.
 - Stream DeepAgents runtime events after persisting each durable event.
 - Support SQLite, PostgreSQL, and MySQL for the product database.
 - Resolve LangGraph runtime persistence through memory, official SQLite/Postgres
@@ -27,7 +27,7 @@ backend/
 │   ├── main.py                FastAPI app factory and startup
 │   ├── routes.py              Auth, models, sessions, history, run stream
 │   ├── settings.py            .env settings and import-spec resolution
-│   ├── db.py                  SQLAlchemy users/sessions/runs/events schema
+│   ├── db.py                  SQLAlchemy users/sessions/uploads/runs/events schema
 │   ├── auth.py                Password hashing, JWT, current user
 │   ├── catalog.py             models.json and agent package resolver
 │   ├── agent.py               create_deep_agent wiring
@@ -71,7 +71,7 @@ The backend reads `backend/.env`.
 | `DEEPAGENTS_UPLOAD_ROOT_DIR` | Session upload root mounted read-only at `/uploads`. |
 | `DEEPAGENTS_CHECKPOINT_BACKEND` | `sqlite` by default; supports `memory`, `sqlite`, and `postgresql`. |
 | `DEEPAGENTS_CHECKPOINT_DATABASE_URL` | Optional sqlite/postgresql checkpoint/store DSN. |
-| `BACKEND_LOG_LEVEL` | `info` by default; `debug` logs every raw agent update event. |
+| `BACKEND_LOG_LEVEL` | `info` by default; `debug` logs concise runtime event summaries. |
 | `AUDIT_COMPILED_PROMPTS` | `hash` by default; `redacted`, `full`, and `off` are explicit modes. |
 
 Recommended flow:
@@ -87,8 +87,8 @@ Product tables never store checkpoint internals. Runtime state is restored by
 the LangGraph checkpointer/store through `sessions.thread_id`.
 The sqlite checkpoint mode defaults to `./data/checkpoints.db`. Postgresql
 requires `DEEPAGENTS_CHECKPOINT_DATABASE_URL`. Checkpoint stores refuse to share
-`DATABASE_URL`; `/ready` validates that the product database contains exactly
-the four product tables.
+`DATABASE_URL`; `/ready` validates that the product database contains the
+expected product tables.
 
 ### Product Database Examples
 
@@ -103,7 +103,7 @@ the scaffold tables.
 
 Important distinction:
 
-- `DATABASE_URL` stores users, sessions, runs, and ordered events.
+- `DATABASE_URL` stores users, sessions, uploads, runs, and ordered events.
 - `DEEPAGENTS_CHECKPOINT_BACKEND` and `DEEPAGENTS_CHECKPOINT_DATABASE_URL`
   configure LangGraph/DeepAgents checkpoint and store state.
 
@@ -147,9 +147,9 @@ The backend loads `backend/agents:AGENT` by default. The mapping can define:
 - `permissions`
 - `subagents`
 
-`permissions[].builtin_tools` filters DeepAgents built-in tools before model
-calls. File built-ins use the same permission entries' `paths` for file-tool
-authorization; `"*"` allows every known built-in.
+`permissions[].operations` is the native DeepAgents filesystem permission
+surface. It controls read/write authorization for virtual sandbox paths. Built-in
+tool visibility is not configured by the scaffold.
 Package-local `tools`, `middleware`, `skills`, `memory`, and `subagents` are
 resolved relative to the current agent package instead of the backend root.
 Use `"*"` to discover all exports in a component folder.
@@ -163,7 +163,6 @@ decides auth, sessions, SQL persistence, runtime configuration, and agent
 resolution. `app/runtime/` now holds the raw DeepAgents-facing helpers:
 
 - import-spec loading;
-- built-in tool filtering middleware;
 - permissions and sandbox backend resolution;
 - skill-source routing;
 - SSE normalization helpers used by backend runtime tests.

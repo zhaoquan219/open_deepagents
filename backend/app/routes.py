@@ -8,7 +8,7 @@ import re
 import shutil
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
@@ -21,7 +21,15 @@ from agents.middleware.audit_middleware import attachment_context_content
 from app import agent as runtime_agent
 from app.auth import CurrentUser, DbSession, create_token, verify_password
 from app.catalog import default_model_id, model_options, resolve_agent
-from app.db import EventRecord, RunRecord, SessionRecord, UserRecord, append_event, now
+from app.db import (
+    EventRecord,
+    RunRecord,
+    SessionRecord,
+    UploadRecord,
+    UserRecord,
+    append_event,
+    now,
+)
 from app.settings import Settings
 
 router = APIRouter()
@@ -205,10 +213,12 @@ async def upload_session_file(
     if not file.filename:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Upload filename is required")
     record = _store_upload(
+        db=db,
         settings=request.app.state.settings,
         user=user,
         session_id=session_id,
         filename=file.filename,
+        content_type=file.content_type,
         source=file.file,
     )
     return record
@@ -218,14 +228,19 @@ async def upload_session_file(
 def delete_upload(
     upload_id: str,
     request: Request,
+    db: DbSession,
     user: CurrentUser,
 ) -> Response:
-    upload_target = _find_upload_target(request.app.state.settings, user, upload_id)
-    if upload_target is not None:
-        if upload_target.is_dir():
-            shutil.rmtree(upload_target)
-        else:
-            upload_target.unlink(missing_ok=True)
+    upload = _owned_upload(db, user, upload_id)
+    if upload is None:
+        return Response(status_code=204)
+    upload_target = _upload_storage_path(request.app.state.settings, upload)
+    if upload_target.parent.is_dir():
+        shutil.rmtree(upload_target.parent)
+    else:
+        upload_target.unlink(missing_ok=True)
+    upload.status = "deleted"
+    upload.deleted_at = now()
     return Response(status_code=204)
 
 
@@ -233,13 +248,14 @@ def delete_upload(
 def download_upload(
     upload_id: str,
     request: Request,
+    db: DbSession,
     user: CurrentUser,
 ) -> FileResponse:
-    upload_target = _find_upload_target(request.app.state.settings, user, upload_id)
-    if upload_target is None:
+    upload = _owned_upload(db, user, upload_id)
+    if upload is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Upload not found")
-    upload_file = _upload_file_from_target(upload_target)
-    if upload_file is None:
+    upload_file = _upload_storage_path(request.app.state.settings, upload)
+    if not upload_file.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Upload file not found")
     return FileResponse(upload_file, filename=upload_file.name)
 
@@ -344,7 +360,13 @@ def _start_run(
             session.title = _derive_session_title(payload.prompt)
         db.add(run)
         db.flush()
-        attachments = _resolve_run_attachments(settings, user, session.id, payload.attachments)
+        attachments = _resolve_run_attachments(
+            db,
+            settings,
+            user,
+            session.id,
+            payload.attachments,
+        )
         events = _initial_run_events(
             db,
             settings,
@@ -386,22 +408,23 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
         }
         messages = await _runtime_input_messages(settings, config, state)
         LOGGER.debug(
-            "agent input run_id=%s session_id=%s messages=%s",
+            "agent input run_id=%s session_id=%s %s",
             run_id,
             state["session_id"],
-            _json_for_log(messages),
+            _message_summary(messages),
         )
         async for raw in graph.astream_events(
             {"messages": messages},
             config=config,
             context=context,
         ):
-            LOGGER.debug(
-                "agent update run_id=%s session_id=%s raw_event=%s",
-                run_id,
-                state["session_id"],
-                _json_for_log(raw),
-            )
+            if LOGGER.isEnabledFor(logging.DEBUG):
+                LOGGER.debug(
+                    "runtime event run_id=%s session_id=%s %s",
+                    run_id,
+                    state["session_id"],
+                    _runtime_event_summary(raw),
+                )
             envelope = runtime_agent.normalize_runtime_event(
                 raw,
                 bridge_run_id=run_id,
@@ -757,6 +780,7 @@ def _event_attachments(event: EventRecord | None) -> list[dict[str, Any]]:
 
 
 def _resolve_run_attachments(
+    db: DbSession,
     settings: Settings,
     user: UserRecord,
     session_id: str,
@@ -765,184 +789,135 @@ def _resolve_run_attachments(
     resolved = []
     seen_upload_ids: set[str] = set()
     for raw in attachments:
-        upload_id = str(raw.get("id") or "")
+        upload_id = _upload_id_from_attachment(raw)
         if not upload_id or upload_id in seen_upload_ids:
             continue
         seen_upload_ids.add(upload_id)
-        upload_target = _find_upload_target(settings, user, upload_id, session_id=session_id)
-        if upload_target is None:
+        upload = _owned_upload(db, user, upload_id, session_id=session_id)
+        if upload is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Upload not found: {upload_id}")
-        file_path = _upload_file_from_target(upload_target)
-        if file_path is None:
+        file_path = _upload_storage_path(settings, upload)
+        if not file_path.is_file():
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Upload file not found: {upload_id}")
-        resolved.append(
-            {
-                "id": upload_id,
-                "name": file_path.name,
-                "size": int(file_path.stat().st_size),
-                "status": "uploaded",
-                "path": _upload_model_path(settings, file_path),
-            }
-        )
+        resolved.append(_upload_out(upload))
     return resolved
 
 
 def _store_upload(
     *,
+    db: DbSession,
     settings: Settings,
     user: UserRecord,
     session_id: str,
     filename: str,
+    content_type: str | None,
     source: Any,
 ) -> dict[str, Any]:
     safe_name = _safe_filename(filename)
     upload_root = settings.upload_root_dir()
-    upload_dir = upload_root / _session_path_segment(session_id)
+    upload_id = _new_upload_id(db)
+    upload_dir = upload_root / upload_id
     upload_dir.mkdir(parents=True, exist_ok=True)
     destination = upload_dir / safe_name
     with destination.open("wb") as target:
         shutil.copyfileobj(source, target)
-    (upload_dir / ".owner.json").write_text(
-        json.dumps(
-            {
-                "user_id": user.id,
-                "user_name": user.username,
-                "session_id": session_id,
-                "session_ref": _session_path_segment(session_id),
-                "filename": safe_name,
-            }
-        ),
-        encoding="utf-8",
+    upload = UploadRecord(
+        id=upload_id,
+        session_id=session_id,
+        user_id=user.id,
+        filename=safe_name,
+        storage_path=_upload_storage_path_value(upload_id, safe_name),
+        content_type=content_type,
+        size=int(destination.stat().st_size),
+        status="uploaded",
+        metadata_={"original_filename": filename},
     )
-    upload_id = _upload_record_id(session_id, safe_name)
-    return {
-        "id": upload_id,
-        "name": safe_name,
-        "size": int(destination.stat().st_size),
-        "status": "uploaded",
-        "path": _upload_model_path(settings, destination),
-        "download_url": f"/api/uploads/{upload_id}/content",
-    }
+    db.add(upload)
+    db.flush()
+    return _upload_out(upload)
 
 
-def _find_upload_target(
-    settings: Settings,
+def _owned_upload(
+    db: DbSession,
     user: UserRecord,
     upload_id: str,
     *,
     session_id: str | None = None,
-) -> Path | None:
-    if "/" in upload_id or "\\" in upload_id or not upload_id:
+) -> UploadRecord | None:
+    if not _is_safe_upload_id(upload_id):
         return None
-    root = settings.upload_root_dir()
-    new_upload = _new_upload_candidate(root, upload_id, session_id)
-    if new_upload is not None and new_upload.is_file() and _upload_owned_by(
-        new_upload.parent,
-        user,
-        session_id,
-    ):
-        return new_upload
-    for candidate in _upload_dir_candidates(root, user, upload_id, session_id):
-        try:
-            candidate.relative_to(root)
-        except ValueError:
-            continue
-        if candidate.is_dir() and _upload_owned_by(candidate, user, session_id):
-            return candidate
-    return None
-
-
-def _upload_dir_candidates(
-    root: Path,
-    user: UserRecord,
-    upload_id: str,
-    session_id: str | None,
-) -> list[Path]:
-    candidates: list[Path] = []
-    if session_id:
-        session_ref = _session_path_segment(session_id)
-        candidates.append(root / _user_path_segment(user) / session_ref / upload_id)
-        candidates.extend(root.glob(f"*/{session_ref}/{upload_id}"))
-        candidates.append(root / session_id / upload_id)
-    else:
-        candidates.extend(root.glob(f"*/*/{upload_id}"))
-        candidates.extend(root.glob(f"*/{upload_id}"))
-    return candidates
-
-
-def _new_upload_candidate(root: Path, upload_id: str, session_id: str | None) -> Path | None:
-    session_ref = ""
-    filename = ""
-    if ":" in upload_id:
-        session_ref, _, filename = upload_id.partition(":")
-    elif session_id:
-        session_ref = _session_path_segment(session_id)
-        filename = upload_id
-    if not session_ref or not filename or _safe_lookup_name(session_ref) != session_ref:
-        return None
-    safe_name = _safe_lookup_name(filename)
-    if not safe_name:
-        return None
-    return root / session_ref / safe_name
-
-
-def _upload_record_id(session_id: str, filename: str) -> str:
-    return f"{_session_path_segment(session_id)}:{filename}"
-
-
-def _upload_model_path(settings: Settings, file_path: Path) -> str:
-    relative = file_path.relative_to(settings.upload_root_dir())
-    return "/uploads/" + "/".join(relative.parts)
-
-
-def _user_path_segment(user: UserRecord) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", user.username.strip()).strip(".-")
-    return cleaned[:64] or "user"
-
-
-def _session_path_segment(session_id: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9]+", "", session_id)
-    return (cleaned or session_id.replace("/", "")).lower()[:8]
-
-
-def _upload_owned_by(candidate: Path, user: UserRecord, session_id: str | None) -> bool:
-    metadata_path = candidate / ".owner.json"
-    if not metadata_path.is_file():
-        return False
-    try:
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return False
-    if metadata.get("user_id") != user.id:
-        return False
-    return session_id is None or metadata.get("session_id") == session_id
-
-
-def _upload_files(upload_dir: Path) -> list[Path]:
-    return sorted(
-        path for path in upload_dir.iterdir() if path.is_file() and not path.name.startswith(".")
+    query = select(UploadRecord).where(
+        UploadRecord.id == upload_id,
+        UploadRecord.user_id == user.id,
+        UploadRecord.status != "deleted",
     )
+    if session_id is not None:
+        query = query.where(UploadRecord.session_id == session_id)
+    return db.scalar(query)
 
 
-def _upload_file_from_target(upload_target: Path) -> Path | None:
-    if upload_target.is_file():
-        return upload_target
-    files = _upload_files(upload_target)
-    return files[0] if files else None
+def _new_upload_id(db: DbSession) -> str:
+    for _ in range(10):
+        upload_id = uuid4().hex[:12]
+        if db.get(UploadRecord, upload_id) is None:
+            return upload_id
+    return str(uuid4())
+
+
+def _upload_id_from_attachment(raw: dict[str, Any]) -> str:
+    upload_id = str(raw.get("id") or "").strip()
+    if upload_id:
+        return upload_id
+    path = _normalize_virtual_path(str(raw.get("path") or ""))
+    parts = PurePosixPath(path).parts
+    if len(parts) >= 3 and parts[0] == "/" and parts[1] == "uploads":
+        return parts[2]
+    return ""
+
+
+def _upload_out(upload: UploadRecord) -> dict[str, Any]:
+    return {
+        "id": upload.id,
+        "name": upload.filename,
+        "size": int(upload.size),
+        "status": upload.status,
+        "path": _upload_model_path(upload),
+        "download_url": f"/api/uploads/{upload.id}/content",
+        "content_type": upload.content_type,
+    }
+
+
+def _upload_storage_path(settings: Settings, upload: UploadRecord) -> Path:
+    relative = PurePosixPath(_normalize_virtual_path(upload.storage_path).lstrip("/"))
+    if ".." in relative.parts:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Invalid upload storage path")
+    return settings.upload_root_dir().joinpath(*relative.parts)
+
+
+def _upload_storage_path_value(upload_id: str, filename: str) -> str:
+    return PurePosixPath(upload_id, filename).as_posix()
+
+
+def _upload_model_path(upload: UploadRecord) -> str:
+    return f"/uploads/{_normalize_virtual_path(upload.storage_path).lstrip('/')}"
+
+
+def _is_safe_upload_id(upload_id: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9._-]{1,64}", upload_id))
 
 
 def _safe_filename(filename: str) -> str:
-    cleaned = Path(filename).name.strip().replace("\x00", "")
+    cleaned = PurePosixPath(str(filename).replace("\\", "/")).name.strip().replace("\x00", "")
     if not cleaned or cleaned in {".", ".."}:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid upload filename")
     return cleaned
 
 
-def _safe_lookup_name(filename: str) -> str:
-    cleaned = Path(filename).name.strip().replace("\x00", "")
-    if not cleaned or cleaned in {".", ".."}:
-        return ""
-    return cleaned
+def _normalize_virtual_path(path: str) -> str:
+    normalized = str(path or "").replace("\\", "/").strip()
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized.lstrip('/')}"
+    return PurePosixPath(normalized).as_posix()
 
 
 def _is_placeholder_title(value: str | None) -> bool:
@@ -1050,16 +1025,26 @@ def _event_content(envelope: Any) -> str | None:
 
 
 def _log_runtime_envelope(run_id: str, session_id: str, envelope: Any) -> None:
-    if envelope.type == "message.delta":
-        LOGGER.debug(
-            "agent delta run_id=%s session_id=%s detail=%s",
+    if envelope.type in {"message.delta", "message.final", "step"}:
+        return
+    if envelope.type == "error" or envelope.label == "run.failed":
+        LOGGER.error(
+            "runtime failed run_id=%s session_id=%s detail=%s",
             run_id,
             session_id,
             envelope.detail,
         )
         return
-    LOGGER.info(
-        "agent event run_id=%s session_id=%s label=%s type=%s detail=%s",
+    if envelope.label in {"run.completed", "run.cancelled"}:
+        LOGGER.info(
+            "runtime terminal run_id=%s session_id=%s label=%s",
+            run_id,
+            session_id,
+            envelope.label,
+        )
+        return
+    LOGGER.debug(
+        "runtime step run_id=%s session_id=%s label=%s type=%s detail=%s",
         run_id,
         session_id,
         envelope.label,
@@ -1068,11 +1053,22 @@ def _log_runtime_envelope(run_id: str, session_id: str, envelope: Any) -> None:
     )
 
 
-def _json_for_log(value: Any) -> str:
-    try:
-        return json.dumps(value, ensure_ascii=False, default=str)
-    except TypeError:
-        return repr(value)
+def _runtime_event_summary(raw: Any) -> str:
+    if not isinstance(raw, dict):
+        return f"type={raw.__class__.__name__}"
+    data = raw.get("data")
+    metadata = raw.get("metadata")
+    data_keys = sorted(data) if isinstance(data, dict) else []
+    metadata_keys = sorted(metadata) if isinstance(metadata, dict) else []
+    return (
+        f"event={raw.get('event')!r} name={raw.get('name')!r} "
+        f"data_keys={data_keys} metadata_keys={metadata_keys}"
+    )
+
+
+def _message_summary(messages: list[dict[str, str]]) -> str:
+    roles = [str(message.get("role") or "") for message in messages]
+    return f"message_count={len(messages)} roles={roles}"
 
 
 def _record_out(record: Any, fields: tuple[str, ...]) -> dict[str, Any]:

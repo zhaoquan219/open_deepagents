@@ -11,14 +11,7 @@ import { createRunStore } from './store/runStore.js'
 import { createSessionStore } from './store/sessionStore.js'
 
 function logRuntime(scope, detail, payload, level = 'debug') {
-  if (level === 'debug' && !import.meta.env.DEV) {
-    return
-  }
-  if (
-    level === 'debug' &&
-    scope === 'sse.event' &&
-    import.meta.env.VITE_DEEPAGENTS_VERBOSE_STREAM !== 'true'
-  ) {
+  if (level === 'debug' && import.meta.env.VITE_DEEPAGENTS_VERBOSE_STREAM !== 'true') {
     return
   }
 

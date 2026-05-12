@@ -3,11 +3,11 @@ from __future__ import annotations
 import hashlib
 import importlib
 import importlib.util
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import ModuleType
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from deepagents import FilesystemPermission
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
@@ -17,22 +17,6 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     WriteResult,
 )
-from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
-
-BUILTIN_TOOL_ORDER = (
-    "write_todos",
-    "ls",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "glob",
-    "grep",
-    "execute",
-    "task",
-)
-BUILTIN_TOOL_NAMES = frozenset(BUILTIN_TOOL_ORDER)
-READ_BUILTIN_TOOLS = frozenset({"ls", "read_file", "glob", "grep"})
-WRITE_BUILTIN_TOOLS = frozenset({"write_file", "edit_file"})
 
 
 @dataclass(frozen=True)
@@ -89,37 +73,23 @@ class SandboxConfig:
         return config
 
 
-def build_builtin_tool_selection_middleware(
-    *,
-    allowlist: Any,
-    blocklist: Any,
-) -> AgentMiddleware[Any, Any, Any] | None:
-    allowed = None if allowlist is None else frozenset(_strings(allowlist))
-    blocked = frozenset(_strings(blocklist))
-    if allowed is None and not blocked:
-        return None
-    return BuiltinToolSelectionMiddleware(allowed, blocked)
-
-
 def build_permissions(
     permission_specs: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
 ) -> list[FilesystemPermission]:
     permissions: list[FilesystemPermission] = []
     for spec in permission_specs:
-        _reject_legacy_permission_spec(spec)
-        builtin_tools = _permission_builtin_tools(spec)
+        _reject_builtin_tool_permission_spec(spec)
+        operations = _permission_operations(spec)
         paths = list(spec.get("paths") or [])
-        operations = _filesystem_operations_for_tools(builtin_tools)
-        if operations and not paths:
-            raise ValueError("permissions entries with file built-ins must define paths")
-        for operation in operations:
-            permissions.append(
-                FilesystemPermission(
-                    operations=[operation],
-                    paths=_expanded_paths(paths),
-                    mode=spec.get("mode", "allow"),
-                )
+        if not paths:
+            raise ValueError("permissions entries must define paths")
+        permissions.append(
+            FilesystemPermission(
+                operations=list(operations),
+                paths=_expanded_paths(paths),
+                mode=_permission_mode(spec),
             )
+        )
     permissions.extend(
         (
             FilesystemPermission(operations=["read"], paths=["/**"], mode="deny"),
@@ -127,21 +97,6 @@ def build_permissions(
         )
     )
     return permissions
-
-
-def builtin_tool_allowlist_from_permissions(
-    permission_specs: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
-) -> tuple[str, ...] | None:
-    selected: list[str] = []
-    for spec in permission_specs:
-        _reject_legacy_permission_spec(spec)
-        for tool in _permission_builtin_tools(spec):
-            if tool == "*":
-                return BUILTIN_TOOL_ORDER
-            if tool not in BUILTIN_TOOL_NAMES:
-                raise ValueError(f"Unknown built-in tool in permissions.builtin_tools: {tool}")
-            selected.append(tool)
-    return tuple(dict.fromkeys(selected)) or None
 
 
 def resolve_backend(config: SandboxConfig) -> BackendProtocol | Any:
@@ -242,41 +197,10 @@ def load_object_from_spec(spec: str) -> Any:
         raise ValueError(f"Import target {spec!r} does not define attribute {attr!r}") from exc
 
 
-class BuiltinToolSelectionMiddleware(AgentMiddleware[Any, Any, Any]):
-    def __init__(self, allowlist: frozenset[str] | None, blocklist: frozenset[str]) -> None:
-        self._allowlist = allowlist
-        self._blocklist = blocklist
-
-    def wrap_model_call(
-        self,
-        request: ModelRequest[Any],
-        handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
-    ) -> ModelResponse[Any]:
-        return handler(request.override(tools=self._filter_tools(request.tools)))
-
-    async def awrap_model_call(
-        self,
-        request: ModelRequest[Any],
-        handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
-    ) -> ModelResponse[Any]:
-        return await handler(request.override(tools=self._filter_tools(request.tools)))
-
-    def _filter_tools(self, tools: list[Any]) -> list[Any]:
-        return [tool for tool in tools if self._keeps_tool(tool)]
-
-    def _keeps_tool(self, tool: Any) -> bool:
-        name = _tool_name(tool)
-        if name not in BUILTIN_TOOL_NAMES:
-            return True
-        if self._allowlist is not None and name not in self._allowlist:
-            return False
-        return name not in self._blocklist
-
-
 def _expanded_paths(paths: list[str]) -> list[str]:
     expanded: list[str] = []
     for path in paths:
-        normalized = _normalize_path(str(path), trailing_slash=path.endswith("/"))
+        normalized = _normalize_path(str(path), trailing_slash=str(path).endswith(("/", "\\")))
         expanded.append(normalized)
         child_glob = f"{normalized.rstrip('/')}/**"
         if not any(char in normalized for char in "*?[") and child_glob not in expanded:
@@ -284,39 +208,34 @@ def _expanded_paths(paths: list[str]) -> list[str]:
     return expanded
 
 
-def _reject_legacy_permission_spec(spec: Mapping[str, Any]) -> None:
-    if "operations" in spec:
+def _reject_builtin_tool_permission_spec(spec: Mapping[str, Any]) -> None:
+    if "builtin_tools" in spec:
         raise ValueError(
-            "permissions[].operations is no longer supported; use "
-            "permissions[].builtin_tools instead"
+            "permissions[].builtin_tools is not supported; use native "
+            "permissions[].operations and paths instead"
         )
 
 
-def _permission_builtin_tools(spec: Mapping[str, Any]) -> tuple[str, ...]:
-    if "builtin_tools" not in spec:
-        raise ValueError("permissions entries must define builtin_tools")
-    tools = _strings(spec.get("builtin_tools"))
-    if not tools:
-        raise ValueError("permissions.builtin_tools must not be empty")
-    if "*" in tools:
-        return ("*",)
-    unknown = sorted(set(tools) - BUILTIN_TOOL_NAMES)
+def _permission_operations(spec: Mapping[str, Any]) -> tuple[Literal["read", "write"], ...]:
+    operations = _strings(spec.get("operations"))
+    if not operations:
+        raise ValueError("permissions entries must define operations")
+    unknown = sorted(set(operations) - {"read", "write"})
     if unknown:
-        raise ValueError(f"Unknown built-in tool(s): {', '.join(unknown)}")
-    return tools
+        raise ValueError(f"Unknown filesystem operation(s): {', '.join(unknown)}")
+    normalized: list[Literal["read", "write"]] = []
+    for operation in operations:
+        typed = cast(Literal["read", "write"], operation)
+        if typed not in normalized:
+            normalized.append(typed)
+    return tuple(normalized)
 
 
-def _filesystem_operations_for_tools(
-    tools: tuple[str, ...],
-) -> tuple[Literal["read", "write"], ...]:
-    if tools == ("*",):
-        return ("read", "write")
-    operations: list[Literal["read", "write"]] = []
-    if any(tool in READ_BUILTIN_TOOLS for tool in tools):
-        operations.append("read")
-    if any(tool in WRITE_BUILTIN_TOOLS for tool in tools):
-        operations.append("write")
-    return tuple(operations)
+def _permission_mode(spec: Mapping[str, Any]) -> Literal["allow", "deny"]:
+    mode = str(spec.get("mode", "allow"))
+    if mode not in {"allow", "deny"}:
+        raise ValueError("permissions[].mode must be 'allow' or 'deny'")
+    return cast(Literal["allow", "deny"], mode)
 
 
 def _strings(value: Any) -> tuple[str, ...]:
@@ -327,12 +246,6 @@ def _strings(value: Any) -> tuple[str, ...]:
     if isinstance(value, list | tuple) and all(isinstance(item, str) for item in value):
         return tuple(item.strip() for item in value if item.strip())
     raise ValueError("Expected a string or list of strings")
-
-
-def _tool_name(tool: Any) -> str:
-    if isinstance(tool, dict):
-        return str(tool.get("name") or "")
-    return str(getattr(tool, "name", "") or getattr(tool, "__name__", "") or "")
 
 
 def _import_module_or_file(module_name: str) -> ModuleType:
@@ -354,7 +267,7 @@ def _load_module_from_path(path: Path) -> ModuleType:
 
 
 def _normalize_path(path: str, trailing_slash: bool = False) -> str:
-    normalized = path.replace("\\", "/")
+    normalized = PurePosixPath(path.replace("\\", "/").strip()).as_posix()
     if not normalized.startswith("/"):
         normalized = f"/{normalized.lstrip('/')}"
     if trailing_slash:

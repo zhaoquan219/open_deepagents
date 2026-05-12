@@ -27,6 +27,16 @@ function messageFromData(data) {
   return message
 }
 
+function statusFromLabel(type, label) {
+  if (type === 'message.final' || label.endsWith('.completed')) {
+    return 'completed'
+  }
+  if (label.endsWith('.started')) {
+    return 'in_progress'
+  }
+  return ''
+}
+
 export function normalizeStreamEnvelope(payload) {
   if (!payload || typeof payload !== 'object') {
     return null
@@ -45,8 +55,7 @@ export function normalizeStreamEnvelope(payload) {
     return null
   }
 
-  const status =
-    asString(data.status) || (type === 'message.final' ? 'completed' : '')
+  const status = asString(data.status) || statusFromLabel(type, label)
 
   return {
     version: STREAM_SCHEMA_VERSION,

@@ -3,6 +3,7 @@ import { parseMarkdownSegments } from './markdownSegments.js'
 
 const PROCESS_TYPES = new Set(['tool', 'subagent', 'sandbox'])
 const INTERNAL_LABELS = new Set(['runtime.event', 'step.started', 'step.completed'])
+const LOW_SIGNAL_PROCESS_LABELS = new Set(['tool.started', 'subagent.started', 'sandbox.started'])
 
 export function showInternalLogs() {
   return import.meta.env.VITE_DEEPAGENTS_SHOW_INTERNAL_EVENTS === 'true'
@@ -95,6 +96,9 @@ function summaryFor(envelope) {
 
 export function logEntryFromEnvelope(envelope) {
   if (!envelope) {
+    return null
+  }
+  if (!showInternalLogs() && LOW_SIGNAL_PROCESS_LABELS.has(envelope.label)) {
     return null
   }
   if (!PROCESS_TYPES.has(envelope.type) && envelope.type !== 'error') {

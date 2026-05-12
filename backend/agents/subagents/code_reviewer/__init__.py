@@ -20,10 +20,9 @@ SUBAGENT = {
     "skills": SKILLS,
     "memory": MEMORY,
     "permissions": [
-        {"builtin_tools": ("write_todos", "task")},
         {
-            "builtin_tools": ("ls", "read_file", "glob", "grep"),
-            "paths": ["/workspace/reviews", "/workspace/shared"],
+            "operations": ("read",),
+            "paths": ["/workspace/reviews", "/workspace/shared", "/skills", "/uploads"],
         },
     ],
 }

@@ -11,13 +11,13 @@ English documentation: [README.md](README.md)
 ## 当前包含
 
 - 管理员登录，可配置多个用户。
-- SQL `users` / `sessions` / `events` 产品账本，按用户隔离会话。
+- SQL `users` / `sessions` / `uploads` / `events` 产品账本，按用户隔离会话。
 - 单一 fetch-stream 运行接口：启动 DeepAgents run 并直接返回 SSE。
 - Runtime timeline：展示 status、tool、subagent、sandbox、assistant message 等事件。
 - Markdown 与 Mermaid 渲染。
 - OpenAI-compatible provider/model catalog。
-- 递归 agent 包：prompts、tools、middleware、skills、memory、permissions、
-  built-in tool visibility、subagents。
+- 递归 agent 包：prompts、tools、middleware、skills、memory、原生文件权限、
+  subagents。
 - 原生 DeepAgents/LangGraph runtime wiring：`thread_id`、checkpointer、store、
   cache、backend。
 
@@ -85,7 +85,7 @@ npm run dev
 | `DEEPAGENTS_SANDBOX_ROOT_DIR` | `files` 和 `shell` 沙箱使用的工作区根目录。 |
 | `DEEPAGENTS_UPLOAD_ROOT_DIR` | 上传文件保存根目录，并只读挂载到 `/uploads`。 |
 | `DEEPAGENTS_CHECKPOINT_BACKEND` | 默认 `sqlite`；支持 `memory`、`sqlite`、`postgresql`。 |
-| `BACKEND_LOG_LEVEL` | 默认 `info`；`debug` 会打印每个原始 agent update。 |
+| `BACKEND_LOG_LEVEL` | 默认 `info`；`debug` 只打印简洁的 runtime 事件摘要。 |
 
 推荐配置方式：
 
@@ -139,18 +139,18 @@ AGENT = {
     "skills": SKILLS,
     "memory": MEMORY,
     "permissions": [
-        {"builtin_tools": ("write_todos", "task", "execute")},
         {
-            "builtin_tools": ("ls", "read_file", "glob", "grep"),
+            "operations": ("read",),
             "paths": ["/workspace/main", "/skills", "/uploads"],
         },
+        {"operations": ("write",), "paths": ["/workspace/main/output"]},
     ],
     "subagents": SUBAGENTS,
 }
 ```
 
-用 `permissions[].builtin_tools` 暴露内置工具；文件读写类内置工具在同一项里配置
-`paths`，`"*"` 表示允许全部内置工具。
+用原生 `permissions[].operations` 管理沙箱文件读写权限；内置工具可见性不再通过
+agent 配置控制，文件工具能否访问某个路径由 `operations` 和虚拟路径共同决定。
 现在 `tools`、`middleware`、`skills`、`memory`、`subagents` 都会相对于当前
 agent package 解析，并支持用 `"*"` 发现该目录下的全部组件。
 

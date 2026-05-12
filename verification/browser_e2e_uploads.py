@@ -57,7 +57,10 @@ def _run_browser(frontend_port: int, upload_file: Path) -> None:
                 page.locator("input[type=file]").set_input_files(str(upload_file))
             upload_record = upload_response.value.json()
             assert upload_record["path"].startswith("/uploads/")
-            assert re.match(r"^/uploads/[A-Za-z0-9]{8}/browser-e2e\.txt$", upload_record["path"])
+            assert re.match(
+                r"^/uploads/[A-Za-z0-9._-]+/browser-e2e\.txt$",
+                upload_record["path"],
+            )
             expect(page.get_by_text("browser-e2e.txt")).to_be_visible()
             expect(page.get_by_text(re.compile("已上传|Uploaded"))).to_be_visible()
 

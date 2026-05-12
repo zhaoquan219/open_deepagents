@@ -12,7 +12,8 @@ Chinese documentation: [README_CH.md](README_CH.md)
 ## What You Get
 
 - Admin login with optional multi-user configuration.
-- Per-user sessions backed by a SQL `users` / `sessions` / `events` ledger.
+- Per-user sessions backed by a SQL `users` / `sessions` / `uploads` /
+  `events` ledger.
 - A single fetch-stream run endpoint that starts a DeepAgents run and streams UI
   events.
 - Runtime timeline for status, tool, subagent, sandbox, and assistant-message
@@ -20,7 +21,7 @@ Chinese documentation: [README_CH.md](README_CH.md)
 - Markdown and Mermaid rendering in assistant messages.
 - Model catalog configuration for OpenAI-compatible providers.
 - Recursive agent package support for prompts, tools, middleware, skills,
-  memory, permissions, built-in tool visibility, and subagents.
+  memory, native filesystem permissions, and subagents.
 - Native DeepAgents/LangGraph runtime wiring for `thread_id`, checkpointer,
   store, cache, and backend selection.
 
@@ -83,7 +84,7 @@ Important `.env` settings:
 | `DEEPAGENTS_SANDBOX_ROOT_DIR` | Workspace root for `files` and `shell` sandbox profiles. |
 | `DEEPAGENTS_UPLOAD_ROOT_DIR` | Storage root mounted read-only at `/uploads`. |
 | `DEEPAGENTS_CHECKPOINT_BACKEND` | `sqlite` by default; supports `memory`, `sqlite`, and `postgresql`. |
-| `BACKEND_LOG_LEVEL` | `info` by default; `debug` logs every raw agent update. |
+| `BACKEND_LOG_LEVEL` | `info` by default; `debug` logs concise runtime event summaries. |
 
 Recommended setup:
 
@@ -95,7 +96,7 @@ Recommended setup:
   `DEEPAGENTS_CHECKPOINT_BACKEND=sqlite` or `postgresql`.
 
 Product state and runtime state are deliberately separate. `DATABASE_URL`
-stores exactly the four product tables (`users`, `sessions`, `runs`, `events`);
+stores the product tables (`users`, `sessions`, `runs`, `uploads`, `events`);
 sqlite checkpoint state defaults to `./data/checkpoints.db`, while postgresql
 checkpoint state uses `DEEPAGENTS_CHECKPOINT_DATABASE_URL`.
 
@@ -108,7 +109,7 @@ DATABASE_URL=mysql+pymysql://app:change-me@127.0.0.1:3306/open_deepagents?charse
 ```
 
 The backend creates the database if needed, then initializes the scaffold
-tables. `DATABASE_URL` stores users, sessions, runs, and events; LangGraph
+tables. `DATABASE_URL` stores users, sessions, uploads, runs, and events; LangGraph
 checkpoint/store persistence is configured separately via the checkpoint
 settings above.
 
@@ -147,7 +148,7 @@ The frontend dev server defaults to `http://127.0.0.1:5173`.
 | `PATCH /api/sessions/{session_id}` | Update title or metadata. |
 | `DELETE /api/sessions/{session_id}` | Delete an owned session and events. |
 | `GET /api/sessions/{session_id}/events?after_seq=N` | Load durable ordered history. |
-| `POST /api/sessions/{session_id}/uploads` | Store a session-owned upload and return `/uploads/{short_session_id}/{filename}`. |
+| `POST /api/sessions/{session_id}/uploads` | Store a session-owned upload row and return `/uploads/{upload_id}/{filename}`. |
 | `POST /api/sessions/{session_id}/runs/stream` | Start and stream one run. |
 
 There is no split `/api/runs` endpoint. The client cancels by aborting the fetch
@@ -194,18 +195,19 @@ AGENT = {
     "skills": SKILLS,
     "memory": MEMORY,
     "permissions": [
-        {"builtin_tools": ("write_todos", "task", "execute")},
         {
-            "builtin_tools": ("ls", "read_file", "glob", "grep"),
+            "operations": ("read",),
             "paths": ["/workspace/main", "/skills", "/uploads"],
         },
+        {"operations": ("write",), "paths": ["/workspace/main/output"]},
     ],
     "subagents": SUBAGENTS,
 }
 ```
 
-Use `permissions[].builtin_tools` to expose built-in tools. Add `paths` to the
-same entry when the built-ins read or write files; `"*"` allows every built-in.
+Use native `permissions[].operations` to control filesystem access. Built-in
+tool visibility is no longer configured through the agent mapping; file tools
+are allowed or denied by operation and virtual path.
 Package-local `tools`, `middleware`, `skills`, `memory`, and `subagents` resolve
 relative to the current agent package. Selectors can be explicit lists or `"*"`
 to discover all component exports in that package folder.

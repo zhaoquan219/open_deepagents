@@ -52,11 +52,11 @@ AGENT = {
     "skills": SKILLS,
     "memory": MEMORY,
     "permissions": [
-        {"builtin_tools": ("write_todos", "task", "execute")},
         {
-            "builtin_tools": ("ls", "read_file", "glob", "grep"),
+            "operations": ("read",),
             "paths": ["/workspace/main", "/skills", "/uploads"],
         },
+        {"operations": ("write",), "paths": ["/workspace/main/output"]},
     ],
     "subagents": SUBAGENTS,
 }
@@ -79,14 +79,14 @@ AGENT = {
     # Optional:
     "model": "openai/gpt-5-4",
     "permissions": [
-        {"builtin_tools": ("write_todos", "task")},
-        {"builtin_tools": ("ls", "read_file", "glob", "grep"), "paths": ["/workspace/main"]},
+        {"operations": ("read",), "paths": ["/workspace/main", "/skills", "/uploads"]},
+        {"operations": ("write",), "paths": ["/workspace/main/output"]},
     ],
 }
 ```
 
 - `model` 不写时，使用当前默认模型。
-- `permissions[].builtin_tools` 同时控制内置工具可见性；文件工具还需要 `paths`。
+- `permissions[].operations` 使用 DeepAgents 原生文件权限，控制虚拟路径读写。
 - `skills` / `memory` / `subagents` 直接写列表，默认最容易看懂。
 - 这些选择会相对于当前 agent package 解析，而不是错误地从 `backend/` 根目录拼接。
 
@@ -104,18 +104,16 @@ SUBAGENT = {
     "skills": SKILLS,
     "memory": MEMORY,
     "permissions": [
-        {"builtin_tools": ("write_todos", "task")},
         {
-            "builtin_tools": ("ls", "read_file", "glob", "grep"),
-            "paths": ["/workspace/reviews", "/workspace/shared"],
+            "operations": ("read",),
+            "paths": ["/workspace/reviews", "/workspace/shared", "/skills", "/uploads"],
         },
     ],
 }
 ```
 
 Subagents are resolved recursively. Nested subagents can define their own prompt,
-model, tools, built-in tool filter, permissions, skills, memory, middleware, and
-children.
+model, tools, permissions, skills, memory, middleware, and children.
 Use sandbox backend selection and `permissions` for filesystem enforcement.
 
 ## Selection Patterns
@@ -179,61 +177,31 @@ from agents.tools.search import search_docs
 TOOLS = [search_docs]
 ```
 
-These are different from DeepAgents built-in tools. Custom tools are passed
-through by the built-in tool filter.
-
-## Built-in Tool Permissions
-
-Use `permissions[].builtin_tools` to expose only the DeepAgents built-ins you
-want the model to see. File built-ins also use the same entry's `paths` for
-authorization. Use `"*"` to allow every known built-in.
-
-When no subagents are active, the backend automatically hides the built-in
-`task` tool even if it appears in `permissions[].builtin_tools`.
-
-```python
-"permissions": [
-    {"builtin_tools": ("write_todos", "task", "execute")},
-    {
-        "builtin_tools": ("ls", "read_file", "glob", "grep"),
-        "paths": ["/workspace/main", "/skills", "/uploads"],
-    },
-]
-```
-
-Useful built-in names include:
-
-- `write_todos`
-- `ls`
-- `read_file`
-- `write_file`
-- `edit_file`
-- `glob`
-- `grep`
-- `execute`
-- `task`
+These are different from DeepAgents built-in tools. Custom tools are passed to
+the DeepAgents runtime unchanged.
 
 ## Permissions
 
-Permissions are both built-in visibility and path authorization for visible file
-tools.
+Permissions are native DeepAgents filesystem permissions. They authorize file
+operations against virtual sandbox paths. Built-in tool visibility is not
+configured by this scaffold.
 
 ```python
 "permissions": [
-    {"builtin_tools": ("ls", "read_file", "glob", "grep"), "paths": ["/workspace/main"]},
-    {"builtin_tools": ("write_file", "edit_file"), "paths": ["/workspace/main/output"]},
+    {"operations": ("read",), "paths": ["/workspace/main", "/skills", "/uploads"]},
+    {"operations": ("write",), "paths": ["/workspace/main/output"]},
 ]
 ```
 
-`ls`, `read_file`, `glob`, and `grep` map to read permissions. `write_file` and
-`edit_file` map to write permissions.
+`read` covers filesystem reads such as `ls`, `read_file`, `glob`, and `grep`
+when the runtime exposes those tools. `write` covers filesystem writes such as
+`write_file` and `edit_file` when available.
 
-The single permissions surface must allow an action:
+The permissions surface must allow an action:
 
-- If `read_file` is not listed, the model cannot call it.
-- If `read_file` is listed but the path is not permitted, the call is blocked.
-- If a path is writable but `write_file` and `edit_file` are not listed, the
-  model still cannot write through those built-ins.
+- If a path is readable, file read operations may read it.
+- If a path is writable, file write operations may write it.
+- If a path is not matched, the backend appends deny rules for read and write.
 
 ## Middleware-First Customization
 
@@ -285,5 +253,4 @@ facts, policies, terminology, and reviewer context.
 
 Sandbox backend selection is global and configured through `backend/.env`.
 Agents and subagents do not define their own sandbox backend. They can define
-built-in tool visibility to shape model-visible tools and permissions to enforce
-file access inside the global backend.
+permissions to enforce file access inside the global backend.

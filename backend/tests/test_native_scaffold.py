@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import threading
 import warnings
 from collections.abc import AsyncIterator
@@ -32,6 +33,7 @@ from app.db import (
     EventRecord,
     RunRecord,
     SessionRecord,
+    UploadRecord,
     UserRecord,
     append_event,
 )
@@ -188,15 +190,15 @@ class ToolInterleavedModelGraph:
         }
 
 
-def test_schema_is_exact_four_table_product_projection(
+def test_schema_is_product_projection(
     client: TestClient,
     auth_headers: dict[str, str],
 ) -> None:
     inspector = inspect(client.app.state.database.engine)
-    assert set(inspector.get_table_names()) == {"events", "runs", "sessions", "users"}
+    assert set(inspector.get_table_names()) == {"events", "runs", "sessions", "uploads", "users"}
     indexes = {
         table: {index["name"] for index in inspector.get_indexes(table)}
-        for table in ("users", "sessions", "runs", "events")
+        for table in ("users", "sessions", "runs", "events", "uploads")
     }
     assert "ix_users_email" in indexes["users"]
     assert "ix_sessions_owner_updated" in indexes["sessions"]
@@ -205,6 +207,8 @@ def test_schema_is_exact_four_table_product_projection(
     assert "ix_events_run_id" in indexes["events"]
     assert "ix_events_kind" in indexes["events"]
     assert "ix_events_created_at" in indexes["events"]
+    assert "ix_uploads_session_id" in indexes["uploads"]
+    assert "ix_uploads_user_id" in indexes["uploads"]
 
     created = client.post("/api/sessions", headers=auth_headers, json={"title": "Demo"})
     assert created.status_code == 201
@@ -659,7 +663,7 @@ def test_agent_resolution_supports_native_package_contract(tmp_path: Path) -> No
                 "AGENT = {",
                 " 'id': 'main', 'system_prompt': r'%s', 'tools': [echo],",
                 " 'skills': [r'%s'], 'memory': [r'%s'], 'model': 'test/fake',",
-                " 'permissions': [{'builtin_tools':['read_file'], 'paths':['/tmp']}],",
+                " 'permissions': [{'operations':['read'], 'paths':['/tmp']}],",
                 " 'subagents': [{'id':'reviewer','name':'reviewer',",
                 " 'description':'Review','system_prompt':'child'}],",
                 "}",
@@ -675,12 +679,10 @@ def test_agent_resolution_supports_native_package_contract(tmp_path: Path) -> No
     assert resolved["memory"] == [str(memory)]
     assert resolved["model"] == "test/fake"
     assert resolved["permissions"][0].paths == ["/tmp", "/tmp/**"]
-    assert resolved["builtin_tool_allowlist"] == ("read_file",)
-    assert resolved["builtin_tool_blocklist"] is None
     assert resolved["subagents"][0]["name"] == "reviewer"
 
 
-def test_agent_resolution_rejects_legacy_builtin_tool_schema(tmp_path: Path) -> None:
+def test_agent_resolution_rejects_builtin_tool_schema(tmp_path: Path) -> None:
     module = tmp_path / "legacy_agent.py"
     module.write_text(
         "AGENT = {'id': 'legacy', 'builtin_tools': ['read_file'], "
@@ -694,6 +696,18 @@ def test_agent_resolution_rejects_legacy_builtin_tool_schema(tmp_path: Path) -> 
         assert "builtin_tools" in str(exc)
     else:
         raise AssertionError("legacy builtin_tools schema was accepted")
+
+    module.write_text(
+        "AGENT = {'id': 'legacy', "
+        "'permissions': [{'builtin_tools': ['read_file'], 'paths': ['/tmp']}]}\n",
+        encoding="utf-8",
+    )
+    try:
+        resolve_agent(Settings(deepagents_main_agent=f"{module}:AGENT"))
+    except ValueError as exc:
+        assert "permissions[].builtin_tools" in str(exc)
+    else:
+        raise AssertionError("permissions[].builtin_tools schema was accepted")
 
 
 def test_agent_resolution_expands_root_wildcards_for_components(tmp_path: Path) -> None:
@@ -821,8 +835,8 @@ def test_sandbox_profiles_permissions_and_custom_backend(tmp_path: Path) -> None
     }
     rules = resolve_permissions(
         (
-            {"builtin_tools": ["read_file"], "paths": ["/workspace"]},
-            {"builtin_tools": ["write_file"], "paths": ["/workspace/out"]},
+            {"operations": ["read"], "paths": ["/workspace"]},
+            {"operations": ["write"], "paths": ["/workspace/out"]},
         )
     )
     assert rules[-1].mode == "deny"
@@ -859,7 +873,7 @@ def test_sandbox_profiles_permissions_and_custom_backend(tmp_path: Path) -> None
     )
 
 
-def test_shell_sandbox_omits_deepagents_permissions(monkeypatch) -> None:
+def test_shell_sandbox_preserves_native_filesystem_permissions(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
     monkeypatch.setattr("app.agent.build_model", lambda settings, model_id=None: object())
@@ -870,11 +884,11 @@ def test_shell_sandbox_omits_deepagents_permissions(monkeypatch) -> None:
 
     build_deep_agent(Settings(deepagents_sandbox_profile="shell"))
 
-    assert captured["permissions"] is None
+    assert captured["permissions"][0].operations == ["read"]
     assert captured["backend"].__class__.__name__ == "CompositeBackend"
     assert captured["backend"].default.__class__.__name__ == "LocalShellBackend"
     assert all(
-        "permissions" not in subagent or subagent["permissions"] is None
+        "permissions" in subagent and subagent["permissions"]
         for subagent in captured["subagents"]
         if isinstance(subagent, dict)
     )
@@ -966,7 +980,7 @@ def test_run_lifecycle_persists_runs_events_and_native_context(
         assert run.ended_at is not None
 
 
-def test_backend_debug_logging_captures_raw_agent_updates(
+def test_backend_debug_logging_captures_concise_runtime_summaries(
     client: TestClient,
     auth_headers: dict[str, str],
     monkeypatch,
@@ -988,9 +1002,10 @@ def test_backend_debug_logging_captures_raw_agent_updates(
     )
 
     assert response.status_code == 201
-    assert "agent update" in caplog.text
+    assert "runtime event" in caplog.text
     assert "on_tool_start" in caplog.text
-    assert "agent event" in caplog.text
+    assert "raw_event" not in caplog.text
+    assert "UPLOAD_E2E_MARKER" not in caplog.text
 
 
 def test_first_prompt_updates_placeholder_session_title(
@@ -1186,27 +1201,37 @@ def test_uploads_are_stored_as_sandbox_readable_run_attachments(
     )
     assert upload.status_code == 201
     attachment = upload.json()
-    short_session = session["id"].replace("-", "")[:8]
-    assert attachment["id"] == f"{short_session}:notes.txt"
-    assert attachment["path"] == f"/uploads/{short_session}/notes.txt"
+    assert re.match(r"^[a-f0-9]{12}$", attachment["id"])
+    assert attachment["path"] == f"/uploads/{attachment['id']}/notes.txt"
+    assert attachment["content_type"] == "text/plain"
 
-    overwrite = client.post(
+    with client.app.state.database.session() as db:
+        upload_record = db.get(UploadRecord, attachment["id"])
+        assert upload_record is not None
+        assert upload_record.session_id == session["id"]
+        assert upload_record.filename == "notes.txt"
+        assert upload_record.storage_path == f"{attachment['id']}/notes.txt"
+
+    windows_named_upload = client.post(
         f"/api/sessions/{session['id']}/uploads",
         headers=auth_headers,
-        files={"file": ("notes.txt", b"UPLOAD_OVERWRITE_MARKER", "text/plain")},
+        files={"file": (r"C:\Users\me\notes.txt", b"UPLOAD_WINDOWS_MARKER", "text/plain")},
     )
-    assert overwrite.status_code == 201
-    assert overwrite.json()["id"] == attachment["id"]
-    assert overwrite.json()["path"] == attachment["path"]
+    assert windows_named_upload.status_code == 201
+    assert windows_named_upload.json()["id"] != attachment["id"]
+    assert windows_named_upload.json()["name"] == "notes.txt"
+    assert windows_named_upload.json()["path"] == (
+        f"/uploads/{windows_named_upload.json()['id']}/notes.txt"
+    )
 
     backend = resolve_backend(
         SandboxConfig.from_mapping(client.app.state.settings.sandbox_settings())
     )
-    assert "UPLOAD_OVERWRITE_MARKER" in backend.read(attachment["path"]).file_data["content"]
+    assert "UPLOAD_E2E_MARKER" in backend.read(attachment["path"]).file_data["content"]
 
     download = client.get(f"/api/uploads/{attachment['id']}/content", headers=auth_headers)
     assert download.status_code == 200
-    assert download.content == b"UPLOAD_OVERWRITE_MARKER"
+    assert download.content == b"UPLOAD_E2E_MARKER"
 
     with client.stream(
         "POST",
@@ -1226,6 +1251,11 @@ def test_uploads_are_stored_as_sandbox_readable_run_attachments(
     assert delete.status_code == 204
     missing = client.get(f"/api/uploads/{attachment['id']}/content", headers=auth_headers)
     assert missing.status_code == 404
+    with client.app.state.database.session() as db:
+        upload_record = db.get(UploadRecord, attachment["id"])
+        assert upload_record is not None
+        assert upload_record.status == "deleted"
+        assert upload_record.deleted_at is not None
 
     history = client.get(f"/api/sessions/{session['id']}/events", headers=auth_headers).json()
     user_event = next(event for event in history if event["kind"] == "user.message")

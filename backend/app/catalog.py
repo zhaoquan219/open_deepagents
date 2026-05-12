@@ -15,9 +15,6 @@ from langchain_openai import ChatOpenAI
 from app.runtime.extensions import (
     build_permissions as resolve_permissions,
 )
-from app.runtime.extensions import (
-    builtin_tool_allowlist_from_permissions,
-)
 from app.settings import BACKEND_ROOT, Settings, import_from_spec
 
 MODEL_DISPLAY_KEYS = {"name"}
@@ -252,8 +249,6 @@ def _resolve_agent_dict(
             package_root=package_root,
             folder="middleware",
         ),
-        "builtin_tool_allowlist": builtin_tool_allowlist_from_permissions(permission_specs),
-        "builtin_tool_blocklist": None,
         "skills": _registry_entries(raw.get("skills"), package_root, "skills", skill=True),
         "memory": _registry_entries(raw.get("memory"), package_root, "memory", skill=False),
         "permissions": resolve_permissions(permission_specs),
@@ -273,7 +268,8 @@ def _reject_legacy_builtin_tool_fields(raw: dict[str, Any], agent_id: str) -> No
         names = ", ".join(sorted(legacy))
         raise ValueError(
             f"Agent {agent_id} uses unsupported built-in tool field(s): {names}. "
-            "Move built-in tool names under permissions[].builtin_tools."
+            "Use native permissions[].operations for filesystem access; built-in "
+            "tool visibility is not configured here."
         )
 
 

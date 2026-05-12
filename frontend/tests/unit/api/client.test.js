@@ -97,7 +97,7 @@ describe('createApiClient session normalization', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     const attachments = [
-      { id: '13205c0e:notes.txt', name: 'notes.txt', path: '/uploads/13205c0e/notes.txt' },
+      { id: '13205c0eabcd', name: 'notes.txt', path: '/uploads/13205c0eabcd/notes.txt' },
     ]
 
     await createApiClient('/api').startRun({
@@ -768,12 +768,12 @@ describe('createApiClient fallback errors', () => {
       ok: true,
       status: 201,
       json: async () => ({
-        id: '13205c0e:notes.txt',
+        id: '13205c0eabcd',
         name: 'notes.txt',
         size: 5,
         status: 'uploaded',
-        path: '/uploads/13205c0e/notes.txt',
-        download_url: '/api/uploads/13205c0e:notes.txt/content',
+        path: '/uploads/13205c0eabcd/notes.txt',
+        download_url: '/api/uploads/13205c0eabcd/content',
       }),
     }))
 
@@ -788,11 +788,11 @@ describe('createApiClient fallback errors', () => {
 
     await expect(createApiClient('/api').uploadFiles('session-1', [file])).resolves.toEqual([
       expect.objectContaining({
-        id: '13205c0e:notes.txt',
+        id: '13205c0eabcd',
         name: 'notes.txt',
         status: 'uploaded',
-        path: '/uploads/13205c0e/notes.txt',
-        downloadUrl: '/api/uploads/13205c0e%3Anotes.txt/content?access_token=token-123',
+        path: '/uploads/13205c0eabcd/notes.txt',
+        downloadUrl: '/api/uploads/13205c0eabcd/content?access_token=token-123',
       }),
     ])
     expect(fetchMock.mock.calls[0][0]).toBe('/api/sessions/session-1/uploads')

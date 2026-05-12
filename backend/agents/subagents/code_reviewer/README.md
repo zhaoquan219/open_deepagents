@@ -32,10 +32,9 @@ SUBAGENT = {
     "skills": SKILLS,
     "memory": MEMORY,
     "permissions": [
-        {"builtin_tools": ("write_todos", "task")},
         {
-            "builtin_tools": ("ls", "read_file", "glob", "grep"),
-            "paths": ["/workspace/reviews", "/workspace/shared"],
+            "operations": ("read",),
+            "paths": ["/workspace/reviews", "/workspace/shared", "/skills", "/uploads"],
         },
     ],
 }
@@ -45,8 +44,7 @@ SUBAGENT = {
 
 - The subagent uses the default selected model unless `model` is added explicitly.
 - The system prompt tells it to lead with concrete findings.
-- Built-in write and shell tools are omitted from `permissions[].builtin_tools`.
-- File permissions allow read access only to review and shared workspace paths.
+- File permissions allow read access only to review, shared, skills, and upload paths.
 - Local skills and memory provide review checklists and durable review guidance.
 
 ## Customizing

@@ -8,11 +8,8 @@ from deepagents.middleware.skills import _list_skills
 
 from app.agent import DeepAgentsRunContext, build_deep_agent
 from app.runtime.extensions import (
-    BUILTIN_TOOL_ORDER,
-    BuiltinToolSelectionMiddleware,
     SandboxConfig,
     build_permissions,
-    builtin_tool_allowlist_from_permissions,
     load_object_from_spec,
     resolve_backend,
 )
@@ -72,27 +69,11 @@ def test_runtime_normalizes_skill_and_final_message_events() -> None:
     assert message_event.data["message"]["content"] == "完成"
 
 
-def test_builtin_tool_selection_filters_only_deepagents_builtin_tools() -> None:
-    middleware = BuiltinToolSelectionMiddleware(
-        allowlist=frozenset({"ls"}),
-        blocklist=frozenset({"execute"}),
-    )
-
-    assert middleware._filter_tools(
-        [
-            {"name": "ls"},
-            {"name": "read_file"},
-            {"name": "execute"},
-            {"name": "custom_tool"},
-        ]
-    ) == [{"name": "ls"}, {"name": "custom_tool"}]
-
-
 def test_permissions_make_configured_filesystem_rules_restrictive() -> None:
     rules = build_permissions(
         (
-            {"builtin_tools": ["read_file"], "paths": ["/workspace"]},
-            {"builtin_tools": ["write_file"], "paths": ["/workspace/out"]},
+            {"operations": ["read"], "paths": ["/workspace"]},
+            {"operations": ["write"], "paths": ["/workspace/out"]},
         )
     )
 
@@ -102,13 +83,21 @@ def test_permissions_make_configured_filesystem_rules_restrictive() -> None:
     assert _check_fs_permission(rules, "write", "/workspace/input.txt") == "deny"
 
 
-def test_permissions_builtin_tools_star_expands_all_builtins() -> None:
-    specs = ({"builtin_tools": ["*"], "paths": ["/workspace"]},)
+def test_permissions_reject_builtin_tool_specs() -> None:
+    specs = ({"builtin_tools": ["read_file"], "paths": ["/workspace"]},)
 
-    assert builtin_tool_allowlist_from_permissions(specs) == BUILTIN_TOOL_ORDER
-    rules = build_permissions(specs)
-    assert _check_fs_permission(rules, "read", "/workspace/input.txt") == "allow"
-    assert _check_fs_permission(rules, "write", "/workspace/out.txt") == "allow"
+    try:
+        build_permissions(specs)
+    except ValueError as exc:
+        assert "permissions[].builtin_tools" in str(exc)
+    else:
+        raise AssertionError("permissions[].builtin_tools schema was accepted")
+
+
+def test_permissions_normalize_windows_style_virtual_paths() -> None:
+    rules = build_permissions(({"operations": ["read"], "paths": [r"\workspace\main"]},))
+
+    assert _check_fs_permission(rules, "read", "/workspace/main/input.txt") == "allow"
 
 
 def test_sandbox_profiles_load_local_skill_source_from_virtual_skills_root() -> None:
@@ -145,7 +134,7 @@ def test_backend_resolution_supports_state_shell_and_custom_specs(tmp_path) -> N
     assert load_object_from_spec(f"{module}:build_backend")().__class__.__name__ == "StateBackend"
 
 
-def test_build_deep_agent_omits_permissions_for_shell_backends() -> None:
+def test_build_deep_agent_preserves_permissions_for_shell_backends() -> None:
     captured = {}
     settings = Settings(deepagents_sandbox_profile="shell")
 
@@ -155,12 +144,12 @@ def test_build_deep_agent_omits_permissions_for_shell_backends() -> None:
     ):
         build_deep_agent(settings)
 
-    assert captured["permissions"] is None
+    assert captured["permissions"][0].operations == ["read"]
     assert isinstance(captured["backend"], CompositeBackend)
     assert isinstance(captured["backend"].default, LocalShellBackend)
     assert captured["context_schema"] is DeepAgentsRunContext
     assert all(
-        "permissions" not in subagent or subagent["permissions"] is None
+        "permissions" in subagent and subagent["permissions"]
         for subagent in captured["subagents"]
         if isinstance(subagent, dict)
     )

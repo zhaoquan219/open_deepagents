@@ -88,4 +88,32 @@ describe('normalizeStreamEnvelope', () => {
       }),
     ).toMatchObject({ terminal: false, status: 'completed' })
   })
+
+  it('derives process status from started and completed labels', () => {
+    expect(
+      normalizeStreamEnvelope({
+        event_id: 'evt-6',
+        type: 'sandbox',
+        run_id: 'run-1',
+        session_id: 'session-1',
+        timestamp: '2026-04-29T13:00:02Z',
+        label: 'sandbox.started',
+        detail: 'execute',
+        data: {},
+      }),
+    ).toMatchObject({ status: 'in_progress' })
+
+    expect(
+      normalizeStreamEnvelope({
+        event_id: 'evt-7',
+        type: 'sandbox',
+        run_id: 'run-1',
+        session_id: 'session-1',
+        timestamp: '2026-04-29T13:00:03Z',
+        label: 'sandbox.completed',
+        detail: 'execute',
+        data: {},
+      }),
+    ).toMatchObject({ status: 'completed' })
+  })
 })

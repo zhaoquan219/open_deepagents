@@ -81,6 +81,20 @@ describe('processLog', () => {
     expect(entry.summary).toContain('ok')
   })
 
+  it('hides low-signal process start events by default', () => {
+    const entry = logEntryFromEnvelope({
+      eventId: 'evt-tool-start',
+      type: 'tool',
+      label: 'tool.started',
+      detail: 'read_file',
+      status: 'in_progress',
+      timestamp: '2026-05-05T00:00:02.000Z',
+      data: { input: { path: '/workspace/main/file.txt' } },
+    })
+
+    expect(entry).toBeNull()
+  })
+
   it('keeps subagent and error events visible while internal logs are hidden', () => {
     const subagent = logEntryFromEnvelope({
       eventId: 'evt-subagent',

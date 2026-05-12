@@ -20,11 +20,11 @@ AGENT = {
     # Optional:
     # "model": "openai/gpt-5-4",
     "permissions": [
-        {"builtin_tools": ("write_todos", "task", "execute")},
         {
-            "builtin_tools": ("ls", "read_file", "glob", "grep"),
+            "operations": ("read",),
             "paths": ["/workspace/main", "/skills", "/uploads"],
         },
+        {"operations": ("write",), "paths": ["/workspace/main/output"]},
     ],
     # Start with explicit children.
     "subagents": SUBAGENTS,

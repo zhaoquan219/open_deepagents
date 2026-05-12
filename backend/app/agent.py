@@ -10,7 +10,6 @@ from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
 from app.catalog import build_model, resolve_agent
 from app.runtime.extensions import (
     SandboxConfig,
-    build_builtin_tool_selection_middleware,
     resolve_backend,
 )
 from app.runtime.sse_bridge import normalize_runtime_event
@@ -45,15 +44,8 @@ def build_deep_agent(settings: Settings, model_id: str | None = None) -> Any:
     agent = resolve_agent(settings)
     selected_model_id = model_id or agent.get("model")
     middleware = list(agent["middleware"])
-    tool_selection = build_builtin_tool_selection_middleware(
-        allowlist=agent["builtin_tool_allowlist"],
-        blocklist=agent["builtin_tool_blocklist"],
-    )
-    if tool_selection is not None:
-        middleware.append(tool_selection)
     sandbox_config = SandboxConfig.from_mapping(settings.sandbox_settings())
-    supports_permissions = sandbox_config.kind != "local_shell"
-    permissions = list(agent["permissions"]) if supports_permissions else None
+    permissions = list(agent["permissions"])
     return create_deep_agent(
         model=build_model(settings, str(selected_model_id) if selected_model_id else None),
         tools=list(agent["tools"]),
@@ -61,7 +53,7 @@ def build_deep_agent(settings: Settings, model_id: str | None = None) -> Any:
         skills=list(agent["skills"]) or None,
         memory=list(agent["memory"]) or None,
         permissions=permissions,
-        subagents=_deepagents_subagents(tuple(agent["subagents"]), supports_permissions),
+        subagents=_deepagents_subagents(tuple(agent["subagents"])),
         system_prompt=agent["system_prompt"],
         context_schema=DeepAgentsRunContext,
         checkpointer=settings.runtime_checkpointer(),
@@ -76,7 +68,6 @@ def build_deep_agent(settings: Settings, model_id: str | None = None) -> Any:
 
 def _deepagents_subagents(
     subagents: tuple[dict[str, Any] | Any, ...],
-    supports_permissions: bool,
 ) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None:
     if not subagents:
         return None
@@ -90,9 +81,6 @@ def _deepagents_subagents(
         elif "runnable" in item:
             allowed = {"name", "description", "runnable"}
         else:
-            item = _with_builtin_tool_selection_middleware(item)
-            if not supports_permissions:
-                item = {**item, "permissions": None}
             allowed = {
                 "name",
                 "description",
@@ -112,13 +100,3 @@ def _deepagents_subagents(
             )
         )
     return converted
-
-
-def _with_builtin_tool_selection_middleware(item: dict[str, Any]) -> dict[str, Any]:
-    tool_selection = build_builtin_tool_selection_middleware(
-        allowlist=item.get("builtin_tool_allowlist"),
-        blocklist=item.get("builtin_tool_blocklist"),
-    )
-    if tool_selection is None:
-        return item
-    return {**item, "middleware": [*item.get("middleware", ()), tool_selection]}

@@ -33,7 +33,7 @@ from sqlalchemy.orm import (
     sessionmaker,
 )
 
-PRODUCT_TABLES = frozenset({"users", "sessions", "runs", "events"})
+PRODUCT_TABLES = frozenset({"users", "sessions", "runs", "events", "uploads"})
 _EVENT_LOCK = Lock()
 
 
@@ -118,6 +118,31 @@ class RunRecord(Base):
     metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+    session: Mapped[SessionRecord] = relationship()
+    user: Mapped[UserRecord] = relationship()
+
+
+class UploadRecord(Base):
+    __tablename__ = "uploads"
+    __table_args__ = (
+        Index("ix_uploads_session_id", "session_id"),
+        Index("ix_uploads_user_id", "user_id"),
+        Index("ix_uploads_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    size: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="uploaded", nullable=False)
+    metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     session: Mapped[SessionRecord] = relationship()
     user: Mapped[UserRecord] = relationship()
