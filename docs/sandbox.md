@@ -180,6 +180,22 @@ If a Windows-style path is received, the backend normalizes backslashes:
 Upload filenames are also normalized. A browser filename such as
 `C:\Users\me\Desktop\notes.txt` is stored as `notes.txt`, not as a nested path.
 
+Windows drive-letter paths in `.env` settings are supported and are not split on
+the drive colon:
+
+```dotenv
+DEEPAGENTS_MODEL_CONFIG_PATH=D:\open_deepagents\models.json
+DEEPAGENTS_MAIN_AGENT=D:\open_deepagents\agents\__init__.py:AGENT
+DEEPAGENTS_SANDBOX_ROOT_DIR=D:\open_deepagents\data\sandbox
+DEEPAGENTS_UPLOAD_ROOT_DIR=D:\open_deepagents\data\uploads
+DEEPAGENTS_BACKEND_SPEC=D:\open_deepagents\sandbox_backend.py:build_backend
+DEEPAGENTS_CHECKPOINT_DATABASE_URL=sqlite:///D:/open_deepagents/data/checkpoints.db
+```
+
+Import specs still use the final colon for the Python attribute, for example
+`:AGENT` or `:build_backend`. The `D:` drive prefix is treated as part of the
+file path.
+
 ## Logging
 
 `BACKEND_LOG_LEVEL=info` logs lifecycle summaries such as backend startup, run

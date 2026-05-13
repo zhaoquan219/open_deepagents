@@ -8,6 +8,7 @@ import threading
 import warnings
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -19,6 +20,9 @@ from sqlalchemy import inspect, select
 from agents.middleware.audit_middleware import inject_attachment_context_message
 from app.agent import DeepAgentsRunContext, build_deep_agent
 from app.auth import hash_password
+from app.catalog import (
+    _path as catalog_path,
+)
 from app.catalog import (
     build_model,
     load_model_catalog,
@@ -38,8 +42,9 @@ from app.db import (
     append_event,
 )
 from app.main import create_app
-from app.runtime.extensions import SandboxConfig, resolve_backend
-from app.settings import Settings
+from app.path_utils import is_import_spec, split_import_spec
+from app.runtime.extensions import SandboxConfig, load_object_from_spec, resolve_backend
+from app.settings import Settings, _database_target, _sqlite_database_path, import_from_spec
 
 
 def login_headers(
@@ -388,6 +393,48 @@ def test_models_catalog_accepts_chat_openai_fields_and_warns_on_extras(
     assert model.model_kwargs == {"custom": "value"}
     assert model.verbosity == "low"
     assert model.use_responses_api is True
+
+
+def test_windows_drive_import_specs_split_on_attribute_colon(monkeypatch) -> None:
+    loaded_modules: list[str] = []
+
+    def fake_import_file(module_name: str) -> Any:
+        loaded_modules.append(module_name)
+        return SimpleNamespace(AGENT={"id": "main"}, build_backend=lambda: "backend")
+
+    monkeypatch.setattr("app.settings._import_file_module", fake_import_file)
+    monkeypatch.setattr("app.runtime.extensions._import_module_or_file", fake_import_file)
+
+    assert split_import_spec(r"D:\agents\agent.py:AGENT") == (
+        r"D:\agents\agent.py",
+        "AGENT",
+    )
+    assert not is_import_spec(r"D:\agents\agent.py")
+    assert import_from_spec(r"D:\agents\agent.py:AGENT") == {"id": "main"}
+    assert load_object_from_spec(r"D:\runtime\backend.py:build_backend")() == "backend"
+    assert loaded_modules == [r"D:\agents\agent.py", r"D:\runtime\backend.py"]
+
+
+def test_windows_drive_paths_from_env_are_not_rebased_to_backend_root() -> None:
+    assert str(catalog_path(r"D:\models\models.json")) == r"D:\models\models.json"
+
+    settings = Settings(
+        deepagents_sandbox_profile="files",
+        deepagents_sandbox_root_dir=r"D:\deepagents\sandbox",
+        deepagents_upload_root_dir=r"D:\deepagents\uploads",
+    )
+
+    sandbox = settings.sandbox_settings()
+    assert sandbox["root_dir"] == r"D:\deepagents\sandbox"
+    assert sandbox["uploads_root_dir"] == r"D:\deepagents\uploads"
+    assert str(settings.upload_root_dir()) == r"D:\deepagents\uploads"
+    assert str(_sqlite_database_path("sqlite:///D:/deepagents/checkpoints.db")) == (
+        "D:/deepagents/checkpoints.db"
+    )
+    assert _database_target("sqlite:///D:/deepagents/backend.db") == (
+        "sqlite",
+        "D:/deepagents/backend.db",
+    )
 
 
 def test_empty_model_config_env_disables_catalog_file(monkeypatch: pytest.MonkeyPatch) -> None:

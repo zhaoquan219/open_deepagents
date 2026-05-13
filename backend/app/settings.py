@@ -18,6 +18,8 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
+from app.path_utils import app_path, is_absolute_path, split_import_spec
+
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ADMIN_PASSWORD = "change-me"
 DEFAULT_TOKEN_SECRET = "change-me-too"
@@ -28,10 +30,8 @@ LOG_LEVELS = frozenset({"critical", "error", "warning", "info", "debug"})
 
 
 def import_from_spec(spec: str) -> Any:
-    module_name, separator, attr = spec.partition(":")
-    if not separator:
-        raise ValueError(f"Import spec must be module:attribute: {spec}")
-    if module_name.endswith(".py") or "/" in module_name:
+    module_name, attr = split_import_spec(spec)
+    if module_name.endswith(".py") or "/" in module_name or "\\" in module_name:
         module = _import_file_module(module_name)
     else:
         module = importlib.import_module(module_name)
@@ -258,13 +258,14 @@ class Settings(BaseSettings):
     def sandbox_settings(self) -> dict[str, Any]:
         default_root_dir = str(DEFAULT_SANDBOX_ROOT.resolve())
         configured_root_dir = self.deepagents_sandbox_root_dir
-        if configured_root_dir and not Path(configured_root_dir).is_absolute():
+        if configured_root_dir and not is_absolute_path(configured_root_dir):
             configured_root_dir = str((BACKEND_ROOT / configured_root_dir).resolve())
+        uploads_root_dir = self.upload_root_dir()
         config: dict[str, Any] = {
             "kind": self.deepagents_sandbox_kind,
             "root_dir": configured_root_dir,
             "skills_root_dir": str((BACKEND_ROOT / "agents" / "skills").resolve()),
-            "uploads_root_dir": str(self.upload_root_dir().resolve()),
+            "uploads_root_dir": _path_for_config(uploads_root_dir),
             "virtual_mode": self.deepagents_sandbox_virtual_mode,
             "timeout": self.deepagents_sandbox_timeout,
             "max_output_bytes": self.deepagents_sandbox_max_output_bytes,
@@ -291,7 +292,7 @@ class Settings(BaseSettings):
     def upload_root_dir(self) -> Path:
         configured = self.deepagents_upload_root_dir
         root = Path(configured) if configured else DEFAULT_UPLOAD_ROOT
-        return root if root.is_absolute() else BACKEND_ROOT / root
+        return root if is_absolute_path(root) else BACKEND_ROOT / root
 
     def validate_startup(self) -> None:
         self.assert_runtime_persistence_allowed()
@@ -327,7 +328,7 @@ class Settings(BaseSettings):
         ):
             raise RuntimeError(
                 "DEEPAGENTS_CHECKPOINT_DATABASE_URL must be different from DATABASE_URL; "
-                "product DB schema is exactly users, sessions, runs, and events."
+                "product DB schema is users, sessions, uploads, runs, and events."
             )
         return configured_url
 
@@ -409,9 +410,7 @@ class Settings(BaseSettings):
 
 
 def _import_file_module(module_name: str) -> Any:
-    path = Path(module_name)
-    if not path.is_absolute():
-        path = BACKEND_ROOT / path
+    path = app_path(module_name, BACKEND_ROOT)
     module_spec = importlib_util.spec_from_file_location(
         f"_deepagents_spec_{abs(hash(path))}",
         path,
@@ -422,6 +421,12 @@ def _import_file_module(module_name: str) -> Any:
     sys.modules[module_spec.name] = module
     module_spec.loader.exec_module(module)
     return module
+
+
+def _path_for_config(path: Path) -> str:
+    if is_absolute_path(path) and not path.is_absolute():
+        return str(path)
+    return str(path.resolve())
 
 
 def _driver_family(database_url: str) -> str:
@@ -436,9 +441,8 @@ def _database_target(database_url: str) -> tuple[object, ...]:
         database = url.database or ""
         if database in {"", ":memory:"}:
             return ("sqlite", database)
-        raw_path = Path(database)
-        path = raw_path if raw_path.is_absolute() else BACKEND_ROOT / raw_path
-        return ("sqlite", str(path.resolve()))
+        path = app_path(database, BACKEND_ROOT)
+        return ("sqlite", _path_for_config(path))
     host = (url.host or "").lower().rstrip(".")
     host = {"127.0.0.1": "localhost", "::1": "localhost", "[::1]": "localhost"}.get(host, host)
     port = url.port or {"postgresql": 5432, "postgres": 5432, "mysql": 3306, "mariadb": 3306}.get(
@@ -460,8 +464,7 @@ def _sqlite_database_path(database_url: str) -> Path | None:
     raw_path = database_url.split(":///", 1)[1]
     if raw_path == ":memory:":
         return None
-    path = Path(raw_path)
-    return path if path.is_absolute() else BACKEND_ROOT / path
+    return app_path(raw_path, BACKEND_ROOT)
 
 
 def _sqlite_connection_string(database_url: str) -> str:

@@ -12,6 +12,7 @@ from typing import Any
 
 from langchain_openai import ChatOpenAI
 
+from app.path_utils import app_path, is_absolute_path, is_import_spec, split_import_spec
 from app.runtime.extensions import (
     build_permissions as resolve_permissions,
 )
@@ -290,7 +291,7 @@ def _resolve_subagents(
 def _load_subagent_item(item: Any, package_root: Path) -> tuple[Any, Path]:
     if isinstance(item, dict):
         return item, package_root
-    if isinstance(item, str) and ":" in item:
+    if is_import_spec(item):
         return _import_agent_mapping(item)
     path = _package_path(package_root / "subagents", item)
     if path.is_dir() and (path / "__init__.py").is_file():
@@ -338,10 +339,8 @@ def _discover_subagent_specs(package_root: Path) -> list[str]:
 
 
 def _import_agent_mapping(spec: str) -> tuple[Any, Path]:
-    module_name, separator, attr = spec.partition(":")
-    if not separator or not attr:
-        raise ValueError(f"Import spec must be module:attribute: {spec}")
-    if module_name.endswith(".py") or "/" in module_name:
+    module_name, attr = split_import_spec(spec)
+    if module_name.endswith(".py") or "/" in module_name or "\\" in module_name:
         path = _path(module_name).resolve()
         return import_from_spec(spec), path.parent
     module = import_module(module_name)
@@ -370,7 +369,7 @@ def _resolve_component(
                 return discovered
         exported = getattr(package_module, export)
         return list(exported) if isinstance(exported, list | tuple) else [exported]
-    if isinstance(item, str) and ":" in item:
+    if is_import_spec(item):
         return import_from_spec(item)
     return item
 
@@ -428,13 +427,12 @@ def _builtin_tuple(value: Any) -> tuple[str, ...] | None:
 
 
 def _path(value: Any) -> Path:
-    path = Path(str(value))
-    return path if path.is_absolute() else BACKEND_ROOT / path
+    return app_path(value, BACKEND_ROOT)
 
 
 def _package_path(root: Path, value: Any) -> Path:
     path = Path(str(value))
-    if path.is_absolute():
+    if is_absolute_path(value):
         return path
     local_path = (root / path).resolve()
     return local_path if local_path.exists() else _path(path)

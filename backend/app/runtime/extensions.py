@@ -18,6 +18,8 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 
+from app.path_utils import app_path, split_import_spec
+
 
 @dataclass(frozen=True)
 class SandboxConfig:
@@ -187,9 +189,12 @@ class ReadOnlyBackend:
 
 
 def load_object_from_spec(spec: str) -> Any:
-    module_name, separator, attr = spec.partition(":")
-    if not separator or not attr:
-        raise ValueError(f"Invalid import spec {spec!r}; expected '<module-or-path>:<attribute>'")
+    try:
+        module_name, attr = split_import_spec(spec)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid import spec {spec!r}; expected '<module-or-path>:<attribute>'"
+        ) from exc
     module = _import_module_or_file(module_name)
     try:
         return getattr(module, attr)
@@ -249,7 +254,7 @@ def _strings(value: Any) -> tuple[str, ...]:
 
 
 def _import_module_or_file(module_name: str) -> ModuleType:
-    path = Path(module_name)
+    path = app_path(module_name, Path.cwd())
     if path.suffix == ".py" and path.exists():
         return _load_module_from_path(path)
     return importlib.import_module(module_name)
