@@ -26,8 +26,9 @@ class SandboxConfig:
     kind: str = "state"
     root_dir: str | None = None
     skills_root_dir: str | None = None
+    memory_root_dir: str | None = None
     uploads_root_dir: str | None = None
-    virtual_mode: bool | None = None
+    virtual_mode: bool | None = True
     timeout: int = 120
     max_output_bytes: int = 100_000
     inherit_env: bool = False
@@ -55,6 +56,9 @@ class SandboxConfig:
         skills_root_dir = raw.get("skills_root_dir")
         if skills_root_dir is not None and not isinstance(skills_root_dir, str):
             raise ValueError("sandbox.skills_root_dir must be a string when provided")
+        memory_root_dir = raw.get("memory_root_dir")
+        if memory_root_dir is not None and not isinstance(memory_root_dir, str):
+            raise ValueError("sandbox.memory_root_dir must be a string when provided")
         uploads_root_dir = raw.get("uploads_root_dir")
         if uploads_root_dir is not None and not isinstance(uploads_root_dir, str):
             raise ValueError("sandbox.uploads_root_dir must be a string when provided")
@@ -62,6 +66,7 @@ class SandboxConfig:
             kind=kind,
             root_dir=root_dir,
             skills_root_dir=skills_root_dir,
+            memory_root_dir=memory_root_dir,
             uploads_root_dir=uploads_root_dir,
             virtual_mode=raw.get("virtual_mode"),
             timeout=timeout,
@@ -135,6 +140,10 @@ def _with_mounted_roots(backend: BackendProtocol | Any, config: SandboxConfig) -
     if config.skills_root_dir:
         routes["/skills/"] = ReadOnlyBackend(
             FilesystemBackend(root_dir=config.skills_root_dir, virtual_mode=True)
+        )
+    if config.memory_root_dir:
+        routes["/memory/"] = ReadOnlyBackend(
+            FilesystemBackend(root_dir=config.memory_root_dir, virtual_mode=True)
         )
     if config.uploads_root_dir:
         routes["/uploads/"] = ReadOnlyBackend(

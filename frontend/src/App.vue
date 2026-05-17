@@ -1,464 +1,519 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ElMessageBox } from 'element-plus'
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { ElMessageBox } from "element-plus";
 
-import ChatWorkspace from './components/ChatWorkspace.vue'
-import SessionSidebar from './components/SessionSidebar.vue'
-import { createApiClient } from './api/client.js'
-import { localeState, setLocale, uiCopy } from './lib/copy.js'
-import { normalizeStreamEnvelope } from './lib/sseContract.js'
-import { createRunStore } from './store/runStore.js'
-import { createSessionStore } from './store/sessionStore.js'
+import ChatWorkspace from "./components/ChatWorkspace.vue";
+import SessionSidebar from "./components/SessionSidebar.vue";
+import { createApiClient } from "./api/client.js";
+import { localeState, setLocale, uiCopy } from "./lib/copy.js";
+import { normalizeStreamEnvelope } from "./lib/sseContract.js";
+import { createRunStore } from "./store/runStore.js";
+import { createSessionStore } from "./store/sessionStore.js";
 
-function logRuntime(scope, detail, payload, level = 'debug') {
-  if (level === 'debug' && import.meta.env.VITE_DEEPAGENTS_VERBOSE_STREAM !== 'true') {
-    return
+function logRuntime(scope, detail, payload, level = "debug") {
+  if (
+    level === "debug" &&
+    import.meta.env.VITE_DEEPAGENTS_VERBOSE_STREAM !== "true"
+  ) {
+    return;
   }
 
-  const logger = console[level] || console.log
-  logger(`[deepagents-ui] ${scope}: ${detail}`, payload ?? '')
+  const logger = console[level] || console.log;
+  logger(`[deepagents-ui] ${scope}: ${detail}`, payload ?? "");
 }
 
-const apiClient = createApiClient()
-const sessionStore = createSessionStore(apiClient)
-const runStore = createRunStore()
-if (import.meta.env.DEV && typeof window !== 'undefined') {
+const apiClient = createApiClient();
+const sessionStore = createSessionStore(apiClient);
+const runStore = createRunStore();
+if (import.meta.env.DEV && typeof window !== "undefined") {
   window.__deepagentsDebug = {
     sessionStore,
     runStore,
-  }
+  };
 }
-const activeStream = ref(null)
-const pendingSessionDeltas = new Map()
-let pendingSessionDeltaFlush = 0
-const authUsername = ref('admin')
-const authPassword = ref('')
-const authError = ref('')
-const authLoading = ref(false)
-const authChecked = ref(false)
-const isAuthenticated = ref(false)
-const stoppingRunId = ref('')
-const messageSendScrollKey = ref(0)
-const runtimeOptions = ref({ models: [], defaultModelId: '' })
-const runtimeOptionsError = ref('')
-const selectedModelId = ref('')
+const activeStream = ref(null);
+const pendingSessionDeltas = new Map();
+let pendingSessionDeltaFlush = 0;
+const authUsername = ref("admin");
+const authPassword = ref("");
+const authError = ref("");
+const authLoading = ref(false);
+const authChecked = ref(false);
+const isAuthenticated = ref(false);
+const stoppingRunId = ref("");
+const messageSendScrollKey = ref(0);
+const runtimeOptions = ref({ models: [], defaultModelId: "" });
+const runtimeOptionsError = ref("");
+const selectedModelId = ref("");
 
 function scheduleSessionDeltaFlush() {
   if (pendingSessionDeltaFlush) {
-    return
+    return;
   }
-  const scheduler = globalThis.requestAnimationFrame || ((callback) => globalThis.setTimeout(callback, 16))
+  const scheduler =
+    globalThis.requestAnimationFrame ||
+    ((callback) => globalThis.setTimeout(callback, 16));
   pendingSessionDeltaFlush = scheduler(() => {
-    pendingSessionDeltaFlush = 0
-    flushSessionDeltas()
-  })
+    pendingSessionDeltaFlush = 0;
+    flushSessionDeltas();
+  });
 }
 
-function flushSessionDeltas(key = '') {
+function flushSessionDeltas(key = "") {
   const entries = key
     ? [[key, pendingSessionDeltas.get(key)]]
-    : [...pendingSessionDeltas.entries()]
+    : [...pendingSessionDeltas.entries()];
   for (const [entryKey, envelope] of entries) {
     if (!envelope) {
-      continue
+      continue;
     }
-    pendingSessionDeltas.delete(entryKey)
-    sessionStore.consumeRunEvent(envelope)
+    pendingSessionDeltas.delete(entryKey);
+    sessionStore.consumeRunEvent(envelope);
   }
 }
 
 function consumeSessionRunEvent(envelope) {
-  const key = `${envelope.sessionId}:${envelope.runId}`
-  if (envelope.type !== 'message.delta' || !envelope.delta) {
-    flushSessionDeltas(key)
-    sessionStore.consumeRunEvent(envelope)
-    return
+  const key = `${envelope.sessionId}:${envelope.runId}`;
+  if (envelope.type !== "message.delta" || !envelope.delta) {
+    flushSessionDeltas(key);
+    sessionStore.consumeRunEvent(envelope);
+    return;
   }
-  const previous = pendingSessionDeltas.get(key)
+  const previous = pendingSessionDeltas.get(key);
   pendingSessionDeltas.set(key, {
     ...envelope,
-    delta: `${previous?.delta || ''}${envelope.delta}`,
-  })
-  scheduleSessionDeltaFlush()
+    delta: `${previous?.delta || ""}${envelope.delta}`,
+  });
+  scheduleSessionDeltaFlush();
 }
 
-const sessions = computed(() => sessionStore.state.sessions)
-const currentSessionId = computed(() => sessionStore.state.currentSessionId)
-const currentSession = computed(() => sessionStore.getCurrentSession())
-const currentMessages = computed(() => sessionStore.getCurrentMessages())
-const pendingUploads = computed(() => sessionStore.getPendingUploads())
-const deletingUploads = computed(() => sessionStore.state.deletingUploadIds)
-const loadingSessions = computed(() => sessionStore.state.loadingSessions)
-const loadingMessages = computed(() => sessionStore.state.loadingMessages)
-const uploading = computed(() => sessionStore.state.uploading)
-const submitting = computed(() => sessionStore.state.submitting)
-const deletingSessionId = computed(() => sessionStore.state.deletingSessionId)
-const sessionError = computed(() => sessionStore.state.error)
+const sessions = computed(() => sessionStore.state.sessions);
+const currentSessionId = computed(() => sessionStore.state.currentSessionId);
+const currentSession = computed(() => sessionStore.getCurrentSession());
+const currentMessages = computed(() => sessionStore.getCurrentMessages());
+const pendingUploads = computed(() => sessionStore.getPendingUploads());
+const deletingUploads = computed(() => sessionStore.state.deletingUploadIds);
+const loadingSessions = computed(() => sessionStore.state.loadingSessions);
+const loadingMessages = computed(() => sessionStore.state.loadingMessages);
+const uploading = computed(() => sessionStore.state.uploading);
+const submitting = computed(() => sessionStore.state.submitting);
+const deletingSessionId = computed(() => sessionStore.state.deletingSessionId);
+const sessionError = computed(() => sessionStore.state.error);
 const combinedError = computed(
-  () => runtimeOptionsError.value || runStore.state.error || sessionStore.state.error || sessionStore.state.uploadError,
-)
-const activeRun = computed(() => runStore.state.activeRun)
-const runStatus = computed(() => runStore.state.activeRun?.status || 'idle')
-const currentLocale = computed(() => localeState.current)
+  () =>
+    runtimeOptionsError.value ||
+    runStore.state.error ||
+    sessionStore.state.error ||
+    sessionStore.state.uploadError,
+);
+const activeRun = computed(() => runStore.state.activeRun);
+const runStatus = computed(() => runStore.state.activeRun?.status || "idle");
+const currentLocale = computed(() => localeState.current);
 const canStopRun = computed(
-  () => ['queued', 'running'].includes(runStatus.value) && Boolean(activeRun.value?.runId),
-)
+  () =>
+    ["queued", "running"].includes(runStatus.value) &&
+    Boolean(activeRun.value?.runId),
+);
 const stoppingRun = computed(
-  () => Boolean(stoppingRunId.value) && stoppingRunId.value === String(activeRun.value?.runId || ''),
-)
+  () =>
+    Boolean(stoppingRunId.value) &&
+    stoppingRunId.value === String(activeRun.value?.runId || ""),
+);
 const topbarStatusCopy = computed(() => {
-  if (runStatus.value === 'running') {
-    return uiCopy.app.topbarStatus.running
+  if (runStatus.value === "running") {
+    return uiCopy.app.topbarStatus.running;
   }
-  if (runStatus.value === 'completed') {
-    return uiCopy.app.topbarStatus.completed
+  if (runStatus.value === "completed") {
+    return uiCopy.app.topbarStatus.completed;
   }
-  if (runStatus.value === 'cancelled') {
-    return uiCopy.app.topbarStatus.cancelled
+  if (runStatus.value === "cancelled") {
+    return uiCopy.app.topbarStatus.cancelled;
   }
-  if (runStatus.value === 'failed') {
-    return uiCopy.app.topbarStatus.failed
+  if (runStatus.value === "failed") {
+    return uiCopy.app.topbarStatus.failed;
   }
-  return uiCopy.app.topbarStatus.idle
-})
+  return uiCopy.app.topbarStatus.idle;
+});
 const runStatusLabel = computed(() => {
-  const status = runStatus.value
-  if (status === 'idle') return uiCopy.common.idle
-  if (status === 'queued') return uiCopy.common.queued
-  if (status === 'running') return uiCopy.common.running
-  if (status === 'completed') return uiCopy.common.completed
-  if (status === 'cancelling') return uiCopy.common.cancelling
-  if (status === 'cancelled') return uiCopy.common.cancelled
-  if (status === 'failed') return uiCopy.common.failed
-  return uiCopy.common.running
-})
+  const status = runStatus.value;
+  if (status === "idle") return uiCopy.common.idle;
+  if (status === "queued") return uiCopy.common.queued;
+  if (status === "running") return uiCopy.common.running;
+  if (status === "completed") return uiCopy.common.completed;
+  if (status === "cancelling") return uiCopy.common.cancelling;
+  if (status === "cancelled") return uiCopy.common.cancelled;
+  if (status === "failed") return uiCopy.common.failed;
+  return uiCopy.common.running;
+});
 
 function handleLocaleChange(locale) {
-  setLocale(locale)
+  setLocale(locale);
 }
 
 async function loadRuntimeOptions() {
   try {
-    const options = await apiClient.getRuntimeOptions()
-    runtimeOptionsError.value = ''
-    runtimeOptions.value = options
-    selectedModelId.value = options.models.some((model) => model.id === selectedModelId.value)
+    const options = await apiClient.getRuntimeOptions();
+    runtimeOptionsError.value = "";
+    runtimeOptions.value = options;
+    selectedModelId.value = options.models.some(
+      (model) => model.id === selectedModelId.value,
+    )
       ? selectedModelId.value
-      : options.defaultModelId
+      : options.defaultModelId;
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Runtime options failed'
-    runtimeOptionsError.value = message
-    logRuntime('runtime.options.error', message, {}, 'warn')
+    const message =
+      error instanceof Error ? error.message : "Runtime options failed";
+    runtimeOptionsError.value = message;
+    logRuntime("runtime.options.error", message, {}, "warn");
   }
 }
 
 function closeStream({ markDisconnected = false } = {}) {
-  flushSessionDeltas()
-  const runId = runStore.state.activeRun?.runId || ''
+  flushSessionDeltas();
+  const runId = runStore.state.activeRun?.runId || "";
   if (activeStream.value) {
-    activeStream.value.close()
-    activeStream.value = null
+    activeStream.value.close();
+    activeStream.value = null;
   }
   if (markDisconnected && runId) {
-    runStore.markDisconnected(runId)
+    runStore.markDisconnected(runId);
   }
 }
 
 function syncSessionTranscript(sessionId) {
-  if (String(currentSessionId.value || '') !== String(sessionId || '')) {
-    return
+  if (String(currentSessionId.value || "") !== String(sessionId || "")) {
+    return;
   }
-  void sessionStore.selectSession(String(sessionId))
+  void sessionStore.selectSession(String(sessionId));
 }
 
 function isTerminalEnvelope(envelope) {
   return (
-    envelope.type === 'error' ||
-    (envelope.type === 'status' && envelope.terminal === true)
-  )
+    envelope.type === "error" ||
+    (envelope.type === "status" && envelope.terminal === true)
+  );
 }
 
 async function handleLogin() {
-  authLoading.value = true
-  authError.value = ''
+  authLoading.value = true;
+  authError.value = "";
   try {
     await apiClient.login({
       username: authUsername.value.trim(),
       password: authPassword.value,
-    })
-    await apiClient.getAdminProfile()
-    isAuthenticated.value = true
-    await loadRuntimeOptions()
-    await sessionStore.loadSessions()
+    });
+    await apiClient.getAdminProfile();
+    isAuthenticated.value = true;
+    await loadRuntimeOptions();
+    await sessionStore.loadSessions();
     if (sessionStore.state.currentSessionId) {
-      await sessionStore.selectSession(sessionStore.state.currentSessionId)
+      await sessionStore.selectSession(sessionStore.state.currentSessionId);
     }
   } catch (error) {
-    apiClient.logout()
-    isAuthenticated.value = false
-    authError.value = error instanceof Error ? error.message : uiCopy.app.auth.failure
+    apiClient.logout();
+    isAuthenticated.value = false;
+    authError.value =
+      error instanceof Error ? error.message : uiCopy.app.auth.failure;
   } finally {
-    authLoading.value = false
+    authLoading.value = false;
   }
 }
 
 async function ensureSession() {
   if (sessionStore.state.currentSessionId) {
-    return sessionStore.getCurrentSession()
+    return sessionStore.getCurrentSession();
   }
 
-  return handleCreateSession()
+  return handleCreateSession();
 }
 
 async function handleRefreshSessions() {
-  await sessionStore.loadSessions({ preserveSelection: true })
+  await sessionStore.loadSessions({ preserveSelection: true });
 }
 
 async function handleCreateSession() {
-  const session = await sessionStore.createSession()
-  await sessionStore.selectSession(session.id)
-  return session
+  const session = await sessionStore.createSession();
+  await sessionStore.selectSession(session.id);
+  return session;
 }
 
 async function handleSelectSession(sessionId) {
-  await sessionStore.selectSession(sessionId)
+  await sessionStore.selectSession(sessionId);
 }
 
 async function handleDeleteSession(sessionId) {
-  const session = sessions.value.find((item) => item.id === sessionId)
-  const title = session?.title || uiCopy.app.deleteSession.fallbackTitle
+  const session = sessions.value.find((item) => item.id === sessionId);
+  const title = session?.title || uiCopy.app.deleteSession.fallbackTitle;
 
   try {
-    await ElMessageBox.confirm(uiCopy.app.deleteSession.message(title), uiCopy.app.deleteSession.title, {
-      confirmButtonText: uiCopy.app.deleteSession.confirm,
-      cancelButtonText: uiCopy.app.deleteSession.cancel,
-      type: 'warning',
-    })
+    await ElMessageBox.confirm(
+      uiCopy.app.deleteSession.message(title),
+      uiCopy.app.deleteSession.title,
+      {
+        confirmButtonText: uiCopy.app.deleteSession.confirm,
+        cancelButtonText: uiCopy.app.deleteSession.cancel,
+        type: "warning",
+      },
+    );
   } catch {
-    return
+    return;
   }
 
   if (currentSessionId.value === sessionId) {
-    closeStream()
-    runStore.clear()
+    closeStream();
+    runStore.clear();
   }
-  await sessionStore.deleteSession(sessionId)
+  await sessionStore.deleteSession(sessionId);
 }
 
 async function handleUpload(files) {
-  const session = await ensureSession()
-  const result = await sessionStore.uploadFiles(String(session.id), files)
+  const session = await ensureSession();
+  const result = await sessionStore.uploadFiles(String(session.id), files);
   if (!result?.ok) {
-    const message = result?.error?.message || uiCopy.app.logs.uploadError
-    logRuntime('upload.error', message, { sessionId: session.id, files }, 'error')
+    const message = result?.error?.message || uiCopy.app.logs.uploadError;
+    logRuntime(
+      "upload.error",
+      message,
+      { sessionId: session.id, files },
+      "error",
+    );
     runStore.recordClientIssue({
       sessionId: String(session.id),
       label: uiCopy.app.notices.uploadFailed,
       detail: message,
-    })
-    return
+    });
+    return;
   }
 
-  logRuntime('upload.success', uiCopy.app.logs.uploadSuccess, {
+  logRuntime("upload.success", uiCopy.app.logs.uploadSuccess, {
     sessionId: session.id,
     count: result.records.length,
-  })
+  });
   runStore.recordClientNotice({
     sessionId: String(session.id),
     label: uiCopy.app.notices.uploadCompleted,
     detail: uiCopy.app.notices.uploadCompletedDetail(result.records.length),
-    status: 'completed',
-  })
+    status: "completed",
+  });
 }
 
 async function handleDeletePendingUpload(upload) {
-  const sessionId = String(currentSessionId.value || '')
-  const uploadId = String(upload?.id || '')
-  const uploadName = String(upload?.name || uiCopy.api.unnamedAttachment)
+  const sessionId = String(currentSessionId.value || "");
+  const uploadId = String(upload?.id || "");
+  const uploadName = String(upload?.name || uiCopy.api.unnamedAttachment);
   if (!sessionId || !uploadId) {
-    return
+    return;
   }
 
-  const result = await sessionStore.deletePendingUpload(sessionId, uploadId)
+  const result = await sessionStore.deletePendingUpload(sessionId, uploadId);
   if (!result?.ok) {
-    const message = result?.error?.message || uiCopy.api.deleteUploadFailedForFile(uploadName)
-    logRuntime('upload.delete.error', message, { sessionId, uploadId }, 'error')
+    const message =
+      result?.error?.message ||
+      uiCopy.api.deleteUploadFailedForFile(uploadName);
+    logRuntime(
+      "upload.delete.error",
+      message,
+      { sessionId, uploadId },
+      "error",
+    );
     runStore.recordClientIssue({
       sessionId,
       label: uiCopy.app.notices.deleteUploadFailed,
       detail: message,
-    })
+    });
   }
 }
 
 async function handleSubmit({ prompt }) {
-  if (['queued', 'running'].includes(runStatus.value)) {
-    return
+  if (["queued", "running"].includes(runStatus.value)) {
+    return;
   }
-  const text = String(prompt || '').trim()
+  const text = String(prompt || "").trim();
   if (!text) {
-    return
+    return;
   }
 
-  const session = await ensureSession()
-  const sessionId = String(session.id)
-  sessionStore.setSubmitting(true)
+  const session = await ensureSession();
+  const sessionId = String(session.id);
+  sessionStore.setSubmitting(true);
 
   try {
-    sessionStore.addOptimisticUserMessage(sessionId, text)
-    logRuntime('run.start', uiCopy.app.logs.runStart, {
+    sessionStore.addOptimisticUserMessage(sessionId, text);
+    logRuntime("run.start", uiCopy.app.logs.runStart, {
       sessionId,
       attachmentCount: sessionStore.getPendingUploads(sessionId).length,
-    })
+    });
     const run = await apiClient.startRun({
       sessionId,
       prompt: text,
       attachments: sessionStore.getPendingUploads(sessionId),
       modelId: selectedModelId.value,
       onOpen() {
-        logRuntime('fetch-stream.open', uiCopy.app.logs.sseOpen, { sessionId })
+        logRuntime("fetch-stream.open", uiCopy.app.logs.sseOpen, { sessionId });
       },
       onEvent(payload) {
-        const envelope = normalizeStreamEnvelope(payload)
+        const envelope = normalizeStreamEnvelope(payload);
         if (!envelope) {
-          logRuntime('fetch-stream.drop', uiCopy.app.logs.sseDrop, payload, 'warn')
-          return
+          logRuntime(
+            "fetch-stream.drop",
+            uiCopy.app.logs.sseDrop,
+            payload,
+            "warn",
+          );
+          return;
         }
-        if (!runStore.state.activeRun || runStore.state.activeRun.runId !== envelope.runId) {
-          runStore.beginRun({ runId: envelope.runId, sessionId })
+        if (
+          !runStore.state.activeRun ||
+          runStore.state.activeRun.runId !== envelope.runId
+        ) {
+          runStore.beginRun({ runId: envelope.runId, sessionId });
         }
-        runStore.consume(envelope)
-        consumeSessionRunEvent(envelope)
+        runStore.consume(envelope);
+        consumeSessionRunEvent(envelope);
         if (isTerminalEnvelope(envelope)) {
           closeStream({
             markDisconnected: true,
             detail:
-              envelope.type === 'error'
+              envelope.type === "error"
                 ? uiCopy.app.stream.terminalError
-                : envelope.status === 'cancelled'
+                : envelope.status === "cancelled"
                   ? uiCopy.app.stream.terminalCancelled
                   : uiCopy.app.stream.terminalCompleted,
-          })
+          });
         }
       },
       onError(error) {
-        const message = error instanceof Error ? error.message : uiCopy.app.stream.retrying
-        logRuntime('fetch-stream.error', message, { sessionId }, 'error')
-        runStore.markErrored(runStore.state.activeRun?.runId || 'pending', message)
-        sessionStore.addSystemNotice(sessionId, uiCopy.app.stream.recoveryFailure(message))
+        const message =
+          error instanceof Error ? error.message : uiCopy.app.stream.retrying;
+        logRuntime("fetch-stream.error", message, { sessionId }, "error");
+        runStore.markErrored(
+          runStore.state.activeRun?.runId || "pending",
+          message,
+        );
+        sessionStore.addSystemNotice(
+          sessionId,
+          uiCopy.app.stream.recoveryFailure(message),
+        );
       },
-    })
+    });
 
-    sessionStore.clearPendingUploads(sessionId)
-    messageSendScrollKey.value += 1
-    if (!runStore.state.activeRun || runStore.state.activeRun.runId !== run.runId) {
-      runStore.beginRun({ runId: run.runId, sessionId })
+    sessionStore.clearPendingUploads(sessionId);
+    messageSendScrollKey.value += 1;
+    if (
+      !runStore.state.activeRun ||
+      runStore.state.activeRun.runId !== run.runId
+    ) {
+      runStore.beginRun({ runId: run.runId, sessionId });
     }
-    activeStream.value = run
+    activeStream.value = run;
     runStore.recordClientNotice({
       sessionId,
       runId: run.runId,
       label: uiCopy.app.notices.runCreated,
       detail: uiCopy.app.notices.runCreatedDetail,
-      status: 'completed',
-    })
+      status: "completed",
+    });
   } catch (error) {
-    const message = error instanceof Error ? error.message : uiCopy.app.logs.runStartError
-    logRuntime('run.start.error', message, { sessionId }, 'error')
-    runStore.markErrored('pending', message)
+    const message =
+      error instanceof Error ? error.message : uiCopy.app.logs.runStartError;
+    logRuntime("run.start.error", message, { sessionId }, "error");
+    runStore.markErrored("pending", message);
     runStore.recordClientIssue({
       sessionId,
       label: uiCopy.app.notices.runStartFailed,
       detail: message,
-    })
-    sessionStore.addSystemNotice(sessionId, message)
+    });
+    sessionStore.addSystemNotice(sessionId, message);
   } finally {
-    sessionStore.setSubmitting(false)
+    sessionStore.setSubmitting(false);
   }
 }
 
 async function handleStopRun() {
-  const runId = String(activeRun.value?.runId || '')
-  const sessionId = String(activeRun.value?.sessionId || currentSessionId.value || '')
+  const runId = String(activeRun.value?.runId || "");
+  const sessionId = String(
+    activeRun.value?.sessionId || currentSessionId.value || "",
+  );
   if (!runId || !canStopRun.value || stoppingRunId.value) {
-    return
+    return;
   }
 
-  stoppingRunId.value = runId
-  runStore.markCancelling(runId, uiCopy.common.cancelling)
+  stoppingRunId.value = runId;
+  runStore.markCancelling(runId, uiCopy.common.cancelling);
   try {
-    activeStream.value?.close?.()
-    const result = await apiClient.cancelRun(runId)
-    if (result.status === 'cancelled') {
-      runStore.markCancelled(runId, uiCopy.app.notices.stopped)
-      sessionStore.discardStreamingMessage(sessionId, runId)
+    activeStream.value?.close?.();
+    const result = await apiClient.cancelRun(runId);
+    if (result.status === "cancelled") {
+      runStore.markCancelled(runId, uiCopy.app.notices.stopped);
+      sessionStore.discardStreamingMessage(sessionId, runId);
       closeStream({
         markDisconnected: true,
         detail: uiCopy.app.stream.terminalCancelled,
-      })
-    } else if (result.status === 'completed') {
+      });
+    } else if (result.status === "completed") {
       runStore.recordClientNotice({
         sessionId,
         runId,
         label: uiCopy.app.notices.stopRunFailed,
         detail: uiCopy.app.notices.stopAlreadyCompleted,
-        status: 'warning',
+        status: "warning",
         clearError: false,
-      })
-      syncSessionTranscript(sessionId)
+      });
+      syncSessionTranscript(sessionId);
       closeStream({
         markDisconnected: true,
         detail: uiCopy.app.stream.completedClosed,
-      })
-    } else if (result.status === 'failed') {
+      });
+    } else if (result.status === "failed") {
       runStore.recordClientNotice({
         sessionId,
         runId,
         label: uiCopy.app.notices.stopRunFailed,
         detail: uiCopy.app.notices.stopAlreadyFailed,
-        status: 'warning',
+        status: "warning",
         clearError: false,
-      })
+      });
       closeStream({
         markDisconnected: true,
         detail: uiCopy.app.stream.terminalError,
-      })
+      });
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : uiCopy.app.logs.stopRunError
+    const message =
+      error instanceof Error ? error.message : uiCopy.app.logs.stopRunError;
     runStore.recordClientNotice({
       sessionId,
       runId,
       label: uiCopy.app.notices.stopRunFailed,
       detail: message,
-      status: 'warning',
+      status: "warning",
       clearError: false,
-    })
+    });
   } finally {
-    stoppingRunId.value = ''
+    stoppingRunId.value = "";
   }
 }
 
 onMounted(async () => {
   try {
-    await apiClient.getAdminProfile()
-    isAuthenticated.value = true
-    await loadRuntimeOptions()
-    await sessionStore.loadSessions()
+    await apiClient.getAdminProfile();
+    isAuthenticated.value = true;
+    await loadRuntimeOptions();
+    await sessionStore.loadSessions();
     if (sessionStore.state.currentSessionId) {
-      await sessionStore.selectSession(sessionStore.state.currentSessionId)
+      await sessionStore.selectSession(sessionStore.state.currentSessionId);
     }
   } catch {
-    apiClient.logout()
-    isAuthenticated.value = false
+    apiClient.logout();
+    isAuthenticated.value = false;
   } finally {
-    authChecked.value = true
+    authChecked.value = true;
   }
-})
+});
 
 onBeforeUnmount(() => {
-  closeStream()
-})
+  closeStream();
+});
 </script>
 
 <template>
@@ -578,7 +633,9 @@ onBeforeUnmount(() => {
           <h2>{{ uiCopy.app.auth.title }}</h2>
           <p class="auth-copy">{{ uiCopy.app.auth.copy }}</p>
 
-          <label class="composer-label" for="admin-username">{{ uiCopy.app.auth.username }}</label>
+          <label class="composer-label" for="admin-username">{{
+            uiCopy.app.auth.username
+          }}</label>
           <el-input
             id="admin-username"
             v-model="authUsername"
@@ -586,7 +643,9 @@ onBeforeUnmount(() => {
             :placeholder="uiCopy.app.auth.usernamePlaceholder"
           />
 
-          <label class="composer-label" for="admin-password">{{ uiCopy.app.auth.password }}</label>
+          <label class="composer-label" for="admin-password">{{
+            uiCopy.app.auth.password
+          }}</label>
           <el-input
             id="admin-password"
             v-model="authPassword"
@@ -596,12 +655,24 @@ onBeforeUnmount(() => {
             :placeholder="uiCopy.app.auth.passwordPlaceholder"
           />
 
-          <el-alert v-if="authError" :closable="false" type="error" show-icon :title="authError" />
+          <el-alert
+            v-if="authError"
+            :closable="false"
+            type="error"
+            show-icon
+            :title="authError"
+          />
 
           <div class="composer-actions auth-actions">
             <span class="muted-copy">{{ uiCopy.app.auth.hint }}</span>
-            <el-button type="primary" :loading="authLoading" @click="handleLogin">
-              {{ authLoading ? uiCopy.app.auth.loading : uiCopy.app.auth.login }}
+            <el-button
+              type="primary"
+              :loading="authLoading"
+              @click="handleLogin"
+            >
+              {{
+                authLoading ? uiCopy.app.auth.loading : uiCopy.app.auth.login
+              }}
             </el-button>
           </div>
         </div>

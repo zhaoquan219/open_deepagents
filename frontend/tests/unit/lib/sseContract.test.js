@@ -1,119 +1,125 @@
-import { describe, expect, it } from 'vitest'
-import { normalizeStreamEnvelope } from '../../../src/lib/sseContract.js'
+import { describe, expect, it } from "vitest";
+import { normalizeStreamEnvelope } from "../../../src/lib/sseContract.js";
 
-describe('normalizeStreamEnvelope', () => {
-  it('accepts the current backend SSE envelope', () => {
+describe("normalizeStreamEnvelope", () => {
+  it("accepts the current backend SSE envelope", () => {
     const envelope = normalizeStreamEnvelope({
-      event_id: 'evt-1',
-      type: 'message.delta',
-      run_id: 'run-1',
-      session_id: 'session-1',
-      timestamp: '2026-04-29T13:00:00Z',
-      label: 'assistant.delta',
-      detail: 'hello',
+      event_id: "evt-1",
+      type: "message.delta",
+      run_id: "run-1",
+      session_id: "session-1",
+      timestamp: "2026-04-29T13:00:00Z",
+      label: "assistant.delta",
+      detail: "hello",
       data: {
-        delta: 'hello',
+        delta: "hello",
       },
-    })
+    });
 
     expect(envelope).toMatchObject({
-      version: 'deepagents-ui',
-      eventId: 'evt-1',
-      type: 'message.delta',
-      runId: 'run-1',
-      sessionId: 'session-1',
-      delta: 'hello',
-    })
-  })
+      version: "deepagents-ui",
+      eventId: "evt-1",
+      type: "message.delta",
+      runId: "run-1",
+      sessionId: "session-1",
+      delta: "hello",
+    });
+  });
 
-  it('rejects unsupported or non-canonical event payloads', () => {
-    expect(normalizeStreamEnvelope({ event_id: 'evt-2', type: 'unknown' })).toBeNull()
-    expect(normalizeStreamEnvelope({ eventId: 'evt-2', type: 'message.delta' })).toBeNull()
-    expect(normalizeStreamEnvelope({ event_id: 'evt-2', type: 'message' })).toBeNull()
-  })
+  it("rejects unsupported or non-canonical event payloads", () => {
+    expect(
+      normalizeStreamEnvelope({ event_id: "evt-2", type: "unknown" }),
+    ).toBeNull();
+    expect(
+      normalizeStreamEnvelope({ eventId: "evt-2", type: "message.delta" }),
+    ).toBeNull();
+    expect(
+      normalizeStreamEnvelope({ event_id: "evt-2", type: "message" }),
+    ).toBeNull();
+  });
 
-  it('reads finalized assistant messages from data.message', () => {
+  it("reads finalized assistant messages from data.message", () => {
     const envelope = normalizeStreamEnvelope({
-      event_id: 'evt-3',
-      type: 'message.final',
-      run_id: 'run-9',
-      session_id: 'session-4',
-      timestamp: '2026-04-29T13:00:00Z',
-      label: 'assistant.message',
-      detail: '最终回复',
+      event_id: "evt-3",
+      type: "message.final",
+      run_id: "run-9",
+      session_id: "session-4",
+      timestamp: "2026-04-29T13:00:00Z",
+      label: "assistant.message",
+      detail: "最终回复",
       data: {
         message: {
-          id: 'msg-9',
-          role: 'assistant',
-          content: '最终回复',
+          id: "msg-9",
+          role: "assistant",
+          content: "最终回复",
         },
       },
-    })
+    });
 
     expect(envelope).toMatchObject({
-      eventId: 'evt-3',
-      type: 'message.final',
-      status: 'completed',
+      eventId: "evt-3",
+      type: "message.final",
+      status: "completed",
       message: {
-        id: 'msg-9',
-        content: '最终回复',
+        id: "msg-9",
+        content: "最终回复",
       },
-    })
-  })
+    });
+  });
 
-  it('marks terminal run statuses only when the backend sets terminal=true', () => {
+  it("marks terminal run statuses only when the backend sets terminal=true", () => {
     expect(
       normalizeStreamEnvelope({
-        event_id: 'evt-4',
-        type: 'status',
-        run_id: 'run-1',
-        session_id: 'session-1',
-        timestamp: '2026-04-29T13:00:00Z',
-        label: 'run.completed',
-        detail: 'run.completed',
-        data: { status: 'completed', terminal: true },
+        event_id: "evt-4",
+        type: "status",
+        run_id: "run-1",
+        session_id: "session-1",
+        timestamp: "2026-04-29T13:00:00Z",
+        label: "run.completed",
+        detail: "run.completed",
+        data: { status: "completed", terminal: true },
       }),
-    ).toMatchObject({ terminal: true, status: 'completed' })
+    ).toMatchObject({ terminal: true, status: "completed" });
 
     expect(
       normalizeStreamEnvelope({
-        event_id: 'evt-5',
-        type: 'status',
-        run_id: 'run-1',
-        session_id: 'session-1',
-        timestamp: '2026-04-29T13:00:01Z',
-        label: 'run.completed',
+        event_id: "evt-5",
+        type: "status",
+        run_id: "run-1",
+        session_id: "session-1",
+        timestamp: "2026-04-29T13:00:01Z",
+        label: "run.completed",
         detail: "{'skills_metadata': []}",
-        data: { status: 'completed', node: 'SkillsMiddleware.before_agent' },
+        data: { status: "completed", node: "SkillsMiddleware.before_agent" },
       }),
-    ).toMatchObject({ terminal: false, status: 'completed' })
-  })
+    ).toMatchObject({ terminal: false, status: "completed" });
+  });
 
-  it('derives process status from started and completed labels', () => {
+  it("derives process status from started and completed labels", () => {
     expect(
       normalizeStreamEnvelope({
-        event_id: 'evt-6',
-        type: 'sandbox',
-        run_id: 'run-1',
-        session_id: 'session-1',
-        timestamp: '2026-04-29T13:00:02Z',
-        label: 'sandbox.started',
-        detail: 'execute',
+        event_id: "evt-6",
+        type: "sandbox",
+        run_id: "run-1",
+        session_id: "session-1",
+        timestamp: "2026-04-29T13:00:02Z",
+        label: "sandbox.started",
+        detail: "execute",
         data: {},
       }),
-    ).toMatchObject({ status: 'in_progress' })
+    ).toMatchObject({ status: "in_progress" });
 
     expect(
       normalizeStreamEnvelope({
-        event_id: 'evt-7',
-        type: 'sandbox',
-        run_id: 'run-1',
-        session_id: 'session-1',
-        timestamp: '2026-04-29T13:00:03Z',
-        label: 'sandbox.completed',
-        detail: 'execute',
+        event_id: "evt-7",
+        type: "sandbox",
+        run_id: "run-1",
+        session_id: "session-1",
+        timestamp: "2026-04-29T13:00:03Z",
+        label: "sandbox.completed",
+        detail: "execute",
         data: {},
       }),
-    ).toMatchObject({ status: 'completed' })
-  })
-})
+    ).toMatchObject({ status: "completed" });
+  });
+});

@@ -12,3 +12,4 @@ __pycache__/
 .uv-cache/
 *node_modules/
 /data/*.db
+.idx/

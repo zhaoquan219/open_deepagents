@@ -1,44 +1,51 @@
-export const BOTTOM_SCROLL_THRESHOLD = 24
+export const BOTTOM_SCROLL_THRESHOLD = 24;
 
 export function scrollMetrics(element, scrollTopOverride) {
   return {
     scrollTop: scrollTopOverride ?? Number(element?.scrollTop || 0),
     clientHeight: Number(element?.clientHeight || 0),
     scrollHeight: Number(element?.scrollHeight || 0),
-  }
+  };
 }
 
 export function isNearBottom(metrics, threshold = BOTTOM_SCROLL_THRESHOLD) {
-  const scrollTop = Number(metrics?.scrollTop || 0)
-  const clientHeight = Number(metrics?.clientHeight || 0)
-  const scrollHeight = Number(metrics?.scrollHeight || 0)
+  const scrollTop = Number(metrics?.scrollTop || 0);
+  const clientHeight = Number(metrics?.clientHeight || 0);
+  const scrollHeight = Number(metrics?.scrollHeight || 0);
 
   if (scrollHeight <= 0) {
-    return true
+    return true;
   }
 
-  return scrollHeight - (scrollTop + clientHeight) <= threshold
+  return scrollHeight - (scrollTop + clientHeight) <= threshold;
 }
 
-export function shouldForceFollowLatest(previousMessages, nextMessages, options = {}) {
+export function shouldForceFollowLatest(
+  previousMessages,
+  nextMessages,
+  options = {},
+) {
   if (options.userScrollLocked) {
-    return false
+    return false;
   }
   if (options.suppressUserAppend) {
-    return false
+    return false;
   }
 
-  const previous = Array.isArray(previousMessages) ? previousMessages : []
-  const next = Array.isArray(nextMessages) ? nextMessages : []
-  const latest = next.at(-1)
+  const previous = Array.isArray(previousMessages) ? previousMessages : [];
+  const next = Array.isArray(nextMessages) ? nextMessages : [];
+  const latest = next.at(-1);
 
-  if (options.forceLiveRun && latest?.role === 'assistant') {
-    return true
+  if (options.forceLiveRun && latest?.role === "assistant") {
+    return true;
   }
 
   if (next.length <= previous.length) {
-    return false
+    return false;
   }
 
-  return latest?.role === 'user' || (options.forceLiveRun && latest?.role === 'assistant')
+  return (
+    latest?.role === "user" ||
+    (options.forceLiveRun && latest?.role === "assistant")
+  );
 }

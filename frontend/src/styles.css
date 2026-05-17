@@ -29,7 +29,8 @@
   --radius-md: 14px;
   --radius-sm: 10px;
   --heading-font:
-    "Baskerville", "Iowan Old Style", "Palatino Linotype", "Noto Serif SC", "Songti SC", "STSong", serif;
+    "Baskerville", "Iowan Old Style", "Palatino Linotype", "Noto Serif SC",
+    "Songti SC", "STSong", serif;
   --user-bubble: linear-gradient(160deg, #0c68c1 0%, #0a4c92 100%);
   --el-color-primary: #0b5cad;
   --el-color-primary-light-3: #397abf;
@@ -48,7 +49,9 @@
   --el-font-size-small: 13px;
   --el-component-size: 34px;
   --el-component-size-small: 28px;
-  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", sans-serif;
+  font-family:
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue",
+    sans-serif;
   background: var(--bg);
   color: var(--text);
 }
@@ -69,8 +72,16 @@ body {
   min-height: 100dvh;
   overflow: hidden;
   background:
-    radial-gradient(circle at top left, rgba(11, 92, 173, 0.12), transparent 28%),
-    radial-gradient(circle at top right, rgba(161, 131, 63, 0.1), transparent 22%),
+    radial-gradient(
+      circle at top left,
+      rgba(11, 92, 173, 0.12),
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at top right,
+      rgba(161, 131, 63, 0.1),
+      transparent 22%
+    ),
     linear-gradient(180deg, #fbf7f0 0%, #edf3fa 100%);
   color: var(--text);
 }

@@ -44,7 +44,10 @@ def build_deep_agent(settings: Settings, model_id: str | None = None) -> Any:
     agent = resolve_agent(settings)
     selected_model_id = model_id or agent.get("model")
     middleware = list(agent["middleware"])
-    sandbox_config = SandboxConfig.from_mapping(settings.sandbox_settings())
+    sandbox_settings = settings.sandbox_settings()
+    sandbox_settings["skills_root_dir"] = agent.get("skills_path")
+    sandbox_settings["memory_root_dir"] = agent.get("memory_path")
+    sandbox_config = SandboxConfig.from_mapping(sandbox_settings)
     permissions = list(agent["permissions"])
     return create_deep_agent(
         model=build_model(settings, str(selected_model_id) if selected_model_id else None),

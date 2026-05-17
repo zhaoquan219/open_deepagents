@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect
+from uvicorn.logging import DefaultFormatter
 
 from app.auth import sync_configured_users
 from app.catalog import load_model_catalog, resolve_agent, validate_model_catalog
@@ -12,8 +13,6 @@ from app.db import PRODUCT_TABLES, Database
 from app.routes import router
 from app.runtime.extensions import SandboxConfig
 from app.settings import Settings, get_settings
-
-LOGGER = logging.getLogger("app.main")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -29,7 +28,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         database.initialize_schema()
         with database.session() as db:
             sync_configured_users(db, resolved_settings)
-        LOGGER.info(
+        logging.info(
             "backend started checkpoint_backend=%s product_db=%s",
             resolved_settings.runtime_driver_mode(),
             resolved_settings.database_url,
@@ -92,12 +91,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 def configure_backend_logging(settings: Settings) -> None:
-    logging.basicConfig(
-        level=settings.backend_log_levelno(),
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    )
-    logging.getLogger().setLevel(settings.backend_log_levelno())
+    handler = logging.StreamHandler()
+    handler.setFormatter(DefaultFormatter("%(levelprefix)s [%(name)s] %(message)s"))
+    logging.basicConfig(level=settings.backend_log_levelno(), handlers=[handler])
     logging.getLogger("app").setLevel(settings.backend_log_levelno())
-
+    
+    
 
 app = create_app()

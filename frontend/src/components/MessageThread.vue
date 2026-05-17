@@ -1,23 +1,27 @@
 <script setup>
-import { CopyDocument, Download } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { CopyDocument, Download } from "@element-plus/icons-vue";
+import { ElMessage } from "element-plus";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 
-import { copyText } from '../lib/clipboard.js'
-import { uiCopy } from '../lib/copy.js'
+import { copyText } from "../lib/clipboard.js";
+import { uiCopy } from "../lib/copy.js";
 import {
   groupProcessLogs,
   thinkingEntriesFromContent,
   visibleAssistantContent,
-} from '../lib/processLog.js'
-import { isNearBottom, scrollMetrics, shouldForceFollowLatest } from '../lib/scroll.js'
-import { formatDateTime } from '../lib/time.js'
-import MarkdownContent from './MarkdownContent.vue'
+} from "../lib/processLog.js";
+import {
+  isNearBottom,
+  scrollMetrics,
+  shouldForceFollowLatest,
+} from "../lib/scroll.js";
+import { formatDateTime } from "../lib/time.js";
+import MarkdownContent from "./MarkdownContent.vue";
 
 const props = defineProps({
   activeRunSessionId: {
     type: String,
-    default: '',
+    default: "",
   },
   messages: {
     type: Array,
@@ -33,258 +37,273 @@ const props = defineProps({
   },
   runStatus: {
     type: String,
-    default: 'idle',
+    default: "idle",
   },
   sessionId: {
     type: String,
-    default: '',
+    default: "",
   },
-})
+});
 
-const threadRef = ref(null)
-const autoFollowLatest = ref(false)
-const userScrollLocked = ref(false)
-const lastSessionId = ref('')
-const pendingHistoryLoadSessionId = ref('')
+const threadRef = ref(null);
+const autoFollowLatest = ref(false);
+const userScrollLocked = ref(false);
+const lastSessionId = ref("");
+const pendingHistoryLoadSessionId = ref("");
 
 const isLiveRunSession = computed(
   () =>
     Boolean(props.sessionId) &&
     props.sessionId === props.activeRunSessionId &&
-    ['queued', 'running'].includes(props.runStatus),
-)
-const visibleMessages = computed(() => props.messages.filter(shouldRenderMessage))
+    ["queued", "running"].includes(props.runStatus),
+);
+const visibleMessages = computed(() =>
+  props.messages.filter(shouldRenderMessage),
+);
 
 function flattenMessageContent(value) {
   if (value === undefined || value === null) {
-    return ''
+    return "";
   }
-  if (typeof value === 'string') {
-    return value
+  if (typeof value === "string") {
+    return value;
   }
   if (Array.isArray(value)) {
-    return value.map((item) => flattenMessageContent(item)).join('')
+    return value.map((item) => flattenMessageContent(item)).join("");
   }
-  if (typeof value === 'object') {
-    if ('content' in value) {
-      return flattenMessageContent(value.content)
+  if (typeof value === "object") {
+    if ("content" in value) {
+      return flattenMessageContent(value.content);
     }
-    if (typeof value.text === 'string') {
-      return value.text
+    if (typeof value.text === "string") {
+      return value.text;
     }
     if (Array.isArray(value.parts)) {
-      return value.parts.map((part) => flattenMessageContent(part)).join('')
+      return value.parts.map((part) => flattenMessageContent(part)).join("");
     }
   }
-  return String(value)
+  return String(value);
 }
 
 function roleLabel(role) {
-  if (role === 'user') {
-    return uiCopy.messageThread.roles.user
+  if (role === "user") {
+    return uiCopy.messageThread.roles.user;
   }
-  if (role === 'assistant') {
-    return uiCopy.messageThread.roles.assistant
+  if (role === "assistant") {
+    return uiCopy.messageThread.roles.assistant;
   }
-  return uiCopy.messageThread.roles.system
+  return uiCopy.messageThread.roles.system;
 }
 
 function displayContent(message) {
   const content = flattenMessageContent(
-    message?.content ?? message?.text ?? message?.detail ?? message?.extra?.content ?? '',
-  )
-  const visible = message?.role === 'assistant' ? visibleAssistantContent(content) : content
+    message?.content ??
+      message?.text ??
+      message?.detail ??
+      message?.extra?.content ??
+      "",
+  );
+  const visible =
+    message?.role === "assistant" ? visibleAssistantContent(content) : content;
   if (visible.trim()) {
-    return visible
+    return visible;
   }
   if (message?.streaming) {
-    return ''
+    return "";
   }
-  if (message?.role === 'assistant' && hasProcesses(message)) {
-    return ''
+  if (message?.role === "assistant" && hasProcesses(message)) {
+    return "";
   }
-  if (message?.role === 'assistant') {
-    return ''
+  if (message?.role === "assistant") {
+    return "";
   }
-  return uiCopy.messageThread.empty
+  return uiCopy.messageThread.empty;
 }
 
 function shouldRenderMessage(message) {
-  if (message?.role !== 'assistant') {
-    return true
+  if (message?.role !== "assistant") {
+    return true;
   }
   if (message?.streaming || hasProcesses(message)) {
-    return true
+    return true;
   }
   if (Array.isArray(message?.attachments) && message.attachments.length > 0) {
-    return true
+    return true;
   }
-  return Boolean(displayContent(message).trim())
+  return Boolean(displayContent(message).trim());
 }
 
 function processStatusLabel(status) {
-  if (status === 'completed') return uiCopy.common.completed
-  if (status === 'failed') return uiCopy.common.failed
-  if (status === 'cancelled') return uiCopy.common.cancelled
-  return uiCopy.common.running
+  if (status === "completed") return uiCopy.common.completed;
+  if (status === "failed") return uiCopy.common.failed;
+  if (status === "cancelled") return uiCopy.common.cancelled;
+  return uiCopy.common.running;
 }
 
 function hasProcesses(message) {
-  return processGroups(message).length > 0
+  return processGroups(message).length > 0;
 }
 
 function processEntries(message) {
-  if (!message || message.role !== 'assistant') {
-    return []
+  if (!message || message.role !== "assistant") {
+    return [];
   }
   const content = flattenMessageContent(
-    message?.content ?? message?.text ?? message?.detail ?? message?.extra?.content ?? '',
-  )
+    message?.content ??
+      message?.text ??
+      message?.detail ??
+      message?.extra?.content ??
+      "",
+  );
   return [
-    ...thinkingEntriesFromContent(content, message.startedAt || message.createdAt),
+    ...thinkingEntriesFromContent(
+      content,
+      message.startedAt || message.createdAt,
+    ),
     ...(Array.isArray(message.processes) ? message.processes : []),
-  ]
+  ];
 }
 
 function processGroups(message) {
-  return groupProcessLogs(processEntries(message))
+  return groupProcessLogs(processEntries(message));
 }
 
 function timestampKey(value) {
-  return String(value || '')
+  return String(value || "");
 }
 
 function processBlocks(entries, prefix) {
   return groupProcessLogs(entries).map((group) => ({
     id: `${prefix}:${group.id}`,
-    type: 'process',
+    type: "process",
     group,
-  }))
+  }));
 }
 
 function messageBlocks(message) {
-  const content = displayContent(message)
-  const entries = processEntries(message)
-  const contentTimestamp = timestampKey(message.createdAt || message.startedAt)
+  const content = displayContent(message);
+  const entries = processEntries(message);
+  const contentTimestamp = timestampKey(message.createdAt || message.startedAt);
 
   if (!content.trim()) {
-    return processBlocks(entries, 'process-only')
+    return processBlocks(entries, "process-only");
   }
 
-  const beforeContent = []
-  const afterContent = []
+  const beforeContent = [];
+  const afterContent = [];
   for (const entry of entries) {
     if (timestampKey(entry.timestamp) <= contentTimestamp) {
-      beforeContent.push(entry)
+      beforeContent.push(entry);
     } else {
-      afterContent.push(entry)
+      afterContent.push(entry);
     }
   }
 
   return [
-    ...processBlocks(beforeContent, 'before-content'),
+    ...processBlocks(beforeContent, "before-content"),
     {
       id: `content:${message.id}`,
-      type: 'content',
+      type: "content",
       content,
     },
-    ...processBlocks(afterContent, 'after-content'),
-  ]
+    ...processBlocks(afterContent, "after-content"),
+  ];
 }
 
 function groupSummary(group) {
-  return uiCopy.messageThread.process.groupSummary(group.items.length)
+  return uiCopy.messageThread.process.groupSummary(group.items.length);
 }
 
 function itemText(item) {
-  return String(item.summary || item.title || '').trim()
+  return String(item.summary || item.title || "").trim();
 }
 
 function attachmentDownloadUrl(attachment) {
   if (attachment?.downloadUrl) {
-    return attachment.downloadUrl
+    return attachment.downloadUrl;
   }
-  return ''
+  return "";
 }
 
 async function copyMessage(message) {
   try {
-    await copyText(displayContent(message))
-    ElMessage.success(uiCopy.messageThread.copy.success)
+    await copyText(displayContent(message));
+    ElMessage.success(uiCopy.messageThread.copy.success);
   } catch {
-    ElMessage.error(uiCopy.messageThread.copy.failure)
+    ElMessage.error(uiCopy.messageThread.copy.failure);
   }
 }
 
 function threadWrap() {
-  return threadRef.value?.wrapRef || null
+  return threadRef.value?.wrapRef || null;
 }
 
 async function scrollToLatest() {
-  await nextTick()
-  const wrap = threadWrap()
+  await nextTick();
+  const wrap = threadWrap();
   if (!wrap) {
-    return
+    return;
   }
-  wrap.scrollTop = wrap.scrollHeight
+  wrap.scrollTop = wrap.scrollHeight;
 }
 
 async function scrollToTop() {
-  await nextTick()
-  const wrap = threadWrap()
+  await nextTick();
+  const wrap = threadWrap();
   if (!wrap) {
-    return
+    return;
   }
-  wrap.scrollTop = 0
+  wrap.scrollTop = 0;
 }
 
 function syncAutoFollowState(scrollTopOverride) {
-  const wrap = threadWrap()
+  const wrap = threadWrap();
   if (!wrap) {
-    return
+    return;
   }
-  const nearBottom = isNearBottom(scrollMetrics(wrap, scrollTopOverride))
-  autoFollowLatest.value = nearBottom
-  userScrollLocked.value = !nearBottom
+  const nearBottom = isNearBottom(scrollMetrics(wrap, scrollTopOverride));
+  autoFollowLatest.value = nearBottom;
+  userScrollLocked.value = !nearBottom;
 }
 
 function handleThreadScroll({ scrollTop }) {
-  syncAutoFollowState(scrollTop)
+  syncAutoFollowState(scrollTop);
 }
 
 async function handleRenderedContent() {
   if (!autoFollowLatest.value) {
-    return
+    return;
   }
-  await scrollToLatest()
+  await scrollToLatest();
 }
 
 watch(
   () => props.sessionId,
   async (sessionId) => {
     if (!sessionId || sessionId === lastSessionId.value) {
-      return
+      return;
     }
-    lastSessionId.value = sessionId
-    autoFollowLatest.value = isLiveRunSession.value
-    userScrollLocked.value = false
-    pendingHistoryLoadSessionId.value = isLiveRunSession.value ? '' : sessionId
+    lastSessionId.value = sessionId;
+    autoFollowLatest.value = isLiveRunSession.value;
+    userScrollLocked.value = false;
+    pendingHistoryLoadSessionId.value = isLiveRunSession.value ? "" : sessionId;
     if (isLiveRunSession.value) {
-      await scrollToLatest()
-      return
+      await scrollToLatest();
+      return;
     }
-    await scrollToTop()
+    await scrollToTop();
     if (!props.loading && pendingHistoryLoadSessionId.value === sessionId) {
-      pendingHistoryLoadSessionId.value = ''
+      pendingHistoryLoadSessionId.value = "";
     }
   },
-  { immediate: true, flush: 'post' },
-)
+  { immediate: true, flush: "post" },
+);
 
 watch(
   () => props.messages,
   async (messages, previousMessages) => {
-    const suppressHistoryLoad = pendingHistoryLoadSessionId.value === props.sessionId
+    const suppressHistoryLoad =
+      pendingHistoryLoadSessionId.value === props.sessionId;
     if (
       shouldForceFollowLatest(previousMessages, messages, {
         suppressUserAppend: suppressHistoryLoad,
@@ -292,65 +311,71 @@ watch(
         userScrollLocked: userScrollLocked.value,
       })
     ) {
-      autoFollowLatest.value = true
+      autoFollowLatest.value = true;
     }
     if (suppressHistoryLoad) {
-      autoFollowLatest.value = false
-      await scrollToTop()
-      return
+      autoFollowLatest.value = false;
+      await scrollToTop();
+      return;
     }
     if (!autoFollowLatest.value) {
-      return
+      return;
     }
-    await scrollToLatest()
+    await scrollToLatest();
   },
-  { flush: 'post' },
-)
+  { flush: "post" },
+);
 
 watch(
   () => props.messageSendScrollKey,
   async (key, previousKey) => {
     if (!key || key === previousKey) {
-      return
+      return;
     }
-    pendingHistoryLoadSessionId.value = ''
-    userScrollLocked.value = false
-    autoFollowLatest.value = true
-    await scrollToLatest()
+    pendingHistoryLoadSessionId.value = "";
+    userScrollLocked.value = false;
+    autoFollowLatest.value = true;
+    await scrollToLatest();
   },
-  { flush: 'post' },
-)
+  { flush: "post" },
+);
 
 watch(
   () => props.loading,
   async (loading) => {
     if (loading || pendingHistoryLoadSessionId.value !== props.sessionId) {
-      return
+      return;
     }
-    pendingHistoryLoadSessionId.value = ''
+    pendingHistoryLoadSessionId.value = "";
     if (!isLiveRunSession.value) {
-      autoFollowLatest.value = false
-      userScrollLocked.value = false
-      await scrollToTop()
+      autoFollowLatest.value = false;
+      userScrollLocked.value = false;
+      await scrollToTop();
     }
   },
-  { immediate: true, flush: 'post' },
-)
+  { immediate: true, flush: "post" },
+);
 
 onMounted(async () => {
   if (isLiveRunSession.value) {
-    autoFollowLatest.value = true
-    userScrollLocked.value = false
-    await scrollToLatest()
-    return
+    autoFollowLatest.value = true;
+    userScrollLocked.value = false;
+    await scrollToLatest();
+    return;
   }
-  await scrollToTop()
-  syncAutoFollowState()
-})
+  await scrollToTop();
+  syncAutoFollowState();
+});
 </script>
 
 <template>
-  <el-scrollbar ref="threadRef" class="message-thread" role="log" aria-live="polite" @scroll="handleThreadScroll">
+  <el-scrollbar
+    ref="threadRef"
+    class="message-thread"
+    role="log"
+    aria-live="polite"
+    @scroll="handleThreadScroll"
+  >
     <article
       v-for="message in visibleMessages"
       :key="message.id"
@@ -361,7 +386,9 @@ onMounted(async () => {
         <div class="message-header">
           <div class="message-header-main">
             <strong>{{ roleLabel(message.role) }}</strong>
-            <span class="message-timestamp">{{ formatDateTime(message.createdAt) }}</span>
+            <span class="message-timestamp">{{
+              formatDateTime(message.createdAt)
+            }}</span>
           </div>
           <el-button
             class="message-copy-button"
@@ -381,11 +408,18 @@ onMounted(async () => {
           >
             <summary>
               <span>{{ block.group.title }}</span>
-              <span>{{ groupSummary(block.group) }} · {{ processStatusLabel(block.group.status) }}</span>
+              <span
+                >{{ groupSummary(block.group) }} ·
+                {{ processStatusLabel(block.group.status) }}</span
+              >
             </summary>
             <ol class="process-list">
               <li v-for="item in block.group.items" :key="item.id">
-                <details class="process-item" :data-kind="item.kind" :data-status="item.status">
+                <details
+                  class="process-item"
+                  :data-kind="item.kind"
+                  :data-status="item.status"
+                >
                   <summary>
                     <strong>{{ item.title }}</strong>
                     <span>{{ processStatusLabel(item.status) }}</span>
@@ -401,8 +435,13 @@ onMounted(async () => {
             @content-rendered="handleRenderedContent"
           />
         </template>
-        <p v-if="message.streaming" class="streaming-indicator">{{ uiCopy.messageThread.streaming }}</p>
-        <ul v-if="message.attachments && message.attachments.length" class="attachment-list">
+        <p v-if="message.streaming" class="streaming-indicator">
+          {{ uiCopy.messageThread.streaming }}
+        </p>
+        <ul
+          v-if="message.attachments && message.attachments.length"
+          class="attachment-list"
+        >
           <li v-for="attachment in message.attachments" :key="attachment.id">
             <span>{{ attachment.name }}</span>
             <el-button

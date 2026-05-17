@@ -1,9 +1,9 @@
 <script setup>
-import { CloseBold, UploadFilled } from '@element-plus/icons-vue'
-import { computed, ref } from 'vue'
+import { CloseBold, UploadFilled } from "@element-plus/icons-vue";
+import { computed, ref } from "vue";
 
-import { uiCopy } from '../lib/copy.js'
-import MessageThread from './MessageThread.vue'
+import { uiCopy } from "../lib/copy.js";
+import MessageThread from "./MessageThread.vue";
 
 const props = defineProps({
   canStop: {
@@ -16,7 +16,7 @@ const props = defineProps({
   },
   error: {
     type: String,
-    default: '',
+    default: "",
   },
   loading: {
     type: Boolean,
@@ -40,7 +40,7 @@ const props = defineProps({
   },
   runStatus: {
     type: String,
-    default: 'idle',
+    default: "idle",
   },
   runStatusLabel: {
     type: String,
@@ -64,128 +64,145 @@ const props = defineProps({
   },
   selectedModelId: {
     type: String,
-    default: '',
+    default: "",
   },
   stopping: {
     type: Boolean,
     default: false,
   },
-})
+});
 
 const emit = defineEmits([
-  'submit',
-  'upload',
-  'delete-upload',
-  'stop-run',
-  'update:selected-model-id',
-])
+  "submit",
+  "upload",
+  "delete-upload",
+  "stop-run",
+  "update:selected-model-id",
+]);
 
-const draft = ref('')
-const fileInput = ref(null)
+const draft = ref("");
+const fileInput = ref(null);
 
-const hasMessages = computed(() => props.messages.length > 0)
-const messageCount = computed(() => props.messages.length)
+const hasMessages = computed(() => props.messages.length > 0);
+const messageCount = computed(() => props.messages.length);
 const assistantMessageCount = computed(
-  () => props.messages.filter((message) => message?.role === 'assistant').length,
-)
-const isRunLocked = computed(() => ['queued', 'running'].includes(props.runStatus))
-const usesStopAction = computed(() => props.canStop && Boolean(props.activeRun))
+  () =>
+    props.messages.filter((message) => message?.role === "assistant").length,
+);
+const isRunLocked = computed(() =>
+  ["queued", "running"].includes(props.runStatus),
+);
+const usesStopAction = computed(
+  () => props.canStop && Boolean(props.activeRun),
+);
 const runtimeCopy = computed(() => {
-  if (props.runStatus === 'running') {
-    return uiCopy.workspace.runtimeCopy.running
+  if (props.runStatus === "running") {
+    return uiCopy.workspace.runtimeCopy.running;
   }
-  if (props.runStatus === 'completed') {
-    return uiCopy.workspace.runtimeCopy.completed
+  if (props.runStatus === "completed") {
+    return uiCopy.workspace.runtimeCopy.completed;
   }
-  if (props.runStatus === 'cancelled') {
-    return uiCopy.workspace.runtimeCopy.cancelled
+  if (props.runStatus === "cancelled") {
+    return uiCopy.workspace.runtimeCopy.cancelled;
   }
-  if (props.runStatus === 'failed') {
-    return uiCopy.workspace.runtimeCopy.failed
+  if (props.runStatus === "failed") {
+    return uiCopy.workspace.runtimeCopy.failed;
   }
-  return uiCopy.workspace.runtimeCopy.idle
-})
+  return uiCopy.workspace.runtimeCopy.idle;
+});
 
 function statusTagType(status) {
-  if (status === 'failed') return 'danger'
-  if (status === 'completed') return 'success'
-  if (status === 'cancelled' || status === 'cancelling') return 'warning'
-  return 'primary'
+  if (status === "failed") return "danger";
+  if (status === "completed") return "success";
+  if (status === "cancelled" || status === "cancelling") return "warning";
+  return "primary";
 }
 
 function uploadStatusLabel(status) {
-  if (status === 'submitted') return uiCopy.workspace.uploadStatus.submitted
-  if (status === 'uploaded') return uiCopy.workspace.uploadStatus.uploaded
-  return uiCopy.workspace.uploadStatus.pending
+  if (status === "submitted") return uiCopy.workspace.uploadStatus.submitted;
+  if (status === "uploaded") return uiCopy.workspace.uploadStatus.uploaded;
+  return uiCopy.workspace.uploadStatus.pending;
 }
 
 function submitDraft() {
   if (isRunLocked.value) {
-    return
+    return;
   }
-  const prompt = draft.value.trim()
+  const prompt = draft.value.trim();
   if (!prompt) {
-    return
+    return;
   }
 
-  emit('submit', { prompt })
-  draft.value = ''
+  emit("submit", { prompt });
+  draft.value = "";
 }
 
 function triggerFilePicker() {
-  fileInput.value?.click()
+  fileInput.value?.click();
 }
 
 function handleFileSelection(event) {
-  const files = [...(event.target.files || [])]
+  const files = [...(event.target.files || [])];
   if (files.length > 0) {
-    emit('upload', files)
+    emit("upload", files);
   }
-  event.target.value = ''
+  event.target.value = "";
 }
 
 function handleComposerKeydown(event) {
-  if (!isRunLocked.value && (event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-    submitDraft()
+  if (
+    !isRunLocked.value &&
+    (event.metaKey || event.ctrlKey) &&
+    event.key === "Enter"
+  ) {
+    submitDraft();
   }
 }
 
 const primaryActionLabel = computed(() => {
   if (usesStopAction.value) {
-    return props.stopping ? uiCopy.workspace.actions.stopping : uiCopy.workspace.actions.stop
+    return props.stopping
+      ? uiCopy.workspace.actions.stopping
+      : uiCopy.workspace.actions.stop;
   }
-  return props.submitting ? uiCopy.workspace.actions.sending : uiCopy.workspace.actions.send
-})
+  return props.submitting
+    ? uiCopy.workspace.actions.sending
+    : uiCopy.workspace.actions.send;
+});
 
-const primaryActionType = computed(() => (usesStopAction.value ? 'danger' : 'primary'))
+const primaryActionType = computed(() =>
+  usesStopAction.value ? "danger" : "primary",
+);
 const primaryActionDisabled = computed(() => {
   if (usesStopAction.value) {
-    return props.stopping
+    return props.stopping;
   }
-  return props.submitting || isRunLocked.value || !draft.value.trim()
-})
+  return props.submitting || isRunLocked.value || !draft.value.trim();
+});
 const composerHint = computed(() =>
-  usesStopAction.value ? uiCopy.workspace.composerHint.stop : uiCopy.workspace.composerHint.send,
-)
-const modelOptions = computed(() => props.runtimeOptions?.models || [])
+  usesStopAction.value
+    ? uiCopy.workspace.composerHint.stop
+    : uiCopy.workspace.composerHint.send,
+);
+const modelOptions = computed(() => props.runtimeOptions?.models || []);
 
 function handlePrimaryAction() {
   if (usesStopAction.value) {
-    emit('stop-run')
-    return
+    emit("stop-run");
+    return;
   }
-  submitDraft()
+  submitDraft();
 }
 
 function isDeletingUpload(uploadId) {
-  return Boolean(props.deletingUploads?.[String(uploadId)])
+  return Boolean(props.deletingUploads?.[String(uploadId)]);
 }
 
 function removeUpload(file) {
   if (isRunLocked.value || isDeletingUpload(file?.id)) {
-    return
+    return;
   }
-  emit('delete-upload', file)
+  emit("delete-upload", file);
 }
 </script>
 
@@ -197,7 +214,12 @@ function removeUpload(file) {
           <div class="workspace-heading-block">
             <div class="workspace-heading">
               <p class="eyebrow">{{ uiCopy.workspace.sessionEyebrow }}</p>
-              <h2>{{ props.currentSession?.title || uiCopy.workspace.newSessionTitle }}</h2>
+              <h2>
+                {{
+                  props.currentSession?.title ||
+                  uiCopy.workspace.newSessionTitle
+                }}
+              </h2>
             </div>
             <p class="workspace-runtime-copy">{{ runtimeCopy }}</p>
           </div>
@@ -219,7 +241,11 @@ function removeUpload(file) {
         </div>
       </div>
       <div class="workspace-header-actions">
-        <el-tag size="small" :type="statusTagType(props.runStatus)" effect="light">
+        <el-tag
+          size="small"
+          :type="statusTagType(props.runStatus)"
+          effect="light"
+        >
           {{ props.runStatusLabel }}
         </el-tag>
       </div>
@@ -276,7 +302,9 @@ function removeUpload(file) {
           </span>
         </div>
         <div v-if="modelOptions.length" class="composer-model-picker">
-          <span class="composer-model-label">{{ uiCopy.workspace.runtimeSelectors.modelLabel }}</span>
+          <span class="composer-model-label">{{
+            uiCopy.workspace.runtimeSelectors.modelLabel
+          }}</span>
           <el-select
             :model-value="props.selectedModelId"
             class="runtime-select"
@@ -293,13 +321,21 @@ function removeUpload(file) {
             />
           </el-select>
         </div>
-        <input ref="fileInput" class="hidden-input" type="file" multiple @change="handleFileSelection" />
+        <input
+          ref="fileInput"
+          class="hidden-input"
+          type="file"
+          multiple
+          @change="handleFileSelection"
+        />
       </div>
 
       <ul v-if="props.pendingUploads.length" class="upload-list">
         <li v-for="file in props.pendingUploads" :key="file.id">
           <span class="upload-list-filename">{{ file.name }}</span>
-          <el-tag size="small" effect="plain">{{ uploadStatusLabel(file.status) }}</el-tag>
+          <el-tag size="small" effect="plain">{{
+            uploadStatusLabel(file.status)
+          }}</el-tag>
           <el-button
             text
             size="small"

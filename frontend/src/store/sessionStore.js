@@ -1,35 +1,38 @@
-import { reactive } from 'vue'
+import { reactive } from "vue";
 
 import {
   distillSessionTitle,
   isPlaceholderSessionTitle,
   normalizeSessionTitle,
-} from '../lib/sessionTitle.js'
-import { logEntryFromEnvelope } from '../lib/processLog.js'
-import { uiCopy } from '../lib/copy.js'
+} from "../lib/sessionTitle.js";
+import { logEntryFromEnvelope } from "../lib/processLog.js";
+import { uiCopy } from "../lib/copy.js";
 
-const CURRENT_SESSION_STORAGE_KEY = 'deepagents.currentSessionId'
+const CURRENT_SESSION_STORAGE_KEY = "deepagents.currentSessionId";
 
 function createClientId() {
-  return globalThis.crypto?.randomUUID?.() || `session-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  return (
+    globalThis.crypto?.randomUUID?.() ||
+    `session-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  );
 }
 
 function readStoredSessionId() {
-  if (typeof window === 'undefined') {
-    return ''
+  if (typeof window === "undefined") {
+    return "";
   }
-  return window.localStorage.getItem(CURRENT_SESSION_STORAGE_KEY) || ''
+  return window.localStorage.getItem(CURRENT_SESSION_STORAGE_KEY) || "";
 }
 
 function writeStoredSessionId(sessionId) {
-  if (typeof window === 'undefined') {
-    return
+  if (typeof window === "undefined") {
+    return;
   }
   if (sessionId) {
-    window.localStorage.setItem(CURRENT_SESSION_STORAGE_KEY, String(sessionId))
-    return
+    window.localStorage.setItem(CURRENT_SESSION_STORAGE_KEY, String(sessionId));
+    return;
   }
-  window.localStorage.removeItem(CURRENT_SESSION_STORAGE_KEY)
+  window.localStorage.removeItem(CURRENT_SESSION_STORAGE_KEY);
 }
 
 function createEmptyState() {
@@ -43,210 +46,252 @@ function createEmptyState() {
     loadingMessages: false,
     submitting: false,
     uploading: false,
-    error: '',
-    uploadError: '',
-    deletingSessionId: '',
-  }
+    error: "",
+    uploadError: "",
+    deletingSessionId: "",
+  };
 }
 
 function sortSessions(sessions) {
   return [...sessions].sort((left, right) => {
-    return String(right.updatedAt || '').localeCompare(String(left.updatedAt || ''))
-  })
+    return String(right.updatedAt || "").localeCompare(
+      String(left.updatedAt || ""),
+    );
+  });
 }
 
 function ensureTranscriptMap(messagesBySession, sessionId) {
   if (!messagesBySession[sessionId]) {
-    messagesBySession[sessionId] = []
+    messagesBySession[sessionId] = [];
   }
-  return messagesBySession[sessionId]
+  return messagesBySession[sessionId];
 }
 
 function normalizeContent(value) {
   if (value === undefined || value === null) {
-    return ''
+    return "";
   }
-  if (typeof value === 'string') {
-    return value
+  if (typeof value === "string") {
+    return value;
   }
   if (Array.isArray(value)) {
-    return value.map((item) => normalizeContent(item)).join('')
+    return value.map((item) => normalizeContent(item)).join("");
   }
-  if (typeof value === 'object') {
-    if ('content' in value) {
-      return normalizeContent(value.content)
+  if (typeof value === "object") {
+    if ("content" in value) {
+      return normalizeContent(value.content);
     }
-    if (typeof value.text === 'string') {
-      return value.text
+    if (typeof value.text === "string") {
+      return value.text;
     }
     if (Array.isArray(value.parts)) {
-      return value.parts.map((part) => normalizeContent(part)).join('')
+      return value.parts.map((part) => normalizeContent(part)).join("");
     }
   }
-  return String(value)
+  return String(value);
 }
 
 function normalizeAttachments(attachments) {
   if (!Array.isArray(attachments)) {
-    return []
+    return [];
   }
 
   return attachments.map((attachment, index) => ({
-    id: String(attachment?.id ?? attachment?.attachment_id ?? attachment?.attachmentId ?? `attachment-${index}`),
-    name: String(attachment?.name ?? attachment?.filename ?? attachment?.title ?? uiCopy.api.unnamedAttachment),
-    size: Number(attachment?.size ?? attachment?.size_bytes ?? attachment?.sizeBytes ?? 0),
-    status: String(attachment?.status ?? 'uploaded'),
-    path: String(attachment?.path ?? ''),
-    downloadUrl: String(attachment?.downloadUrl ?? attachment?.download_url ?? ''),
-  }))
+    id: String(
+      attachment?.id ??
+        attachment?.attachment_id ??
+        attachment?.attachmentId ??
+        `attachment-${index}`,
+    ),
+    name: String(
+      attachment?.name ??
+        attachment?.filename ??
+        attachment?.title ??
+        uiCopy.api.unnamedAttachment,
+    ),
+    size: Number(
+      attachment?.size ?? attachment?.size_bytes ?? attachment?.sizeBytes ?? 0,
+    ),
+    status: String(attachment?.status ?? "uploaded"),
+    path: String(attachment?.path ?? ""),
+    downloadUrl: String(
+      attachment?.downloadUrl ?? attachment?.download_url ?? "",
+    ),
+  }));
 }
 
 function normalizeProcesses(processes) {
-  return Array.isArray(processes) ? processes.filter(Boolean) : []
+  return Array.isArray(processes) ? processes.filter(Boolean) : [];
 }
 
 function messageSignature(message) {
   const attachments = Array.isArray(message?.attachments)
-    ? message.attachments.map((attachment) => attachment?.name || attachment?.id || '').join('|')
-    : ''
+    ? message.attachments
+        .map((attachment) => attachment?.name || attachment?.id || "")
+        .join("|")
+    : "";
   return [
-    String(message?.role || ''),
-    normalizeContent(message?.content ?? message?.text ?? ''),
+    String(message?.role || ""),
+    normalizeContent(message?.content ?? message?.text ?? ""),
     attachments,
-  ].join('::')
+  ].join("::");
 }
 
 export function reconcileMessages(localMessages, fetchedMessages) {
-  const local = Array.isArray(localMessages) ? [...localMessages] : []
-  const fetched = Array.isArray(fetchedMessages) ? [...fetchedMessages] : []
+  const local = Array.isArray(localMessages) ? [...localMessages] : [];
+  const fetched = Array.isArray(fetchedMessages) ? [...fetchedMessages] : [];
 
   if (local.length === 0) {
-    return fetched
+    return fetched;
   }
   if (fetched.length === 0) {
-    return local
+    return local;
   }
 
   const fetchedIsPrefixOfLocal =
     fetched.length <= local.length &&
-    fetched.every((message, index) => messageSignature(message) === messageSignature(local[index]))
+    fetched.every(
+      (message, index) =>
+        messageSignature(message) === messageSignature(local[index]),
+    );
 
   if (fetchedIsPrefixOfLocal) {
-    return [...fetched, ...local.slice(fetched.length)]
+    return [...fetched, ...local.slice(fetched.length)];
   }
 
-  return fetched
+  return fetched;
 }
 
 export function mergeAssistantDelta(messages, { runId, delta }) {
-  const streamId = `stream:${runId}`
-  const transcript = [...messages]
-  const existingIndex = transcript.findIndex((message) => message.id === streamId)
+  const streamId = `stream:${runId}`;
+  const transcript = [...messages];
+  const existingIndex = transcript.findIndex(
+    (message) => message.id === streamId,
+  );
   if (existingIndex === -1) {
     transcript.push({
       id: streamId,
-      role: 'assistant',
+      role: "assistant",
       content: delta,
       createdAt: new Date().toISOString(),
       startedAt: new Date().toISOString(),
       streaming: true,
       attachments: [],
       processes: [],
-    })
-    return transcript
+    });
+    return transcript;
   }
 
   transcript[existingIndex] = {
     ...transcript[existingIndex],
     content: `${transcript[existingIndex].content}${delta}`,
     streaming: true,
-  }
-  return transcript
+  };
+  return transcript;
 }
 
 export function finalizeAssistantMessage(messages, { runId, message }) {
-  const streamId = `stream:${runId}`
-  const streamingMessage = messages.find((entry) => entry.id === streamId)
-  const transcript = messages.filter((entry) => entry.id !== streamId)
-  const extra = message?.extra && typeof message.extra === 'object' ? message.extra : {}
+  const streamId = `stream:${runId}`;
+  const streamingMessage = messages.find((entry) => entry.id === streamId);
+  const transcript = messages.filter((entry) => entry.id !== streamId);
+  const extra =
+    message?.extra && typeof message.extra === "object" ? message.extra : {};
   const nextMessage = {
     id: String(message.id ?? `final:${runId}`),
-    runId: String(runId || message.runId || message.run_id || ''),
-    role: String(message.role ?? 'assistant'),
-    content: normalizeContent(message.content ?? message.text ?? extra.content ?? ''),
-    createdAt: String(message.createdAt ?? message.created_at ?? new Date().toISOString()),
-    startedAt: String(streamingMessage?.startedAt ?? streamingMessage?.createdAt ?? message.createdAt ?? message.created_at ?? new Date().toISOString()),
+    runId: String(runId || message.runId || message.run_id || ""),
+    role: String(message.role ?? "assistant"),
+    content: normalizeContent(
+      message.content ?? message.text ?? extra.content ?? "",
+    ),
+    createdAt: String(
+      message.createdAt ?? message.created_at ?? new Date().toISOString(),
+    ),
+    startedAt: String(
+      streamingMessage?.startedAt ??
+        streamingMessage?.createdAt ??
+        message.createdAt ??
+        message.created_at ??
+        new Date().toISOString(),
+    ),
     attachments: normalizeAttachments(message.attachments ?? extra.attachments),
-    processes: normalizeProcesses(message.processes ?? extra.processes ?? streamingMessage?.processes),
+    processes: normalizeProcesses(
+      message.processes ?? extra.processes ?? streamingMessage?.processes,
+    ),
     streaming: false,
-  }
-  const existingIndex = transcript.findIndex((entry) => entry.id === nextMessage.id)
+  };
+  const existingIndex = transcript.findIndex(
+    (entry) => entry.id === nextMessage.id,
+  );
   if (existingIndex === -1) {
-    transcript.push(nextMessage)
-    return transcript
+    transcript.push(nextMessage);
+    return transcript;
   }
 
   transcript[existingIndex] = {
     ...transcript[existingIndex],
     ...nextMessage,
-  }
-  return transcript
+  };
+  return transcript;
 }
 
 export function settleStreamingMessage(messages, { runId }) {
-  const streamId = `stream:${runId}`
-  const index = messages.findIndex((message) => message.id === streamId)
+  const streamId = `stream:${runId}`;
+  const index = messages.findIndex((message) => message.id === streamId);
   if (index === -1) {
-    return messages
+    return messages;
   }
-  const transcript = [...messages]
+  const transcript = [...messages];
   transcript[index] = {
     ...transcript[index],
     streaming: false,
-  }
-  return transcript
+  };
+  return transcript;
 }
 
 export function appendProcessEvent(messages, { runId, event }) {
   if (!event) {
-    return messages
+    return messages;
   }
-  const streamId = `stream:${runId}`
-  const transcript = [...messages]
-  let targetIndex = transcript.findIndex((message) => message.id === streamId)
+  const streamId = `stream:${runId}`;
+  const transcript = [...messages];
+  let targetIndex = transcript.findIndex((message) => message.id === streamId);
   if (targetIndex === -1) {
     targetIndex = transcript.findIndex(
-      (message) => message.role === 'assistant' && String(message.runId || '') === String(runId),
-    )
+      (message) =>
+        message.role === "assistant" &&
+        String(message.runId || "") === String(runId),
+    );
   }
   if (targetIndex === -1) {
     transcript.push({
       id: streamId,
-      runId: String(runId || ''),
-      role: 'assistant',
-      content: '',
+      runId: String(runId || ""),
+      role: "assistant",
+      content: "",
       createdAt: event.timestamp || new Date().toISOString(),
       startedAt: event.timestamp || new Date().toISOString(),
       attachments: [],
       processes: [],
       streaming: true,
-    })
-    targetIndex = transcript.length - 1
+    });
+    targetIndex = transcript.length - 1;
   }
 
-  const message = transcript[targetIndex]
-  const processes = normalizeProcesses(message.processes)
-  const existingIndex = processes.findIndex((item) => item.id === event.id)
+  const message = transcript[targetIndex];
+  const processes = normalizeProcesses(message.processes);
+  const existingIndex = processes.findIndex((item) => item.id === event.id);
   const nextProcesses =
     existingIndex === -1
       ? [...processes, event]
-      : processes.map((item, index) => (index === existingIndex ? { ...item, ...event } : item))
+      : processes.map((item, index) =>
+          index === existingIndex ? { ...item, ...event } : item,
+        );
 
   transcript[targetIndex] = {
     ...message,
     processes: nextProcesses,
-  }
-  return transcript
+  };
+  return transcript;
 }
 
 function addSystemNotice(messages, content) {
@@ -254,302 +299,359 @@ function addSystemNotice(messages, content) {
     ...messages,
     {
       id: createClientId(),
-      role: 'system',
+      role: "system",
       content,
       createdAt: new Date().toISOString(),
       attachments: [],
       streaming: false,
     },
-  ]
+  ];
 }
 
 export function createSessionStore(apiClient) {
-  const state = reactive(createEmptyState())
+  const state = reactive(createEmptyState());
 
   function getCurrentSession() {
-    return state.sessions.find((session) => session.id === state.currentSessionId) || null
+    return (
+      state.sessions.find((session) => session.id === state.currentSessionId) ||
+      null
+    );
   }
 
   function getCurrentMessages() {
     if (!state.currentSessionId) {
-      return []
+      return [];
     }
-    return state.messagesBySession[state.currentSessionId] || []
+    return state.messagesBySession[state.currentSessionId] || [];
   }
 
   function getPendingUploads(sessionId = state.currentSessionId) {
     if (!sessionId) {
-      return []
+      return [];
     }
-    return state.pendingUploadsBySession[sessionId] || []
+    return state.pendingUploadsBySession[sessionId] || [];
   }
 
   function isDeletingUpload(uploadId) {
-    return Boolean(state.deletingUploadIds[String(uploadId)])
+    return Boolean(state.deletingUploadIds[String(uploadId)]);
   }
 
   function touchSession(sessionId, titleFallback) {
-    const existing = state.sessions.find((session) => session.id === sessionId)
-    const updatedAt = new Date().toISOString()
-    const nextTitle = titleFallback ? distillSessionTitle(titleFallback) : ''
+    const existing = state.sessions.find((session) => session.id === sessionId);
+    const updatedAt = new Date().toISOString();
+    const nextTitle = titleFallback ? distillSessionTitle(titleFallback) : "";
     if (existing) {
-      existing.updatedAt = updatedAt
+      existing.updatedAt = updatedAt;
       existing.title =
         nextTitle && isPlaceholderSessionTitle(existing.title)
           ? nextTitle
-          : normalizeSessionTitle(existing.title)
+          : normalizeSessionTitle(existing.title);
     } else {
       state.sessions = sortSessions([
         ...state.sessions,
-        { id: sessionId, title: nextTitle || uiCopy.sessionTitles.defaultTitle, updatedAt, status: 'idle' },
-      ])
+        {
+          id: sessionId,
+          title: nextTitle || uiCopy.sessionTitles.defaultTitle,
+          updatedAt,
+          status: "idle",
+        },
+      ]);
     }
-    state.sessions = sortSessions(state.sessions)
+    state.sessions = sortSessions(state.sessions);
   }
 
   async function loadSessions({ preserveSelection = false } = {}) {
-    state.loadingSessions = true
-    state.error = ''
+    state.loadingSessions = true;
+    state.error = "";
     try {
-      state.sessions = sortSessions(await apiClient.listSessions())
-      const storedSessionId = readStoredSessionId()
+      state.sessions = sortSessions(await apiClient.listSessions());
+      const storedSessionId = readStoredSessionId();
       if (!preserveSelection) {
-        state.currentSessionId = state.sessions.some((session) => session.id === storedSessionId)
+        state.currentSessionId = state.sessions.some(
+          (session) => session.id === storedSessionId,
+        )
           ? storedSessionId
-          : state.sessions[0]?.id || null
-      } else if (!state.sessions.some((session) => session.id === state.currentSessionId)) {
-        state.currentSessionId = state.sessions.some((session) => session.id === storedSessionId)
+          : state.sessions[0]?.id || null;
+      } else if (
+        !state.sessions.some((session) => session.id === state.currentSessionId)
+      ) {
+        state.currentSessionId = state.sessions.some(
+          (session) => session.id === storedSessionId,
+        )
           ? storedSessionId
-          : state.sessions[0]?.id || null
+          : state.sessions[0]?.id || null;
       }
-      writeStoredSessionId(state.currentSessionId || '')
+      writeStoredSessionId(state.currentSessionId || "");
     } catch (error) {
-      state.error = error instanceof Error ? error.message : uiCopy.store.session.loadSessionsFailed
-      state.sessions = []
-      state.currentSessionId = null
-      writeStoredSessionId('')
+      state.error =
+        error instanceof Error
+          ? error.message
+          : uiCopy.store.session.loadSessionsFailed;
+      state.sessions = [];
+      state.currentSessionId = null;
+      writeStoredSessionId("");
     } finally {
-      state.loadingSessions = false
+      state.loadingSessions = false;
     }
   }
 
   async function createSession() {
-    clearErrors()
-    const session = await apiClient.createSession()
-    state.sessions = sortSessions([session, ...state.sessions.filter((entry) => entry.id !== session.id)])
-    state.currentSessionId = session.id
-    writeStoredSessionId(session.id)
-    ensureTranscriptMap(state.messagesBySession, session.id)
-    return session
+    clearErrors();
+    const session = await apiClient.createSession();
+    state.sessions = sortSessions([
+      session,
+      ...state.sessions.filter((entry) => entry.id !== session.id),
+    ]);
+    state.currentSessionId = session.id;
+    writeStoredSessionId(session.id);
+    ensureTranscriptMap(state.messagesBySession, session.id);
+    return session;
   }
 
   async function deleteSession(sessionId) {
-    const normalizedId = String(sessionId)
-    state.deletingSessionId = normalizedId
-    state.error = ''
+    const normalizedId = String(sessionId);
+    state.deletingSessionId = normalizedId;
+    state.error = "";
     try {
-      await apiClient.deleteSession(normalizedId)
-      state.sessions = state.sessions.filter((session) => session.id !== normalizedId)
-      delete state.messagesBySession[normalizedId]
-      delete state.pendingUploadsBySession[normalizedId]
+      await apiClient.deleteSession(normalizedId);
+      state.sessions = state.sessions.filter(
+        (session) => session.id !== normalizedId,
+      );
+      delete state.messagesBySession[normalizedId];
+      delete state.pendingUploadsBySession[normalizedId];
 
       if (state.currentSessionId === normalizedId) {
-        state.currentSessionId = state.sessions[0]?.id || null
-        writeStoredSessionId(state.currentSessionId || '')
+        state.currentSessionId = state.sessions[0]?.id || null;
+        writeStoredSessionId(state.currentSessionId || "");
         if (state.currentSessionId) {
-          await selectSession(state.currentSessionId)
+          await selectSession(state.currentSessionId);
         }
       }
     } catch (error) {
-      state.error = error instanceof Error ? error.message : uiCopy.store.session.deleteSessionFailed
+      state.error =
+        error instanceof Error
+          ? error.message
+          : uiCopy.store.session.deleteSessionFailed;
     } finally {
-      state.deletingSessionId = ''
+      state.deletingSessionId = "";
     }
   }
 
   async function selectSession(sessionId) {
-    const normalizedId = String(sessionId)
-    const localMessages = state.messagesBySession[normalizedId] || []
-    state.currentSessionId = normalizedId
-    writeStoredSessionId(normalizedId)
-    state.loadingMessages = true
-    clearErrors()
+    const normalizedId = String(sessionId);
+    const localMessages = state.messagesBySession[normalizedId] || [];
+    state.currentSessionId = normalizedId;
+    writeStoredSessionId(normalizedId);
+    state.loadingMessages = true;
+    clearErrors();
     try {
-      const messages = await apiClient.getSessionMessages(normalizedId)
-      state.messagesBySession[normalizedId] = reconcileMessages(localMessages, messages)
+      const messages = await apiClient.getSessionMessages(normalizedId);
+      state.messagesBySession[normalizedId] = reconcileMessages(
+        localMessages,
+        messages,
+      );
     } catch (error) {
-      state.error = error instanceof Error ? error.message : uiCopy.store.session.loadMessagesFailed
-      state.messagesBySession[normalizedId] = state.messagesBySession[normalizedId] || []
+      state.error =
+        error instanceof Error
+          ? error.message
+          : uiCopy.store.session.loadMessagesFailed;
+      state.messagesBySession[normalizedId] =
+        state.messagesBySession[normalizedId] || [];
     } finally {
-      state.loadingMessages = false
+      state.loadingMessages = false;
     }
   }
 
   async function uploadFiles(sessionId, files) {
-    const normalizedId = String(sessionId)
-    state.uploading = true
-    state.uploadError = ''
+    const normalizedId = String(sessionId);
+    state.uploading = true;
+    state.uploadError = "";
     try {
-      const records = await apiClient.uploadFiles(normalizedId, files)
+      const records = await apiClient.uploadFiles(normalizedId, files);
       state.pendingUploadsBySession[normalizedId] = [
         ...(state.pendingUploadsBySession[normalizedId] || []),
         ...records,
-      ]
-      touchSession(normalizedId)
+      ];
+      touchSession(normalizedId);
       return {
         ok: true,
         records,
-      }
+      };
     } catch (error) {
-      const message = error instanceof Error ? error.message : uiCopy.store.session.uploadFailed
-      state.uploadError = message
+      const message =
+        error instanceof Error
+          ? error.message
+          : uiCopy.store.session.uploadFailed;
+      state.uploadError = message;
       return {
         ok: false,
         error: new Error(message),
-      }
+      };
     } finally {
-      state.uploading = false
+      state.uploading = false;
     }
   }
 
   async function deletePendingUpload(sessionId, uploadId) {
-    const normalizedSessionId = String(sessionId)
-    const normalizedUploadId = String(uploadId)
-    state.uploadError = ''
-    state.deletingUploadIds[normalizedUploadId] = true
+    const normalizedSessionId = String(sessionId);
+    const normalizedUploadId = String(uploadId);
+    state.uploadError = "";
+    state.deletingUploadIds[normalizedUploadId] = true;
 
     try {
-      await apiClient.deleteUpload(normalizedUploadId)
-      const nextUploads = (state.pendingUploadsBySession[normalizedSessionId] || []).filter(
-        (upload) => String(upload?.id || '') !== normalizedUploadId,
-      )
+      await apiClient.deleteUpload(normalizedUploadId);
+      const nextUploads = (
+        state.pendingUploadsBySession[normalizedSessionId] || []
+      ).filter((upload) => String(upload?.id || "") !== normalizedUploadId);
       if (nextUploads.length > 0) {
-        state.pendingUploadsBySession[normalizedSessionId] = nextUploads
+        state.pendingUploadsBySession[normalizedSessionId] = nextUploads;
       } else {
-        delete state.pendingUploadsBySession[normalizedSessionId]
+        delete state.pendingUploadsBySession[normalizedSessionId];
       }
-      return { ok: true }
+      return { ok: true };
     } catch (error) {
-      const message = error instanceof Error ? error.message : uiCopy.store.session.deleteUploadFailed
-      state.uploadError = message
+      const message =
+        error instanceof Error
+          ? error.message
+          : uiCopy.store.session.deleteUploadFailed;
+      state.uploadError = message;
       return {
         ok: false,
         error: new Error(message),
-      }
+      };
     } finally {
-      delete state.deletingUploadIds[normalizedUploadId]
+      delete state.deletingUploadIds[normalizedUploadId];
     }
   }
 
   function clearPendingUploads(sessionId) {
-    const normalizedId = String(sessionId)
-    delete state.pendingUploadsBySession[normalizedId]
-    state.uploadError = ''
+    const normalizedId = String(sessionId);
+    delete state.pendingUploadsBySession[normalizedId];
+    state.uploadError = "";
   }
 
   function clearErrors() {
-    state.error = ''
-    state.uploadError = ''
+    state.error = "";
+    state.uploadError = "";
   }
 
   function addOptimisticUserMessage(sessionId, prompt) {
-    const normalizedId = String(sessionId)
-    const transcript = ensureTranscriptMap(state.messagesBySession, normalizedId)
+    const normalizedId = String(sessionId);
+    const transcript = ensureTranscriptMap(
+      state.messagesBySession,
+      normalizedId,
+    );
     transcript.push({
       id: createClientId(),
-      role: 'user',
+      role: "user",
       content: prompt,
       createdAt: new Date().toISOString(),
       attachments: [...getPendingUploads(normalizedId)],
       streaming: false,
-    })
-    touchSession(normalizedId, prompt)
+    });
+    touchSession(normalizedId, prompt);
   }
 
   function addSystemNoticeToSession(sessionId, content) {
-    const normalizedId = String(sessionId)
-    const transcript = ensureTranscriptMap(state.messagesBySession, normalizedId)
-    state.messagesBySession[normalizedId] = addSystemNotice(transcript, content)
-    touchSession(normalizedId)
+    const normalizedId = String(sessionId);
+    const transcript = ensureTranscriptMap(
+      state.messagesBySession,
+      normalizedId,
+    );
+    state.messagesBySession[normalizedId] = addSystemNotice(
+      transcript,
+      content,
+    );
+    touchSession(normalizedId);
   }
 
   function setSubmitting(submitting) {
-    state.submitting = Boolean(submitting)
+    state.submitting = Boolean(submitting);
   }
 
   function discardStreamingMessage(sessionId, runId) {
-    const normalizedSessionId = String(sessionId)
-    const streamId = `stream:${runId}`
-    const transcript = ensureTranscriptMap(state.messagesBySession, normalizedSessionId)
-    state.messagesBySession[normalizedSessionId] = transcript.filter((message) => message.id !== streamId)
+    const normalizedSessionId = String(sessionId);
+    const streamId = `stream:${runId}`;
+    const transcript = ensureTranscriptMap(
+      state.messagesBySession,
+      normalizedSessionId,
+    );
+    state.messagesBySession[normalizedSessionId] = transcript.filter(
+      (message) => message.id !== streamId,
+    );
   }
 
   function consumeRunEvent(envelope) {
     if (!envelope.sessionId) {
-      return
+      return;
     }
 
-    const sessionId = String(envelope.sessionId)
-    const transcript = ensureTranscriptMap(state.messagesBySession, sessionId)
-    const processEvent = logEntryFromEnvelope(envelope)
+    const sessionId = String(envelope.sessionId);
+    const transcript = ensureTranscriptMap(state.messagesBySession, sessionId);
+    const processEvent = logEntryFromEnvelope(envelope);
 
     if (processEvent) {
       state.messagesBySession[sessionId] = appendProcessEvent(transcript, {
         runId: envelope.runId,
         event: processEvent,
-      })
-      touchSession(sessionId)
-      if (envelope.type !== 'error') {
-        return
+      });
+      touchSession(sessionId);
+      if (envelope.type !== "error") {
+        return;
       }
     }
 
-    if (envelope.type === 'message.delta' && envelope.delta) {
+    if (envelope.type === "message.delta" && envelope.delta) {
       state.messagesBySession[sessionId] = mergeAssistantDelta(transcript, {
         runId: envelope.runId,
         delta: envelope.delta,
-      })
-      touchSession(sessionId)
-      return
+      });
+      touchSession(sessionId);
+      return;
     }
 
-    if (envelope.type === 'message.final') {
-      const rawFinalMessage =
-        envelope.message ||
-        (envelope.data?.message && typeof envelope.data.message === 'object' ? envelope.data.message : null) ||
-        {
-          role: 'assistant',
-          content: envelope.data?.text ?? envelope.detail ?? '',
+    if (envelope.type === "message.final") {
+      const rawFinalMessage = envelope.message ||
+        (envelope.data?.message && typeof envelope.data.message === "object"
+          ? envelope.data.message
+          : null) || {
+          role: "assistant",
+          content: envelope.data?.text ?? envelope.detail ?? "",
           createdAt: envelope.timestamp,
           attachments: [],
-        }
+        };
       const finalMessage = {
         ...rawFinalMessage,
-        id: rawFinalMessage.id ?? `final:${envelope.runId}:${envelope.eventId || Date.now()}`,
-      }
+        id:
+          rawFinalMessage.id ??
+          `final:${envelope.runId}:${envelope.eventId || Date.now()}`,
+      };
 
-      state.messagesBySession[sessionId] = finalizeAssistantMessage(transcript, {
-        runId: envelope.runId,
-        message: finalMessage,
-      })
-      touchSession(sessionId)
-      return
+      state.messagesBySession[sessionId] = finalizeAssistantMessage(
+        transcript,
+        {
+          runId: envelope.runId,
+          message: finalMessage,
+        },
+      );
+      touchSession(sessionId);
+      return;
     }
 
     if (envelope.terminal) {
       state.messagesBySession[sessionId] = settleStreamingMessage(
         ensureTranscriptMap(state.messagesBySession, sessionId),
         { runId: envelope.runId },
-      )
-      touchSession(sessionId)
+      );
+      touchSession(sessionId);
     }
 
-    if (envelope.type === 'error') {
+    if (envelope.type === "error") {
       state.messagesBySession[sessionId] = addSystemNotice(
         ensureTranscriptMap(state.messagesBySession, sessionId),
         envelope.detail || uiCopy.store.session.runFailed,
-      )
-      touchSession(sessionId)
+      );
+      touchSession(sessionId);
     }
   }
 
@@ -572,5 +674,5 @@ export function createSessionStore(apiClient) {
     selectSession,
     setSubmitting,
     uploadFiles,
-  }
+  };
 }

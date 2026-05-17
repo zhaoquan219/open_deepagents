@@ -64,20 +64,20 @@ panel and coalesces repeated deltas, keeping long tool-heavy runs responsive.
 
 The frontend expects these core endpoints:
 
-| Endpoint | Purpose |
-| --- | --- |
-| `POST /api/auth/login` | Login and receive a bearer token. |
-| `GET /api/auth/me` | Check the current user. |
-| `GET /api/models` | Load model options. |
-| `GET /api/sessions` | List sessions for the current user. |
-| `POST /api/sessions` | Create a session. |
-| `PATCH /api/sessions/:sessionId` | Update title or metadata. |
-| `DELETE /api/sessions/:sessionId` | Delete a session. |
-| `GET /api/sessions/:sessionId/events` | Load transcript and runtime history. |
-| `POST /api/sessions/:sessionId/uploads` | Upload one file for the active session. |
-| `POST /api/sessions/:sessionId/runs/stream` | Start and stream one agent run. |
-| `GET /api/uploads/:uploadId/content` | Download an owned upload. |
-| `DELETE /api/uploads/:uploadId` | Delete an owned upload. |
+| Endpoint                                    | Purpose                                 |
+| ------------------------------------------- | --------------------------------------- |
+| `POST /api/auth/login`                      | Login and receive a bearer token.       |
+| `GET /api/auth/me`                          | Check the current user.                 |
+| `GET /api/models`                           | Load model options.                     |
+| `GET /api/sessions`                         | List sessions for the current user.     |
+| `POST /api/sessions`                        | Create a session.                       |
+| `PATCH /api/sessions/:sessionId`            | Update title or metadata.               |
+| `DELETE /api/sessions/:sessionId`           | Delete a session.                       |
+| `GET /api/sessions/:sessionId/events`       | Load transcript and runtime history.    |
+| `POST /api/sessions/:sessionId/uploads`     | Upload one file for the active session. |
+| `POST /api/sessions/:sessionId/runs/stream` | Start and stream one agent run.         |
+| `GET /api/uploads/:uploadId/content`        | Download an owned upload.               |
+| `DELETE /api/uploads/:uploadId`             | Delete an owned upload.                 |
 
 The client can abort the active fetch stream locally; the backend also exposes
 durable run status and cancel endpoints for owned runs.

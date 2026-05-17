@@ -1,9 +1,9 @@
-declare module '*.css'
-declare module '*.vue'
+declare module "*.css";
+declare module "*.vue";
 
 interface Window {
   __deepagentsDebug?: {
-    sessionStore: unknown
-    runStore: unknown
-  }
+    sessionStore: unknown;
+    runStore: unknown;
+  };
 }
