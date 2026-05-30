@@ -1,6 +1,6 @@
 [project]
 name = "deepagents-agent-platform-backend"
-version = "0.1.0"
+version = "1.0.0"
 description = "FastAPI backend foundation for the DeepAgents agent platform scaffold"
 requires-python = ">=3.12,<3.13"
 dependencies = [
