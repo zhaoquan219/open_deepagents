@@ -1,9 +1,11 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import inspect
 from uvicorn.logging import DefaultFormatter
 
@@ -57,10 +59,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def healthcheck() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/ready", tags=["system"])
-    def readiness() -> dict[str, object]:
+    @app.get("/ready", tags=["system"], response_model=None)
+    async def readiness() -> Any:
         checks: dict[str, object] = {}
-        database.initialize_schema()
         with database.engine.connect() as conn:
             conn.exec_driver_sql("SELECT 1")
         checks["product_db"] = "ok"
@@ -68,19 +69,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         missing_tables = PRODUCT_TABLES - product_tables
         if missing_tables:
             checks["schema"] = "invalid"
-            return {
-                "status": "error",
-                "checks": checks,
-                "expected_product_tables": sorted(PRODUCT_TABLES),
-                "actual_tables": sorted(product_tables),
-                "missing_product_tables": sorted(missing_tables),
-            }
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "error",
+                    "checks": checks,
+                    "expected_product_tables": sorted(PRODUCT_TABLES),
+                    "actual_tables": sorted(product_tables),
+                    "missing_product_tables": sorted(missing_tables),
+                },
+            )
         checks["schema"] = "ok"
         catalog = load_model_catalog(resolved_settings)
         validate_model_catalog(catalog, selected_model_id=None, production=False)
         checks["model_catalog"] = "ok"
         resolved_settings.assert_runtime_persistence_allowed()
-        checks["runtime_persistence"] = resolved_settings.runtime_driver_mode()
+        try:
+            await _probe_runtime_persistence(resolved_settings)
+        except Exception:
+            logging.exception("runtime persistence readiness probe failed")
+            checks["runtime_persistence"] = "error"
+            checks["runtime_driver"] = resolved_settings.runtime_driver_mode()
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "error",
+                    "checks": checks,
+                    "error": "runtime persistence probe failed",
+                },
+            )
+        checks["runtime_persistence"] = "ok"
+        checks["runtime_driver"] = resolved_settings.runtime_driver_mode()
         SandboxConfig.from_mapping(resolved_settings.sandbox_settings())
         checks["sandbox"] = "ok"
         resolve_agent(resolved_settings)
@@ -95,7 +114,29 @@ def configure_backend_logging(settings: Settings) -> None:
     handler.setFormatter(DefaultFormatter("%(levelprefix)s [%(name)s] %(message)s"))
     logging.basicConfig(level=settings.backend_log_levelno(), handlers=[handler])
     logging.getLogger("app").setLevel(settings.backend_log_levelno())
-    
-    
+
+
+async def _probe_runtime_persistence(settings: Settings) -> None:
+    checkpointer = settings.runtime_checkpointer()
+    if checkpointer is None:
+        raise RuntimeError("runtime checkpointer is not configured")
+    config = {"configurable": {"thread_id": "__ready_probe__"}}
+    await _call_runtime_probe(checkpointer, "aget_tuple", "get_tuple", config)
+
+    store = settings.runtime_store()
+    if store is None:
+        raise RuntimeError("runtime store is not configured")
+    await _call_runtime_probe(store, "aget", "get", ("__ready__",), "probe")
+
+
+async def _call_runtime_probe(target: Any, async_name: str, sync_name: str, *args: Any) -> Any:
+    async_method = getattr(target, async_name, None)
+    if callable(async_method):
+        return await async_method(*args)
+    sync_method = getattr(target, sync_name, None)
+    if callable(sync_method):
+        return sync_method(*args)
+    raise RuntimeError(f"{target.__class__.__name__} does not support readiness probes")
+
 
 app = create_app()

@@ -18,17 +18,8 @@ function resolveAccessToken() {
   return window.localStorage.getItem("deepagents.admin.token") || "";
 }
 
-function buildUploadContentUrl(
-  baseUrl,
-  uploadId,
-  accessToken = resolveAccessToken(),
-) {
-  const path = `${baseUrl}/uploads/${encodeURIComponent(uploadId)}/content`;
-  if (!accessToken) {
-    return path;
-  }
-  const separator = path.includes("?") ? "&" : "?";
-  return `${path}${separator}access_token=${encodeURIComponent(accessToken)}`;
+function buildUploadContentUrl(baseUrl, uploadId) {
+  return `${baseUrl}/uploads/${encodeURIComponent(uploadId)}/content`;
 }
 
 function unwrapCollection(payload, preferredKey) {
@@ -97,6 +88,9 @@ function normalizeAttachments(attachments, baseUrl = "") {
       ),
       status: String(attachment?.status ?? "uploaded"),
       path: String(attachment?.path ?? ""),
+      sessionId: String(
+        attachment?.session_id ?? attachment?.sessionId ?? "",
+      ),
       downloadUrl:
         baseUrl && rawId
           ? buildUploadContentUrl(baseUrl, id)
@@ -188,6 +182,20 @@ function createHistoryAssistantPlaceholder(runId, timestamp, content = "") {
   };
 }
 
+function findLastAssistantIndexForRun(messages, runId) {
+  const normalizedRunId = String(runId || "");
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (
+      message?.role === "assistant" &&
+      String(message.runId || "") === normalizedRunId
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
 function appendHistoryProcessMessage(messages, envelope) {
   const processEvent = logEntryFromEnvelope(envelope);
   const runId = String(envelope?.runId || "");
@@ -199,10 +207,7 @@ function appendHistoryProcessMessage(messages, envelope) {
   const transcript = [...messages];
   let targetIndex = transcript.findIndex((message) => message.id === streamId);
   if (targetIndex === -1) {
-    targetIndex = transcript.findIndex(
-      (message) =>
-        message.role === "assistant" && String(message.runId || "") === runId,
-    );
+    targetIndex = findLastAssistantIndexForRun(transcript, runId);
   }
   if (targetIndex === -1) {
     transcript.push(
@@ -431,6 +436,31 @@ async function fetchJson(url, options = {}) {
   return response.json();
 }
 
+async function downloadUploadContent(downloadUrl, filename = "") {
+  const accessToken = resolveAccessToken();
+  const response = await fetch(downloadUrl, {
+    credentials: "include",
+    headers: {
+      Accept: "application/octet-stream",
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
+  });
+  if (!response.ok) {
+    const message = await readErrorMessage(response);
+    throw new Error(message || uiCopy.api.requestFailedStatus(response.status));
+  }
+
+  const blob = await response.blob();
+  const objectUrl = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename || uiCopy.api.unnamedAttachment;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.URL.revokeObjectURL(objectUrl);
+}
+
 export function createApiClient(baseUrl = resolveApiBaseUrl()) {
   return {
     async login({ username, password }) {
@@ -536,6 +566,7 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
           size: Number(record.size ?? file.size ?? 0),
           status: String(record.status ?? "uploaded"),
           path: String(record.path ?? ""),
+          sessionId: String(record.session_id ?? record.sessionId ?? sessionId),
           downloadUrl: buildUploadContentUrl(
             baseUrl,
             String(
@@ -654,14 +685,17 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
     },
 
     async cancelRun(runId) {
-      void runId;
+      const payload = await fetchJson(
+        `${baseUrl}/runs/${encodeURIComponent(runId)}/cancel`,
+        { method: "POST" },
+      );
       return {
-        runId: String(runId),
-        sessionId: "",
-        status: "cancelled",
+        runId: String(payload?.id ?? payload?.run_id ?? runId),
+        sessionId: String(payload?.session_id ?? payload?.sessionId ?? ""),
+        status: String(payload?.status ?? ""),
       };
     },
   };
 }
 
-export { buildUploadContentUrl, normalizeRuntimeOptions };
+export { buildUploadContentUrl, downloadUploadContent, normalizeRuntimeOptions };

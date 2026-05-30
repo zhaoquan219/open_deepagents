@@ -3,6 +3,7 @@ import { CopyDocument, Download } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 
+import { downloadUploadContent } from "../api/client.js";
 import { copyText } from "../lib/clipboard.js";
 import { uiCopy } from "../lib/copy.js";
 import {
@@ -134,10 +135,9 @@ function shouldRenderMessage(message) {
 }
 
 function processStatusLabel(status) {
-  if (status === "completed") return uiCopy.common.completed;
   if (status === "failed") return uiCopy.common.failed;
   if (status === "cancelled") return uiCopy.common.cancelled;
-  return uiCopy.common.running;
+  return "";
 }
 
 function hasProcesses(message) {
@@ -223,6 +223,16 @@ function attachmentDownloadUrl(attachment) {
     return attachment.downloadUrl;
   }
   return "";
+}
+
+async function downloadAttachment(attachment) {
+  try {
+    await downloadUploadContent(attachmentDownloadUrl(attachment), attachment?.name || "");
+  } catch (error) {
+    ElMessage.error(
+      error instanceof Error ? error.message : uiCopy.api.requestFailedStatus(0),
+    );
+  }
 }
 
 async function copyMessage(message) {
@@ -408,10 +418,10 @@ onMounted(async () => {
           >
             <summary>
               <span>{{ block.group.title }}</span>
-              <span
-                >{{ groupSummary(block.group) }} ·
-                {{ processStatusLabel(block.group.status) }}</span
+              <span>{{ groupSummary(block.group) }}<template
+                v-if="processStatusLabel(block.group.status)"
               >
+                · {{ processStatusLabel(block.group.status) }}</template></span>
             </summary>
             <ol class="process-list">
               <li v-for="item in block.group.items" :key="item.id">
@@ -422,7 +432,9 @@ onMounted(async () => {
                 >
                   <summary>
                     <strong>{{ item.title }}</strong>
-                    <span>{{ processStatusLabel(item.status) }}</span>
+                    <span v-if="processStatusLabel(item.status)">{{
+                      processStatusLabel(item.status)
+                    }}</span>
                   </summary>
                   <pre v-if="itemText(item)">{{ itemText(item) }}</pre>
                 </details>
@@ -447,13 +459,12 @@ onMounted(async () => {
             <el-button
               v-if="attachmentDownloadUrl(attachment)"
               class="attachment-download-button"
-              tag="a"
               text
               size="small"
-              :href="attachmentDownloadUrl(attachment)"
               :icon="Download"
               :aria-label="uiCopy.messageThread.download"
               :title="uiCopy.messageThread.download"
+              @click="downloadAttachment(attachment)"
             />
           </li>
         </ul>

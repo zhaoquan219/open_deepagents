@@ -23,6 +23,7 @@ def normalize_runtime_event(
     bridge_run_id: str,
     session_id: str = "",
     sequence: int,
+    tool_inputs: dict[str, Any] | None = None,
 ) -> SseEventEnvelope | None:
     del session_id
     event = str(raw_event.get("event", ""))
@@ -120,15 +121,37 @@ def normalize_runtime_event(
         name = str(raw_event.get("name") or "tool")
         kind = "sandbox" if name == "execute" else "subagent" if name == "task" else "tool"
         phase = "started" if event.endswith("start") else "completed"
-        payload_key = "input" if phase == "started" else "output"
+        tool_call_id = _tool_call_id(raw_event, name)
+        input_payload = _safe(data.get("input")) if "input" in data else None
+        if phase == "started":
+            if tool_inputs is not None:
+                tool_inputs[tool_call_id] = input_payload
+            return _event(
+                kind,
+                f"{kind}.started",
+                name,
+                runtime_run_id=runtime_run_id,
+                name=name,
+                tool_name=name,
+                tool_call_id=tool_call_id,
+                input=input_payload,
+            )
+        if input_payload is None and tool_inputs is not None:
+            input_payload = tool_inputs.pop(tool_call_id, None)
+        payload: dict[str, Any] = {
+            "runtime_run_id": runtime_run_id,
+            "name": name,
+            "tool_name": name,
+            "tool_call_id": tool_call_id,
+            "output": _safe(data.get("output")),
+        }
+        if input_payload is not None:
+            payload["input"] = input_payload
         return _event(
             kind,
-            f"{kind}.{phase}",
+            f"{kind}.completed",
             name,
-            runtime_run_id=runtime_run_id,
-            name=name,
-            tool_name=name,
-            **{payload_key: _safe(data.get(payload_key))},
+            **payload,
         )
     return _event(
         "step",
@@ -155,6 +178,16 @@ def _skills(output: Any) -> list[Any]:
     if isinstance(output, Mapping) and isinstance(output.get("skills_metadata"), list):
         return list(output["skills_metadata"])
     return []
+
+
+def _tool_call_id(raw_event: Mapping[str, Any], fallback_name: str) -> str:
+    return str(
+        raw_event.get("run_id")
+        or raw_event.get("id")
+        or raw_event.get("tool_call_id")
+        or raw_event.get("call_id")
+        or fallback_name
+    )
 
 
 def _safe(value: Any, depth: int = 0) -> Any:

@@ -120,12 +120,76 @@ describe("clipboard helpers", () => {
     );
   });
 
-  it("does not report PNG copy success from the execCommand fallback on Windows", async () => {
+  it("falls back to execCommand for PNG blobs on Windows when ClipboardItem is unavailable", async () => {
+    const execCommand = vi.fn(() => true);
+    const selection = {
+      addRange: vi.fn(),
+      removeAllRanges: vi.fn(),
+    };
+    const range = {
+      selectNode: vi.fn(),
+    };
+    const body = {
+      appendChild: vi.fn(),
+      removeChild: vi.fn(),
+    };
+    class FakeFileReader {
+      readAsDataURL() {
+        this.result = "data:image/png;base64,eA==";
+        this.onload();
+      }
+    }
     vi.stubGlobal("navigator", { clipboard: {}, platform: "Win32" });
     vi.stubGlobal("ClipboardItem", undefined);
+    vi.stubGlobal("FileReader", FakeFileReader);
+    vi.stubGlobal("getSelection", () => selection);
+    vi.stubGlobal("document", {
+      body,
+      createElement: vi.fn((tag) => ({
+        appendChild: vi.fn(),
+        contentEditable: "",
+        setAttribute: vi.fn(),
+        src: "",
+        style: {},
+        tag,
+      })),
+      createRange: vi.fn(() => range),
+      execCommand,
+    });
 
     await expect(
       copyBlob(new globalThis.Blob(["x"]), "image/png"),
-    ).rejects.toThrow("Image clipboard is not supported.");
+    ).resolves.toBe("fallback");
+  });
+
+  it("uses an HTML image clipboard fallback when native PNG clipboard is unsupported", async () => {
+    const write = vi.fn(async () => {});
+    class FakeClipboardItem {
+      static supports(type) {
+        return type === "text/html";
+      }
+
+      constructor(items) {
+        this.items = items;
+      }
+    }
+    class FakeFileReader {
+      readAsDataURL() {
+        this.result = "data:image/png;base64,eA==";
+        this.onload();
+      }
+    }
+    vi.stubGlobal("navigator", { clipboard: { write }, platform: "Win32" });
+    vi.stubGlobal("ClipboardItem", FakeClipboardItem);
+    vi.stubGlobal("FileReader", FakeFileReader);
+
+    await expect(
+      copyBlob(new globalThis.Blob(["x"]), "image/png"),
+    ).resolves.toBe("clipboard");
+
+    expect(write).toHaveBeenCalledWith([expect.any(FakeClipboardItem)]);
+    expect(write.mock.calls[0][0][0].items["text/html"]).toBeInstanceOf(
+      globalThis.Blob,
+    );
   });
 });

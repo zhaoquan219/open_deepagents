@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { renderMarkdownFragmentToHtml } from "../../../src/lib/markdown.js";
 import { parseMarkdownSegments } from "../../../src/lib/markdownSegments.js";
 
 describe("parseMarkdownSegments", () => {
@@ -128,5 +129,30 @@ second pass
       type: "mermaid",
     });
     expect(second[1].key).toBe(first[1].key);
+  });
+
+  it("renders markdown through a strict allowlist sanitizer", () => {
+    const html = renderMarkdownFragmentToHtml(
+      [
+        "[safe](https://example.test)",
+        '<a href="javascript:alert(1)" onclick="alert(2)" data-id="x">bad</a>',
+        '<img src=x onerror="alert(3)">',
+        "<svg><script>alert(4)</script></svg>",
+        '<span style="color:red">plain</span>',
+      ].join("\n\n"),
+    );
+
+    expect(html).toContain('<a href="https://example.test"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noreferrer noopener"');
+    expect(html).toContain("bad");
+    expect(html).toContain("plain");
+    expect(html).not.toContain("javascript:");
+    expect(html).not.toContain("onclick");
+    expect(html).not.toContain("data-id");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<svg");
+    expect(html).not.toContain("<script");
+    expect(html).not.toContain("style=");
   });
 });

@@ -33,12 +33,15 @@ export async function copyBlob(blob, mimeType) {
       if (mimeType !== "image/png") {
         throw error;
       }
+      try {
+        await copyPngBlobAsHtmlWithClipboard(blob, ClipboardItemCtor);
+        return "clipboard";
+      } catch {
+        // Fall through to the DOM selection fallback below.
+      }
     }
   }
   if (mimeType === "image/png") {
-    if (isWindowsPlatform()) {
-      throw new Error("Image clipboard is not supported.");
-    }
     return copyPngBlobWithExecCommand(blob);
   }
   throw new Error("Image clipboard is not supported.");
@@ -165,6 +168,27 @@ async function copyPngBlobWithClipboard(blob, ClipboardItemCtor) {
   }
 }
 
+async function copyPngBlobAsHtmlWithClipboard(blob, ClipboardItemCtor) {
+  if (
+    typeof ClipboardItemCtor.supports === "function" &&
+    !ClipboardItemCtor.supports("text/html")
+  ) {
+    throw new Error("HTML clipboard is not supported.");
+  }
+  const pngBlob =
+    blob.type === "image/png" ? blob : blob.slice(0, blob.size, "image/png");
+  const dataUrl = await blobToDataUrl(pngBlob);
+  const htmlBlob = new globalThis.Blob([`<img alt="" src="${dataUrl}">`], {
+    type: "text/html",
+  });
+  await navigator.clipboard.write([
+    new ClipboardItemCtor({
+      "text/html": htmlBlob,
+      "text/plain": new globalThis.Blob([dataUrl], { type: "text/plain" }),
+    }),
+  ]);
+}
+
 function blobToDataUrl(blob) {
   return new Promise((resolve, reject) => {
     if (typeof globalThis.FileReader !== "function") {
@@ -176,10 +200,6 @@ function blobToDataUrl(blob) {
     reader.onerror = () => reject(new Error("Unable to prepare PNG image."));
     reader.readAsDataURL(blob);
   });
-}
-
-function isWindowsPlatform() {
-  return /^win/i.test(String(navigator.platform || ""));
 }
 
 function loadImage(url) {

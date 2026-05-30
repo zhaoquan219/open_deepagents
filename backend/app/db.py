@@ -45,6 +45,10 @@ def new_id() -> str:
     return str(uuid4())
 
 
+def new_short_id() -> str:
+    return uuid4().hex[:12]
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -72,7 +76,7 @@ class SessionRecord(Base):
         Index("ix_sessions_status", "status"),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(String(12), primary_key=True, default=new_short_id)
     owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     title: Mapped[str] = mapped_column(String(255), default="New session", nullable=False)
     thread_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
@@ -131,7 +135,7 @@ class UploadRecord(Base):
         Index("ix_uploads_status", "status"),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(String(12), primary_key=True, default=new_short_id)
     session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)

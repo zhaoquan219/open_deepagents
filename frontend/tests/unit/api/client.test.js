@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildUploadContentUrl,
   createApiClient,
+  downloadUploadContent,
   normalizeRuntimeOptions,
 } from "../../../src/api/client.js";
 import { uiCopy } from "../../../src/lib/copy.js";
@@ -112,7 +113,7 @@ describe("createApiClient session normalization", () => {
       {
         id: "13205c0eabcd",
         name: "notes.txt",
-        path: "/uploads/13205c0eabcd/notes.txt",
+        path: "/uploads/session-1/notes.txt",
       },
     ];
 
@@ -477,7 +478,7 @@ describe("createApiClient session normalization", () => {
           expect.objectContaining({
             kind: "tool",
             title: "read_file",
-            summary: "读取完成",
+            summary: expect.stringContaining("读取完成"),
           }),
           expect.objectContaining({
             kind: "sandbox",
@@ -578,6 +579,138 @@ describe("createApiClient session normalization", () => {
         content: "再总结",
       }),
     ]);
+  });
+
+  it("attaches historical process events to the nearest preceding assistant turn", async () => {
+    const storage = {
+      getItem: vi.fn(() => "token-123"),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    };
+
+    vi.stubGlobal("window", {
+      location: { origin: "http://localhost:5173" },
+      localStorage: storage,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          events: [
+            {
+              id: "user-1",
+              seq: 1,
+              session_id: "session-history",
+              run_id: "run-history",
+              kind: "user.message",
+              type: "step",
+              role: "user",
+              content: "按顺序执行",
+              payload: { message: { role: "user", content: "按顺序执行" } },
+              created_at: "2026-05-05T00:00:00.000Z",
+            },
+            {
+              id: "assistant-1",
+              seq: 2,
+              session_id: "session-history",
+              run_id: "run-history",
+              kind: "assistant.message",
+              type: "message.final",
+              role: "assistant",
+              payload: { message: { role: "assistant", content: "我先搜索。" } },
+              created_at: "2026-05-05T00:00:01.000Z",
+            },
+            {
+              id: "tool-1",
+              seq: 3,
+              session_id: "session-history",
+              run_id: "run-history",
+              kind: "tool.completed",
+              type: "tool",
+              tool_name: "search",
+              payload: { tool_name: "search", status: "completed" },
+              created_at: "2026-05-05T00:00:02.000Z",
+            },
+            {
+              id: "tool-2",
+              seq: 4,
+              session_id: "session-history",
+              run_id: "run-history",
+              kind: "tool.completed",
+              type: "tool",
+              tool_name: "read_file",
+              payload: { tool_name: "read_file", status: "completed" },
+              created_at: "2026-05-05T00:00:03.000Z",
+            },
+            {
+              id: "assistant-2",
+              seq: 5,
+              session_id: "session-history",
+              run_id: "run-history",
+              kind: "assistant.message",
+              type: "message.final",
+              role: "assistant",
+              payload: { message: { role: "assistant", content: "我需要再搜一下。" } },
+              created_at: "2026-05-05T00:00:04.000Z",
+            },
+            {
+              id: "tool-3",
+              seq: 6,
+              session_id: "session-history",
+              run_id: "run-history",
+              kind: "tool.completed",
+              type: "tool",
+              tool_name: "grep",
+              payload: { tool_name: "grep", status: "completed" },
+              created_at: "2026-05-05T00:00:05.000Z",
+            },
+            {
+              id: "tool-4",
+              seq: 7,
+              session_id: "session-history",
+              run_id: "run-history",
+              kind: "tool.completed",
+              type: "tool",
+              tool_name: "read_file",
+              payload: { tool_name: "read_file", status: "completed" },
+              created_at: "2026-05-05T00:00:06.000Z",
+            },
+            {
+              id: "assistant-3",
+              seq: 8,
+              session_id: "session-history",
+              run_id: "run-history",
+              kind: "assistant.message",
+              type: "message.final",
+              role: "assistant",
+              payload: { message: { role: "assistant", content: "最终结论。" } },
+              created_at: "2026-05-05T00:00:07.000Z",
+            },
+          ],
+        }),
+      })),
+    );
+
+    const messages =
+      await createApiClient("/api").getSessionMessages("session-history");
+
+    expect(messages.map((message) => message.content)).toEqual([
+      "按顺序执行",
+      "我先搜索。",
+      "我需要再搜一下。",
+      "最终结论。",
+    ]);
+    expect(messages[1].processes.map((item) => item.id)).toEqual([
+      "3",
+      "4",
+    ]);
+    expect(messages[2].processes.map((item) => item.id)).toEqual([
+      "6",
+      "7",
+    ]);
+    expect(messages[3].processes).toEqual([]);
   });
 
   it("attaches late historical process events to the finalized assistant message", async () => {
@@ -741,7 +874,7 @@ describe("createApiClient session normalization", () => {
     ]);
   });
 
-  it("builds authenticated upload content URLs through the backend", async () => {
+  it("builds upload content URLs without exposing tokens", async () => {
     const storage = {
       getItem: vi.fn(() => "token-123"),
       setItem: vi.fn(),
@@ -754,10 +887,55 @@ describe("createApiClient session normalization", () => {
     });
 
     expect(buildUploadContentUrl("/api", "upload-1")).toBe(
-      "/api/uploads/upload-1/content?access_token=token-123",
-    );
-    expect(buildUploadContentUrl("/api", "upload-1", "")).toBe(
       "/api/uploads/upload-1/content",
+    );
+    expect(buildUploadContentUrl("/api", "upload-1")).toBe(
+      "/api/uploads/upload-1/content",
+    );
+  });
+
+  it("downloads uploads with Authorization headers instead of URL tokens", async () => {
+    const storage = {
+      getItem: vi.fn(() => "token-123"),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    };
+    const appendChild = vi.fn();
+    const remove = vi.fn();
+    const click = vi.fn();
+    const objectUrl = "blob:download-url";
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      blob: async () => new globalThis.Blob(["hello"], { type: "text/plain" }),
+    }));
+
+    vi.stubGlobal("window", {
+      location: { origin: "http://localhost:5173" },
+      localStorage: storage,
+      URL: {
+        createObjectURL: vi.fn(() => objectUrl),
+        revokeObjectURL: vi.fn(),
+      },
+    });
+    vi.stubGlobal("document", {
+      body: { appendChild },
+      createElement: vi.fn(() => ({ click, remove })),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await downloadUploadContent("/api/uploads/upload-1/content", "notes.txt");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/uploads/upload-1/content");
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe(
+      "Bearer token-123",
+    );
+    expect(fetchMock.mock.calls[0][0]).not.toContain("access_token");
+    expect(appendChild).toHaveBeenCalled();
+    expect(click).toHaveBeenCalled();
+    expect(remove).toHaveBeenCalled();
+    expect(globalThis.window.URL.revokeObjectURL).toHaveBeenCalledWith(
+      objectUrl,
     );
   });
 
@@ -831,7 +1009,8 @@ describe("createApiClient fallback errors", () => {
         name: "notes.txt",
         size: 5,
         status: "uploaded",
-        path: "/uploads/13205c0eabcd/notes.txt",
+        session_id: "session-1",
+        path: "/uploads/session-1/notes.txt",
         download_url: "/api/uploads/13205c0eabcd/content",
       }),
     }));
@@ -855,12 +1034,49 @@ describe("createApiClient fallback errors", () => {
         id: "13205c0eabcd",
         name: "notes.txt",
         status: "uploaded",
-        path: "/uploads/13205c0eabcd/notes.txt",
-        downloadUrl: "/api/uploads/13205c0eabcd/content?access_token=token-123",
+        sessionId: "session-1",
+        path: "/uploads/session-1/notes.txt",
+        downloadUrl: "/api/uploads/13205c0eabcd/content",
       }),
     ]);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/sessions/session-1/uploads");
     expect(fetchMock.mock.calls[0][1].body).toBeInstanceOf(globalThis.FormData);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe(
+      "Bearer token-123",
+    );
+  });
+
+  it("cancels runs through the backend endpoint", async () => {
+    const storage = {
+      getItem: vi.fn(() => "token-123"),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    };
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: "run-1",
+        session_id: "session-1",
+        status: "cancelled",
+      }),
+    }));
+
+    vi.stubGlobal("window", {
+      location: { origin: "http://localhost:5173" },
+      localStorage: storage,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(createApiClient("/api").cancelRun("run-1")).resolves.toEqual(
+      expect.objectContaining({
+        runId: "run-1",
+        sessionId: "session-1",
+        status: "cancelled",
+      }),
+    );
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/runs/run-1/cancel");
+    expect(fetchMock.mock.calls[0][1].method).toBe("POST");
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe(
       "Bearer token-123",
     );

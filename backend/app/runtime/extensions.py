@@ -28,6 +28,7 @@ class SandboxConfig:
     skills_root_dir: str | None = None
     memory_root_dir: str | None = None
     uploads_root_dir: str | None = None
+    mounts: dict[str, str] = field(default_factory=dict)
     virtual_mode: bool | None = True
     timeout: int = 120
     max_output_bytes: int = 100_000
@@ -62,12 +63,18 @@ class SandboxConfig:
         uploads_root_dir = raw.get("uploads_root_dir")
         if uploads_root_dir is not None and not isinstance(uploads_root_dir, str):
             raise ValueError("sandbox.uploads_root_dir must be a string when provided")
+        mounts = raw.get("mounts", {}) or {}
+        if not isinstance(mounts, Mapping) or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in mounts.items()
+        ):
+            raise ValueError("sandbox.mounts must be a mapping of virtual paths to root dirs")
         config = cls(
             kind=kind,
             root_dir=root_dir,
             skills_root_dir=skills_root_dir,
             memory_root_dir=memory_root_dir,
             uploads_root_dir=uploads_root_dir,
+            mounts=dict(mounts),
             virtual_mode=raw.get("virtual_mode"),
             timeout=timeout,
             max_output_bytes=max_output_bytes,
@@ -138,20 +145,21 @@ def resolve_backend(config: SandboxConfig) -> BackendProtocol | Any:
 def _with_mounted_roots(backend: BackendProtocol | Any, config: SandboxConfig) -> BackendProtocol:
     routes: dict[str, Any] = {}
     if config.skills_root_dir:
-        routes["/skills/"] = ReadOnlyBackend(
-            FilesystemBackend(root_dir=config.skills_root_dir, virtual_mode=True)
-        )
+        _add_read_only_route(routes, "/skills/", config.skills_root_dir)
     if config.memory_root_dir:
-        routes["/memory/"] = ReadOnlyBackend(
-            FilesystemBackend(root_dir=config.memory_root_dir, virtual_mode=True)
-        )
+        _add_read_only_route(routes, "/memory/", config.memory_root_dir)
     if config.uploads_root_dir:
-        routes["/uploads/"] = ReadOnlyBackend(
-            FilesystemBackend(root_dir=config.uploads_root_dir, virtual_mode=True)
-        )
+        _add_read_only_route(routes, "/uploads/", config.uploads_root_dir)
+    for route, root_dir in config.mounts.items():
+        _add_read_only_route(routes, route, root_dir)
     if not routes:
         return backend
     return CompositeBackend(default=backend, routes=routes)
+
+
+def _add_read_only_route(routes: dict[str, Any], route: str, root_dir: str) -> None:
+    normalized = "/" + route.strip("/") + "/"
+    routes[normalized] = ReadOnlyBackend(FilesystemBackend(root_dir=root_dir, virtual_mode=True))
 
 
 class ReadOnlyBackend:

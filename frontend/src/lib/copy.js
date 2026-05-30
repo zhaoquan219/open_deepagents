@@ -23,6 +23,7 @@ export const messages = {
     },
     processLog: {
       input: "输入",
+      output: "输出",
       loadedSkills: (count) => `已加载 ${count} 个技能`,
       kinds: {
         tool: "工具调用",
@@ -250,6 +251,7 @@ export const messages = {
     },
     processLog: {
       input: "Input",
+      output: "Output",
       loadedSkills: (count) => `${count} skill${count === 1 ? "" : "s"} loaded`,
       kinds: {
         tool: "Tool call",

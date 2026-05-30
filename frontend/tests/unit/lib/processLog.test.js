@@ -90,10 +90,11 @@ describe("processLog", () => {
 
     expect(entry.title).toBe("python script.py");
     expect(entry.summary).toContain("输入: python script.py");
+    expect(entry.summary).toContain("输出:");
     expect(entry.summary).toContain("ok");
   });
 
-  it("hides low-signal process start events by default", () => {
+  it("hides tool start events by default to avoid duplicate process rows", () => {
     const entry = logEntryFromEnvelope({
       eventId: "evt-tool-start",
       type: "tool",
@@ -105,6 +106,25 @@ describe("processLog", () => {
     });
 
     expect(entry).toBeNull();
+  });
+
+  it("shows tool parameters together with completed output", () => {
+    const entry = logEntryFromEnvelope({
+      eventId: "evt-tool-completed",
+      type: "tool",
+      label: "tool.completed",
+      detail: "read_file",
+      status: "completed",
+      timestamp: "2026-05-05T00:00:02.000Z",
+      data: {
+        input: { path: "/workspace/main/file.txt" },
+        output: { text: "file contents" },
+      },
+    });
+
+    expect(entry.summary).toContain("输入:");
+    expect(entry.summary).toContain("/workspace/main/file.txt");
+    expect(entry.summary).toContain("输出: file contents");
   });
 
   it("keeps subagent and error events visible while internal logs are hidden", () => {
@@ -210,6 +230,30 @@ describe("processLog", () => {
       "read_file",
       "read_file",
       "grep",
+    ]);
+  });
+
+  it("preserves caller event order instead of sorting by timestamp", () => {
+    const groups = groupProcessLogs([
+      {
+        id: "later",
+        kind: "tool",
+        title: "first emitted",
+        summary: "A",
+        timestamp: "2026-05-05T00:00:02Z",
+      },
+      {
+        id: "earlier",
+        kind: "tool",
+        title: "second emitted",
+        summary: "B",
+        timestamp: "2026-05-05T00:00:01Z",
+      },
+    ]);
+
+    expect(groups[0].items.map((item) => item.title)).toEqual([
+      "first emitted",
+      "second emitted",
     ]);
   });
 });

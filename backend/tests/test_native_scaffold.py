@@ -10,12 +10,14 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from deepagents.middleware.skills import _list_skills
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy import inspect, select
+from sqlalchemy.exc import IntegrityError
 
 from agents.middleware.audit_middleware import inject_attachment_context_message
 from app.agent import DeepAgentsRunContext, build_deep_agent
@@ -32,7 +34,6 @@ from app.catalog import (
     validate_model_catalog,
 )
 from app.db import (
-    PRODUCT_TABLES,
     Database,
     EventRecord,
     RunRecord,
@@ -40,9 +41,11 @@ from app.db import (
     UploadRecord,
     UserRecord,
     append_event,
+    now,
 )
 from app.main import create_app
 from app.path_utils import is_import_spec, split_import_spec
+from app.routes import _archive_session, _runtime_input_messages
 from app.runtime.extensions import SandboxConfig, load_object_from_spec, resolve_backend
 from app.settings import Settings, _database_target, _sqlite_database_path, import_from_spec
 
@@ -195,6 +198,12 @@ class ToolInterleavedModelGraph:
         }
 
 
+class FailingCheckpoint:
+    async def aget_tuple(self, config: dict[str, Any]) -> Any:
+        del config
+        raise RuntimeError("checkpoint database unavailable")
+
+
 def test_schema_is_product_projection(
     client: TestClient,
     auth_headers: dict[str, str],
@@ -239,16 +248,21 @@ def test_schema_is_product_projection(
             raise AssertionError("non-serializable event payload was accepted")
 
 
-def test_readiness_repairs_missing_product_tables(client: TestClient) -> None:
+def test_readiness_reports_missing_product_tables_without_repairing(
+    client: TestClient,
+) -> None:
     with client.app.state.database.engine.begin() as conn:
         conn.exec_driver_sql("DROP TABLE events")
 
     response = client.get("/ready")
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "error"
+    assert body["checks"]["schema"] == "invalid"
+    assert body["missing_product_tables"] == ["events"]
     inspector = inspect(client.app.state.database.engine)
-    assert PRODUCT_TABLES.issubset(set(inspector.get_table_names()))
+    assert "events" not in set(inspector.get_table_names())
 
 
 def test_auth_sync_uses_sql_user_state(tmp_path: Path) -> None:
@@ -287,6 +301,67 @@ def test_sessions_are_owner_isolated(client: TestClient, auth_headers: dict[str,
     bob = login_headers(client, "bob", "secret")
     assert client.get("/api/sessions", headers=bob).json() == []
     assert client.get(f"/api/sessions/{session['id']}", headers=bob).status_code == 404
+
+
+def test_query_string_tokens_are_rejected(
+    client: TestClient,
+    auth_headers: dict[str, str],
+) -> None:
+    token = auth_headers["Authorization"].split(" ", 1)[1]
+
+    response = client.get(f"/api/sessions?access_token={token}")
+
+    assert response.status_code == 401
+
+
+def test_delete_archives_session_and_revokes_history_and_uploads(
+    client: TestClient,
+    auth_headers: dict[str, str],
+) -> None:
+    session = client.post("/api/sessions", headers=auth_headers, json={"title": "Delete me"}).json()
+    upload = client.post(
+        f"/api/sessions/{session['id']}/uploads",
+        headers=auth_headers,
+        files={"file": ("notes.txt", b"secret upload", "text/plain")},
+    ).json()
+    assert (
+        client.get(f"/api/uploads/{upload['id']}/content", headers=auth_headers).status_code
+        == 200
+    )
+
+    delete = client.delete(f"/api/sessions/{session['id']}", headers=auth_headers)
+
+    assert delete.status_code == 204
+    assert all(
+        row["id"] != session["id"]
+        for row in client.get("/api/sessions", headers=auth_headers).json()
+    )
+    assert client.get(f"/api/sessions/{session['id']}", headers=auth_headers).status_code == 404
+    assert (
+        client.get(f"/api/sessions/{session['id']}/events", headers=auth_headers).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            f"/api/sessions/{session['id']}/runs",
+            headers=auth_headers,
+            json={"prompt": "should not run"},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(f"/api/uploads/{upload['id']}/content", headers=auth_headers).status_code
+        == 404
+    )
+    with client.app.state.database.session() as db:
+        session_record = db.get(SessionRecord, session["id"])
+        upload_record = db.get(UploadRecord, upload["id"])
+        assert session_record is not None
+        assert session_record.status == "archived"
+        assert session_record.archived_at is not None
+        assert upload_record is not None
+        assert upload_record.status == "deleted"
+        assert upload_record.deleted_at is not None
 
 
 def test_models_catalog_public_output_and_validation(tmp_path: Path, monkeypatch) -> None:
@@ -934,11 +1009,26 @@ def test_shell_sandbox_preserves_native_filesystem_permissions(monkeypatch) -> N
     assert captured["permissions"][0].operations == ["read"]
     assert captured["backend"].__class__.__name__ == "CompositeBackend"
     assert captured["backend"].default.__class__.__name__ == "LocalShellBackend"
+    assert captured["skills"] == ["/skills/skill-creator"]
+    assert captured["memory"] == ["/memory/project.md"]
+    assert "/subagents/code-reviewer/skills/" in captured["backend"].routes
+    assert "/subagents/code-reviewer/memory/" in captured["backend"].routes
     assert all(
         "permissions" in subagent and subagent["permissions"]
         for subagent in captured["subagents"]
         if isinstance(subagent, dict)
     )
+    assert captured["subagents"][0]["skills"] == [
+        "/subagents/code-reviewer/skills/review-checklist"
+    ]
+    assert "memory" not in captured["subagents"][0]
+    subagent_memory = [
+        middleware
+        for middleware in captured["subagents"][0]["middleware"]
+        if middleware.__class__.__name__ == "MemoryMiddleware"
+    ]
+    assert len(subagent_memory) == 1
+    assert subagent_memory[0].sources == ["/subagents/code-reviewer/memory/review.md"]
 
 
 def test_event_sequence_allocation_is_atomic_in_process(tmp_path: Path) -> None:
@@ -965,6 +1055,42 @@ def test_event_sequence_allocation_is_atomic_in_process(tmp_path: Path) -> None:
 
     with database.session() as db:
         assert [row.seq for row in db.query(EventRecord).order_by(EventRecord.seq)] == [1, 2]
+
+
+def test_event_append_integrity_error_preserves_outer_transaction(tmp_path: Path) -> None:
+    database = Database(f"sqlite+pysqlite:///{tmp_path / 'event-conflict.db'}")
+    database.initialize_schema()
+
+    with pytest.raises(IntegrityError):
+        with database.session() as db:
+            user = UserRecord(username="admin", password_hash="hash")
+            db.add(user)
+            db.flush()
+            session = SessionRecord(owner_user_id=user.id, title="Seq", thread_id="thread-seq")
+            db.add(session)
+            db.flush()
+            run = RunRecord(
+                session_id=session.id,
+                user_id=user.id,
+                thread_id=session.thread_id,
+                agent_id="agent",
+                model_id="model",
+                status="running",
+                started_at=now(),
+            )
+            db.add(run)
+            db.flush()
+            with patch(
+                "app.db._next_event_seq",
+                side_effect=IntegrityError("synthetic", {}, Exception("conflict")),
+            ):
+                append_event(db, session_id=session.id, run_id=run.id, kind="conflict", type="step")
+
+            raise AssertionError("append_event unexpectedly swallowed the conflict")
+
+    with database.session() as db:
+        assert db.scalar(select(RunRecord)) is None
+        assert db.scalar(select(EventRecord)) is None
 
 
 def test_run_lifecycle_persists_runs_events_and_native_context(
@@ -1017,6 +1143,20 @@ def test_run_lifecycle_persists_runs_events_and_native_context(
     assert "compiled_prompt_hash" in prompt_audit["payload"]
     assert "hello" not in json.dumps(prompt_audit)
     assert any(event["tool_name"] == "echo" for event in history)
+    tool_event = next(
+        event
+        for event in history
+        if event["kind"] == "tool.completed" and event["tool_name"] == "echo"
+    )
+    assert tool_event["payload"]["input"] == {"text": "hello"}
+    assert tool_event["payload"]["output"] == {"text": "echo:hello"}
+    sandbox_event = next(
+        event
+        for event in history
+        if event["kind"] == "sandbox.completed" and event["tool_name"] == "execute"
+    )
+    assert sandbox_event["payload"]["input"] == {"command": "python -c 'print(1)'"}
+    assert sandbox_event["payload"]["output"] == {"stdout": "1\n", "stderr": ""}
 
     with client.app.state.database.session() as db:
         run = db.scalar(select(RunRecord).where(RunRecord.session_id == session["id"]))
@@ -1241,6 +1381,7 @@ def test_uploads_are_stored_as_sandbox_readable_run_attachments(
         lambda settings, model_id=None: graph,
     )
     session = client.post("/api/sessions", headers=auth_headers, json={}).json()
+    assert re.match(r"^[a-f0-9]{12}$", session["id"])
     upload = client.post(
         f"/api/sessions/{session['id']}/uploads",
         headers=auth_headers,
@@ -1249,7 +1390,8 @@ def test_uploads_are_stored_as_sandbox_readable_run_attachments(
     assert upload.status_code == 201
     attachment = upload.json()
     assert re.match(r"^[a-f0-9]{12}$", attachment["id"])
-    assert attachment["path"] == f"/uploads/{attachment['id']}/notes.txt"
+    assert attachment["session_id"] == session["id"]
+    assert attachment["path"] == f"/uploads/{session['id']}/notes.txt"
     assert attachment["content_type"] == "text/plain"
 
     with client.app.state.database.session() as db:
@@ -1257,7 +1399,16 @@ def test_uploads_are_stored_as_sandbox_readable_run_attachments(
         assert upload_record is not None
         assert upload_record.session_id == session["id"]
         assert upload_record.filename == "notes.txt"
-        assert upload_record.storage_path == f"{attachment['id']}/notes.txt"
+        assert upload_record.storage_path == f"{session['id']}/notes.txt"
+        assert len(
+            db.scalars(
+                select(UploadRecord).where(
+                    UploadRecord.session_id == session["id"],
+                    UploadRecord.user_id == upload_record.user_id,
+                    UploadRecord.filename == "notes.txt",
+                )
+            ).all()
+        ) == 1
 
     windows_named_upload = client.post(
         f"/api/sessions/{session['id']}/uploads",
@@ -1265,20 +1416,26 @@ def test_uploads_are_stored_as_sandbox_readable_run_attachments(
         files={"file": (r"C:\Users\me\notes.txt", b"UPLOAD_WINDOWS_MARKER", "text/plain")},
     )
     assert windows_named_upload.status_code == 201
-    assert windows_named_upload.json()["id"] != attachment["id"]
+    assert windows_named_upload.json()["id"] == attachment["id"]
     assert windows_named_upload.json()["name"] == "notes.txt"
-    assert windows_named_upload.json()["path"] == (
-        f"/uploads/{windows_named_upload.json()['id']}/notes.txt"
-    )
+    assert windows_named_upload.json()["path"] == f"/uploads/{session['id']}/notes.txt"
+    with client.app.state.database.session() as db:
+        upload_rows = db.scalars(
+            select(UploadRecord).where(
+                UploadRecord.session_id == session["id"],
+                UploadRecord.filename == "notes.txt",
+            )
+        ).all()
+        assert len(upload_rows) == 1
 
     backend = resolve_backend(
         SandboxConfig.from_mapping(client.app.state.settings.sandbox_settings())
     )
-    assert "UPLOAD_E2E_MARKER" in backend.read(attachment["path"]).file_data["content"]
+    assert "UPLOAD_WINDOWS_MARKER" in backend.read(attachment["path"]).file_data["content"]
 
     download = client.get(f"/api/uploads/{attachment['id']}/content", headers=auth_headers)
     assert download.status_code == 200
-    assert download.content == b"UPLOAD_E2E_MARKER"
+    assert download.content == b"UPLOAD_WINDOWS_MARKER"
 
     with client.stream(
         "POST",
@@ -1289,10 +1446,10 @@ def test_uploads_are_stored_as_sandbox_readable_run_attachments(
         assert response.status_code == 200
         _ = sse_events(response.read().decode())
 
-        assert len(graph.contexts[0].current_attachments) == 1
-        assert graph.contexts[0].current_attachments[0]["path"] == attachment["path"]
-        assert graph.contexts[0].attachments[0]["path"] == attachment["path"]
-        assert graph.inputs[0]["messages"][0]["content"] == "read my upload"
+        assert len(graph.contexts[-1].current_attachments) == 1
+        assert graph.contexts[-1].current_attachments[0]["path"] == attachment["path"]
+        assert graph.contexts[-1].attachments[0]["path"] == attachment["path"]
+        assert graph.inputs[-1]["messages"][-1]["content"] == "read my upload"
 
     delete = client.delete(f"/api/uploads/{attachment['id']}", headers=auth_headers)
     assert delete.status_code == 204
@@ -1305,17 +1462,37 @@ def test_uploads_are_stored_as_sandbox_readable_run_attachments(
         assert upload_record.deleted_at is not None
 
     history = client.get(f"/api/sessions/{session['id']}/events", headers=auth_headers).json()
-    user_event = next(event for event in history if event["kind"] == "user.message")
+    user_event = next(
+        event
+        for event in history
+        if event["kind"] == "user.message" and event["content"] == "read my upload"
+    )
     assert len(user_event["payload"]["attachments"]) == 1
     assert user_event["payload"]["attachments"][0]["path"] == attachment["path"]
-    system_event = next(event for event in history if event["kind"] == "system.message")
+    system_event = next(
+        event
+        for event in history
+        if event["kind"] == "system.message" and attachment["path"] in str(event["content"])
+    )
     assert system_event["role"] == "system"
     assert "UPLOAD" not in system_event["content"]
     assert attachment["path"] in system_event["content"]
     assert system_event["payload"]["source"] == "middleware.InjectAttachmentContextMessage"
-    middleware_event = next(event for event in history if event["kind"] == "middleware.applied")
+    assert system_event["payload"]["attachment_count"] == 1
+    assert system_event["payload"]["attachment_paths"] == [attachment["path"]]
+    middleware_event = next(
+        event
+        for event in history
+        if event["kind"] == "middleware.applied"
+        and event["payload"]["attachment_paths"] == [attachment["path"]]
+    )
     assert middleware_event["payload"]["attachment_count"] == 1
-    audit_event = next(event for event in history if event["kind"] == "prompt.compiled")
+    audit_event = next(
+        event
+        for event in history
+        if event["kind"] == "prompt.compiled"
+        and event["payload"]["compiled_prompt"] == "read my upload"
+    )
     assert audit_event["payload"]["compiled_prompt"] == "read my upload"
     assert audit_event["payload"]["context"]["attachment_count"] == 1
     assert audit_event["payload"]["context"]["attachments"][0]["path"] == attachment["path"]
@@ -1387,6 +1564,18 @@ def test_run_attachment_resolution_rejects_upload_ids_from_other_sessions(
 
     assert response.status_code == 404
     assert "Upload not found" in response.text
+
+    mismatched_session = client.post(
+        f"/api/sessions/{first['id']}/runs",
+        headers=auth_headers,
+        json={
+            "prompt": "read mismatched metadata",
+            "attachments": [{**upload, "session_id": second["id"]}],
+        },
+    )
+
+    assert mismatched_session.status_code == 404
+    assert "Upload not found" in mismatched_session.text
 
 
 def test_chain_end_only_runs_still_emit_one_final_assistant_message(
@@ -1504,13 +1693,190 @@ def test_runtime_failure_updates_run_without_completion(
         assert run.status == "failed"
 
 
+def test_runtime_stops_persisting_events_after_run_is_cancelled(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    monkeypatch,
+) -> None:
+    class SelfCancellingGraph:
+        async def astream_events(
+            self,
+            agent_input: Any,
+            *,
+            config: Any,
+            context: Any,
+        ) -> AsyncIterator[dict[str, Any]]:
+            del agent_input, config
+            yield {
+                "event": "on_chat_model_stream",
+                "name": "model",
+                "data": {"chunk": {"content": "before-cancel"}},
+            }
+            with client.app.state.database.session() as db:
+                run = db.get(RunRecord, context.run_id)
+                assert run is not None
+                run.cancel_requested_at = now()
+                run.status = "cancelled"
+                run.ended_at = now()
+                run.session.status = "idle"
+                append_event(
+                    db,
+                    session_id=run.session_id,
+                    run_id=run.id,
+                    kind="run.cancelled",
+                    type="status",
+                    payload={"status": "cancelled", "terminal": True},
+                )
+            yield {
+                "event": "on_chat_model_stream",
+                "name": "model",
+                "data": {"chunk": {"content": "after-cancel"}},
+            }
+            yield {
+                "event": "on_chain_end",
+                "name": "deepagents-web",
+                "data": {"output": {"messages": [AIMessage(content="after-cancel")]}},
+            }
+
+    monkeypatch.setattr(
+        "app.routes.runtime_agent.build_deep_agent",
+        lambda settings, model_id=None: SelfCancellingGraph(),
+    )
+    session = client.post("/api/sessions", headers=auth_headers, json={}).json()
+
+    with client.stream(
+        "POST",
+        f"/api/sessions/{session['id']}/runs/stream",
+        headers=auth_headers,
+        json={"prompt": "stop me"},
+    ) as response:
+        assert response.status_code == 200
+        _ = sse_events(response.read().decode())
+
+    history = client.get(f"/api/sessions/{session['id']}/events", headers=auth_headers).json()
+    encoded_history = json.dumps(history)
+    assert "before-cancel" in encoded_history
+    assert "after-cancel" not in encoded_history
+    assert [event["kind"] for event in history].count("run.cancelled") == 1
+    assert "run.completed" not in [event["kind"] for event in history]
+
+
+def test_delete_session_cancels_active_run_and_stops_runtime_persistence(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    monkeypatch,
+) -> None:
+    class DeleteSessionGraph:
+        async def astream_events(
+            self,
+            agent_input: Any,
+            *,
+            config: Any,
+            context: Any,
+        ) -> AsyncIterator[dict[str, Any]]:
+            del agent_input, config
+            yield {
+                "event": "on_chat_model_stream",
+                "name": "model",
+                "data": {"chunk": {"content": "before-delete"}},
+            }
+            with client.app.state.database.session() as db:
+                session = db.get(SessionRecord, context.session_id)
+                assert session is not None
+                _archive_session(db, client.app.state.settings, session.owner, session)
+            yield {
+                "event": "on_chat_model_stream",
+                "name": "model",
+                "data": {"chunk": {"content": "after-delete"}},
+            }
+            yield {
+                "event": "on_chain_end",
+                "name": "deepagents-web",
+                "data": {"output": {"messages": [AIMessage(content="after-delete")]}},
+            }
+
+    monkeypatch.setattr(
+        "app.routes.runtime_agent.build_deep_agent",
+        lambda settings, model_id=None: DeleteSessionGraph(),
+    )
+    session = client.post("/api/sessions", headers=auth_headers, json={}).json()
+
+    with client.stream(
+        "POST",
+        f"/api/sessions/{session['id']}/runs/stream",
+        headers=auth_headers,
+        json={"prompt": "delete me while running"},
+    ) as response:
+        assert response.status_code == 200
+        _ = sse_events(response.read().decode())
+
+    assert client.get(f"/api/sessions/{session['id']}", headers=auth_headers).status_code == 404
+    with client.app.state.database.session() as db:
+        run = db.scalar(select(RunRecord).where(RunRecord.session_id == session["id"]))
+        assert run is not None
+        assert run.status == "cancelled"
+        assert run.cancel_requested_at is not None
+        events = db.scalars(
+            select(EventRecord)
+            .where(EventRecord.session_id == session["id"])
+            .order_by(EventRecord.seq)
+        ).all()
+    encoded_events = json.dumps([event.payload | {"kind": event.kind} for event in events])
+    assert "before-delete" in encoded_events
+    assert "after-delete" not in encoded_events
+    assert [event.kind for event in events].count("run.cancelled") == 1
+    cancelled = next(event for event in events if event.kind == "run.cancelled")
+    assert cancelled.payload["reason"] == "session_archived"
+    assert "run.completed" not in [event.kind for event in events]
+
+
+def test_checkpoint_probe_failure_is_not_treated_as_missing_checkpoint() -> None:
+    settings = Settings(deepagents_checkpoint_backend="memory")
+    settings.__dict__["runtime_components"] = {
+        "checkpointer": FailingCheckpoint(),
+        "store": object(),
+        "cache": object(),
+    }
+
+    with pytest.raises(RuntimeError, match="Runtime checkpoint probe failed"):
+        asyncio.run(
+            _runtime_input_messages(
+                settings,
+                {"configurable": {"thread_id": "thread-1"}},
+                {
+                    "prompt": "current",
+                    "messages": [
+                        {"role": "user", "content": "previous"},
+                        {"role": "user", "content": "current"},
+                    ],
+                },
+            )
+        )
+
+
 def test_ready_endpoint_reports_safe_checks(client: TestClient) -> None:
     response = client.get("/ready")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
     assert body["checks"]["schema"] == "ok"
+    assert body["checks"]["runtime_persistence"] == "ok"
     assert "secret" not in json.dumps(body).lower()
+
+
+def test_ready_endpoint_reports_runtime_probe_failures(client: TestClient) -> None:
+    client.app.state.settings.__dict__["runtime_components"] = {
+        "checkpointer": FailingCheckpoint(),
+        "store": object(),
+        "cache": object(),
+    }
+
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "error"
+    assert body["checks"]["runtime_persistence"] == "error"
 
 
 def test_static_backend_contracts() -> None:
@@ -1548,6 +1914,17 @@ def test_default_agent_selection_uses_local_skill_and_memory_registries() -> Non
     ]
 
 
+def test_routes_do_not_import_package_middleware_for_initial_events() -> None:
+    routes_source = (Path(__file__).resolve().parents[1] / "app" / "routes.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "agents.middleware" not in routes_source
+    assert "attachment_context_content" not in routes_source
+    assert "ATTACHMENT_CONTEXT_SOURCE" not in routes_source
+    assert "app.runtime.attachment_context" not in routes_source
+
+
 def test_run_context_supports_mapping_style_access_for_middleware() -> None:
     context = DeepAgentsRunContext(
         session_id="session-1",
@@ -1576,7 +1953,11 @@ def test_attachment_context_middleware_lists_only_current_uploads() -> None:
     assert "exactly 1 file(s)" in content
     assert content.count("- AGENTS.md:") == 1
     assert "untrusted data" in content
-    assert "Do not infer sibling files" in content
+    assert "do not infer sibling files" in content
+    events = inject_attachment_context_message.deepagents_initial_events(RuntimeStub.context)
+    assert events[0]["kind"] == "system.message"
+    assert events[0]["content"] == content
+    assert events[0]["payload"]["source"] == "middleware.InjectAttachmentContextMessage"
 
 
 def test_mysql_schema_initialization_creates_database_if_needed(monkeypatch) -> None:

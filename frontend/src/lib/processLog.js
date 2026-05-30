@@ -134,7 +134,10 @@ function summaryFor(envelope) {
       data.input?.command ?? data.input?.cmd ?? data.command,
     ).trim();
     const output = text(data.output ?? data.result).trim();
-    return [command ? `${uiCopy.processLog.input}: ${command}` : "", output]
+    return [
+      command ? `${uiCopy.processLog.input}: ${command}` : "",
+      output ? `${uiCopy.processLog.output}: ${output}` : "",
+    ]
       .filter(Boolean)
       .join("\n");
   }
@@ -145,14 +148,21 @@ function summaryFor(envelope) {
       data.input,
   ).trim();
   const output = text(data.output ?? data.result).trim();
-  return output || input || text(envelope.detail).trim();
+  const parts = [
+    input ? `${uiCopy.processLog.input}: ${input}` : "",
+    output ? `${uiCopy.processLog.output}: ${output}` : "",
+  ].filter(Boolean);
+  return parts.join("\n") || text(envelope.detail).trim();
 }
 
 export function logEntryFromEnvelope(envelope) {
   if (!envelope) {
     return null;
   }
-  if (!showInternalLogs() && LOW_SIGNAL_PROCESS_LABELS.has(envelope.label)) {
+  if (
+    !showInternalLogs() &&
+    LOW_SIGNAL_PROCESS_LABELS.has(envelope.label)
+  ) {
     return null;
   }
   if (!PROCESS_TYPES.has(envelope.type) && envelope.type !== "error") {
@@ -231,16 +241,9 @@ function aggregateStatus(entries) {
 }
 
 export function groupProcessLogs(entries) {
-  const sorted = [...entries]
-    .filter(processEntryHasContent)
-    .sort((left, right) => {
-      const byTime = String(left.timestamp || "").localeCompare(
-        String(right.timestamp || ""),
-      );
-      return byTime || String(left.id).localeCompare(String(right.id));
-    });
+  const ordered = entries.filter(processEntryHasContent);
 
-  if (sorted.length === 0) {
+  if (ordered.length === 0) {
     return [];
   }
 
@@ -297,7 +300,7 @@ export function groupProcessLogs(entries) {
     startGroup(entry);
   }
 
-  for (const entry of sorted) {
+  for (const entry of ordered) {
     trackEntry(entry);
   }
   completeGroup();

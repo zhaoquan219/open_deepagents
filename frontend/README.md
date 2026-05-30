@@ -72,15 +72,16 @@ The frontend expects these core endpoints:
 | `GET /api/sessions`                         | List sessions for the current user.     |
 | `POST /api/sessions`                        | Create a session.                       |
 | `PATCH /api/sessions/:sessionId`            | Update title or metadata.               |
-| `DELETE /api/sessions/:sessionId`           | Delete a session.                       |
+| `DELETE /api/sessions/:sessionId`           | Archive a session and revoke uploads.   |
 | `GET /api/sessions/:sessionId/events`       | Load transcript and runtime history.    |
 | `POST /api/sessions/:sessionId/uploads`     | Upload one file for the active session. |
 | `POST /api/sessions/:sessionId/runs/stream` | Start and stream one agent run.         |
-| `GET /api/uploads/:uploadId/content`        | Download an owned upload.               |
+| `GET /api/uploads/:uploadId/content`        | Download an owned upload with bearer auth. |
 | `DELETE /api/uploads/:uploadId`             | Delete an owned upload.                 |
 
-The client can abort the active fetch stream locally; the backend also exposes
-durable run status and cancel endpoints for owned runs.
+The client stops an active run through the backend cancel endpoint, then aborts
+the local fetch stream. Attachment downloads use `fetch` with the bearer token
+in the `Authorization` header rather than embedding credentials in URLs.
 
 ## SSE Events
 

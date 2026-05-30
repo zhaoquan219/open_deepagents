@@ -217,7 +217,7 @@ function removeUpload(file) {
               <h2>
                 {{
                   props.currentSession?.title ||
-                  uiCopy.workspace.newSessionTitle
+                    uiCopy.workspace.newSessionTitle
                 }}
               </h2>
             </div>
@@ -333,9 +333,11 @@ function removeUpload(file) {
       <ul v-if="props.pendingUploads.length" class="upload-list">
         <li v-for="file in props.pendingUploads" :key="file.id">
           <span class="upload-list-filename">{{ file.name }}</span>
-          <el-tag size="small" effect="plain">{{
-            uploadStatusLabel(file.status)
-          }}</el-tag>
+          <el-tag size="small" effect="plain">
+            {{
+              uploadStatusLabel(file.status)
+            }}
+          </el-tag>
           <el-button
             text
             size="small"

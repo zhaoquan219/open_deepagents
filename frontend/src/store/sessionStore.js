@@ -114,6 +114,7 @@ function normalizeAttachments(attachments) {
     ),
     status: String(attachment?.status ?? "uploaded"),
     path: String(attachment?.path ?? ""),
+    sessionId: String(attachment?.session_id ?? attachment?.sessionId ?? ""),
     downloadUrl: String(
       attachment?.downloadUrl ?? attachment?.download_url ?? "",
     ),
@@ -122,6 +123,20 @@ function normalizeAttachments(attachments) {
 
 function normalizeProcesses(processes) {
   return Array.isArray(processes) ? processes.filter(Boolean) : [];
+}
+
+function findLastAssistantIndexForRun(messages, runId) {
+  const normalizedRunId = String(runId || "");
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (
+      message?.role === "assistant" &&
+      String(message.runId || "") === normalizedRunId
+    ) {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function messageSignature(message) {
@@ -256,11 +271,7 @@ export function appendProcessEvent(messages, { runId, event }) {
   const transcript = [...messages];
   let targetIndex = transcript.findIndex((message) => message.id === streamId);
   if (targetIndex === -1) {
-    targetIndex = transcript.findIndex(
-      (message) =>
-        message.role === "assistant" &&
-        String(message.runId || "") === String(runId),
-    );
+    targetIndex = findLastAssistantIndexForRun(transcript, runId);
   }
   if (targetIndex === -1) {
     transcript.push({

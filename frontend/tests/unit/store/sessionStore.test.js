@@ -122,7 +122,7 @@ describe("sessionStore transcript helpers", () => {
             id: "evt-tool",
             kind: "tool",
             title: "search_docs",
-            summary: "found 2 matches",
+            summary: expect.stringContaining("found 2 matches"),
             status: "completed",
           }),
         ],
@@ -190,6 +190,57 @@ describe("sessionStore transcript helpers", () => {
         processes: [
           expect.objectContaining({ id: "tool-late", title: "read_file" }),
         ],
+      }),
+    ]);
+  });
+
+  it("attaches live process events to the latest assistant row for that run", () => {
+    const first = finalizeAssistantMessage(
+      mergeAssistantDelta([], { runId: "run-order", delta: "先搜索" }),
+      {
+        runId: "run-order",
+        message: {
+          id: "msg-1",
+          content: "先搜索",
+        },
+      },
+    );
+    const withFirstTools = appendProcessEvent(first, {
+      runId: "run-order",
+      event: {
+        id: "tool-1",
+        kind: "tool",
+        title: "search",
+        summary: "done",
+        status: "completed",
+      },
+    });
+    const second = finalizeAssistantMessage(withFirstTools, {
+      runId: "run-order",
+      message: {
+        id: "msg-2",
+        content: "再搜索",
+      },
+    });
+    const withSecondTools = appendProcessEvent(second, {
+      runId: "run-order",
+      event: {
+        id: "tool-2",
+        kind: "tool",
+        title: "read_file",
+        summary: "done",
+        status: "completed",
+      },
+    });
+
+    expect(withSecondTools).toEqual([
+      expect.objectContaining({
+        id: "msg-1",
+        processes: [expect.objectContaining({ id: "tool-1" })],
+      }),
+      expect.objectContaining({
+        id: "msg-2",
+        processes: [expect.objectContaining({ id: "tool-2" })],
       }),
     ]);
   });

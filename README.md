@@ -146,13 +146,13 @@ The frontend dev server defaults to `http://127.0.0.1:5173`.
 | `GET /api/sessions` | List the current user's sessions. |
 | `POST /api/sessions` | Create a session. |
 | `PATCH /api/sessions/{session_id}` | Update title or metadata. |
-| `DELETE /api/sessions/{session_id}` | Delete an owned session and events. |
+| `DELETE /api/sessions/{session_id}` | Archive an owned session, hide normal history, and revoke uploads. |
 | `GET /api/sessions/{session_id}/events?after_seq=N` | Load durable ordered history. |
-| `POST /api/sessions/{session_id}/uploads` | Store a session-owned upload row and return `/uploads/{upload_id}/{filename}`. |
+| `POST /api/sessions/{session_id}/uploads` | Store a session-owned upload row and return `/uploads/{session_id}/{filename}`. |
 | `POST /api/sessions/{session_id}/runs/stream` | Start and stream one run. |
 
-There is no split `/api/runs` endpoint. The client cancels by aborting the fetch
-stream.
+The client stops a run through `POST /api/runs/{run_id}/cancel`, then closes the
+active fetch stream.
 
 ## Model Catalog
 

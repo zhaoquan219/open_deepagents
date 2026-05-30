@@ -6,6 +6,10 @@ import ChatWorkspace from "./components/ChatWorkspace.vue";
 import SessionSidebar from "./components/SessionSidebar.vue";
 import { createApiClient } from "./api/client.js";
 import { localeState, setLocale, uiCopy } from "./lib/copy.js";
+import {
+  initializeAuthenticatedApp,
+  isForeignSessionStreamEnvelope,
+} from "./lib/appBootstrap.js";
 import { normalizeStreamEnvelope } from "./lib/sseContract.js";
 import { createRunStore } from "./store/runStore.js";
 import { createSessionStore } from "./store/sessionStore.js";
@@ -362,13 +366,40 @@ async function handleSubmit({ prompt }) {
           );
           return;
         }
+        if (isForeignSessionStreamEnvelope(envelope, sessionId)) {
+          logRuntime(
+            "fetch-stream.drop",
+            uiCopy.app.logs.sseDrop,
+            {
+              expectedSessionId: sessionId,
+              eventId: envelope.eventId,
+              sessionId: envelope.sessionId,
+            },
+            "warn",
+          );
+          return;
+        }
         if (
           !runStore.state.activeRun ||
           runStore.state.activeRun.runId !== envelope.runId
         ) {
           runStore.beginRun({ runId: envelope.runId, sessionId });
         }
-        runStore.consume(envelope);
+        const accepted = runStore.consume(envelope);
+        if (!accepted) {
+          if (isTerminalEnvelope(envelope)) {
+            closeStream({
+              markDisconnected: true,
+              detail:
+                envelope.type === "error"
+                  ? uiCopy.app.stream.terminalError
+                  : envelope.status === "cancelled"
+                    ? uiCopy.app.stream.terminalCancelled
+                    : uiCopy.app.stream.terminalCompleted,
+            });
+          }
+          return;
+        }
         consumeSessionRunEvent(envelope);
         if (isTerminalEnvelope(envelope)) {
           closeStream({
@@ -441,8 +472,8 @@ async function handleStopRun() {
   stoppingRunId.value = runId;
   runStore.markCancelling(runId, uiCopy.common.cancelling);
   try {
-    activeStream.value?.close?.();
     const result = await apiClient.cancelRun(runId);
+    activeStream.value?.close?.();
     if (result.status === "cancelled") {
       runStore.markCancelled(runId, uiCopy.app.notices.stopped);
       sessionStore.discardStreamingMessage(sessionId, runId);
@@ -495,18 +526,20 @@ async function handleStopRun() {
 }
 
 onMounted(async () => {
-  try {
-    await apiClient.getAdminProfile();
-    isAuthenticated.value = true;
-    await loadRuntimeOptions();
-    await sessionStore.loadSessions();
-    if (sessionStore.state.currentSessionId) {
-      await sessionStore.selectSession(sessionStore.state.currentSessionId);
-    }
-  } catch {
-    apiClient.logout();
-    isAuthenticated.value = false;
-  } finally {
+  await initializeAuthenticatedApp({
+    apiClient,
+    loadRuntimeOptions,
+    sessionStore,
+    markAuthenticated: () => {
+      isAuthenticated.value = true;
+      authChecked.value = true;
+    },
+    markUnauthenticated: () => {
+      isAuthenticated.value = false;
+      authChecked.value = true;
+    },
+  });
+  if (!authChecked.value) {
     authChecked.value = true;
   }
 });

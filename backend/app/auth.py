@@ -100,7 +100,7 @@ def current_user(
             )
         assert user is not None
         return user
-    token = credentials.credentials if credentials else request.query_params.get("access_token")
+    token = credentials.credentials if credentials else None
     if not token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required")
     username = decode_token(token, settings)

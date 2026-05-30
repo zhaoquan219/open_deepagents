@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import shutil
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -17,7 +17,6 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from agents.middleware.audit_middleware import attachment_context_content
 from app import agent as runtime_agent
 from app.auth import CurrentUser, DbSession, create_token, verify_password
 from app.catalog import default_model_id, model_options, resolve_agent
@@ -178,11 +177,58 @@ def update_session(
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
-def delete_session(session_id: str, db: DbSession, user: CurrentUser) -> Response:
-    session = _owned_session(db, user, session_id)
-    session.status = "archived"
-    session.archived_at = now()
+def delete_session(
+    session_id: str,
+    request: Request,
+    db: DbSession,
+    user: CurrentUser,
+) -> Response:
+    session = _owned_session(db, user, session_id, include_archived=True)
+    _archive_session(db, request.app.state.settings, user, session)
     return Response(status_code=204)
+
+
+def _archive_session(
+    db: DbSession,
+    settings: Settings,
+    user: UserRecord,
+    session: SessionRecord,
+) -> None:
+    archived_at = now()
+    for run in db.scalars(
+        select(RunRecord).where(
+            RunRecord.session_id == session.id,
+            RunRecord.user_id == user.id,
+            RunRecord.status == "running",
+        )
+    ):
+        run.cancel_requested_at = run.cancel_requested_at or archived_at
+        run.status = "cancelled"
+        run.ended_at = archived_at
+        append_event(
+            db,
+            session_id=run.session_id,
+            run_id=run.id,
+            kind="run.cancelled",
+            type="status",
+            payload={
+                "status": "cancelled",
+                "terminal": True,
+                "reason": "session_archived",
+            },
+        )
+    session.status = "archived"
+    session.archived_at = archived_at
+    for upload in db.scalars(
+        select(UploadRecord).where(
+            UploadRecord.session_id == session.id,
+            UploadRecord.user_id == user.id,
+            UploadRecord.status != "deleted",
+        )
+    ):
+        _upload_storage_path(settings, upload).unlink(missing_ok=True)
+        upload.status = "deleted"
+        upload.deleted_at = now()
 
 
 @router.get("/sessions/{session_id}/events")
@@ -235,10 +281,7 @@ def delete_upload(
     if upload is None:
         return Response(status_code=204)
     upload_target = _upload_storage_path(request.app.state.settings, upload)
-    if upload_target.parent.is_dir():
-        shutil.rmtree(upload_target.parent)
-    else:
-        upload_target.unlink(missing_ok=True)
+    upload_target.unlink(missing_ok=True)
     upload.status = "deleted"
     upload.deleted_at = now()
     return Response(status_code=204)
@@ -337,7 +380,7 @@ def _start_run(
     settings: Settings = request.app.state.settings
     with request.app.state.database.session() as db:
         session = db.get(SessionRecord, session_id)
-        if session is None or session.owner_user_id != user.id:
+        if session is None or session.owner_user_id != user.id or session.status == "archived":
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
         if _active_run_exists(db, session.id):
             raise HTTPException(
@@ -374,6 +417,7 @@ def _start_run(
             run,
             payload.prompt,
             attachments,
+            agent["middleware"],
         )
         LOGGER.info(
             "run started run_id=%s session_id=%s model_id=%s attachments=%s",
@@ -391,6 +435,7 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
     final_emitted = False
     terminal_emitted = False
     sequence = 5
+    tool_inputs: dict[str, Any] = {}
     context = runtime_agent.DeepAgentsRunContext(
         session_id=state["session_id"],
         run_id=run_id,
@@ -418,6 +463,13 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
             config=config,
             context=context,
         ):
+            if not _run_accepts_runtime_events(request, run_id):
+                LOGGER.info(
+                    "run stream stopped run_id=%s session_id=%s status=no-longer-running",
+                    run_id,
+                    state["session_id"],
+                )
+                return
             if LOGGER.isEnabledFor(logging.DEBUG):
                 LOGGER.debug(
                     "runtime event run_id=%s session_id=%s %s",
@@ -430,11 +482,20 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
                 bridge_run_id=run_id,
                 session_id=state["session_id"],
                 sequence=sequence,
+                tool_inputs=tool_inputs,
             )
             sequence += 1
             if envelope is None:
                 continue
             _log_runtime_envelope(run_id, state["session_id"], envelope)
+            if not _run_accepts_runtime_events(request, run_id):
+                LOGGER.info(
+                    "runtime envelope dropped after cancellation run_id=%s session_id=%s label=%s",
+                    run_id,
+                    state["session_id"],
+                    envelope.label,
+                )
+                return
             chunk, final_emitted, terminal_emitted = _persist_runtime_envelope(
                 request,
                 run_id=run_id,
@@ -446,7 +507,7 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
             if chunk:
                 yield chunk
             await asyncio.sleep(0)
-        if not terminal_emitted:
+        if not terminal_emitted and _run_accepts_runtime_events(request, run_id):
             event = _append_event(
                 request,
                 session_id=state["session_id"],
@@ -459,8 +520,9 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
             yield sse_payload(event)
     except asyncio.CancelledError:
         LOGGER.info("run cancelled run_id=%s session_id=%s", run_id, state["session_id"])
-        event = _terminal_event(request, state["session_id"], run_id, "cancelled")
-        yield sse_payload(event)
+        if _run_accepts_runtime_events(request, run_id):
+            event = _terminal_event(request, state["session_id"], run_id, "cancelled")
+            yield sse_payload(event)
         raise
     except Exception as exc:
         LOGGER.exception("run failed run_id=%s session_id=%s", run_id, state["session_id"])
@@ -528,6 +590,7 @@ def _persist_runtime_envelope(
             role="assistant" if envelope.type in {"message.delta", "message.final"} else None,
             content=_event_content(envelope),
             tool_name=envelope.data.get("tool_name"),
+            tool_call_id=envelope.data.get("tool_call_id"),
             payload=envelope.data,
         )
     )
@@ -543,8 +606,8 @@ def _initial_run_events(
     run: RunRecord,
     prompt: str,
     attachments: list[dict[str, Any]],
+    middleware: list[Any] | tuple[Any, ...],
 ) -> list[EventRecord]:
-    attachment_context = attachment_context_content(tuple(attachments))
     events = [
         append_event(
             db,
@@ -573,25 +636,7 @@ def _initial_run_events(
             },
         ),
     ]
-    if attachment_context:
-        events.append(
-            append_event(
-                db,
-                session_id=session.id,
-                run_id=run.id,
-                kind="system.message",
-                type="step",
-                role="system",
-                content=attachment_context,
-                visibility="internal",
-                payload={
-                    "message": {"role": "system", "content": attachment_context},
-                    "source": "middleware.InjectAttachmentContextMessage",
-                    "attachment_count": len(attachments),
-                    "attachment_paths": [attachment["path"] for attachment in attachments],
-                },
-            )
-        )
+    events.extend(_middleware_initial_run_events(db, session, run, prompt, attachments, middleware))
     events.append(
         append_event(
             db,
@@ -627,6 +672,52 @@ def _initial_run_events(
     return events
 
 
+def _middleware_initial_run_events(
+    db: DbSession,
+    session: SessionRecord,
+    run: RunRecord,
+    prompt: str,
+    attachments: list[dict[str, Any]],
+    middleware: list[Any] | tuple[Any, ...],
+) -> list[EventRecord]:
+    context = {
+        "session_id": session.id,
+        "run_id": run.id,
+        "thread_id": session.thread_id,
+        "agent_id": run.agent_id,
+        "model_id": run.model_id,
+        "prompt": prompt,
+        "current_attachments": tuple(attachments),
+        "attachments": tuple(attachments),
+    }
+    events: list[EventRecord] = []
+    for item in middleware or ():
+        provider = getattr(item, "deepagents_initial_events", None)
+        if not callable(provider):
+            continue
+        for spec in provider(context) or ():
+            if not isinstance(spec, Mapping):
+                continue
+            payload = spec.get("payload")
+            events.append(
+                append_event(
+                    db,
+                    session_id=session.id,
+                    run_id=run.id,
+                    kind=str(spec.get("kind") or "middleware.message"),
+                    type=str(spec.get("type") or "step"),
+                    role=_optional_string(spec.get("role")),
+                    content=_optional_string(spec.get("content")),
+                    tool_name=_optional_string(spec.get("tool_name")),
+                    tool_call_id=_optional_string(spec.get("tool_call_id")),
+                    visibility=str(spec.get("visibility") or "internal"),
+                    redaction=str(spec.get("redaction") or "none"),
+                    payload=dict(payload) if isinstance(payload, Mapping) else {},
+                )
+            )
+    return events
+
+
 def _prompt_audit(
     db: DbSession,
     settings: Settings,
@@ -651,9 +742,11 @@ def _prompt_audit(
             "attachments": [
                 {
                     "id": attachment.get("id"),
+                    "session_id": attachment.get("session_id"),
                     "name": attachment.get("name"),
                     "path": attachment.get("path"),
                     "size": attachment.get("size"),
+                    "content_type": attachment.get("content_type"),
                 }
                 for attachment in attachments
             ],
@@ -720,15 +813,15 @@ async def _runtime_checkpoint_exists(settings: Settings, config: dict[str, Any])
     if callable(aget_tuple):
         try:
             return await aget_tuple(config) is not None
-        except Exception:
-            return False
+        except Exception as exc:
+            raise RuntimeError("Runtime checkpoint probe failed") from exc
     get_tuple = getattr(checkpointer, "get_tuple", None)
     if not callable(get_tuple):
         return False
     try:
         return get_tuple(config) is not None
-    except Exception:
-        return False
+    except Exception as exc:
+        raise RuntimeError("Runtime checkpoint probe failed") from exc
 
 
 def _session_transcript_until(
@@ -773,6 +866,10 @@ def _event_message_content(event: EventRecord, payload_message: dict[str, Any]) 
     return json.dumps(value, ensure_ascii=False)
 
 
+def _optional_string(value: Any) -> str | None:
+    return str(value) if value is not None else None
+
+
 def _event_attachments(event: EventRecord | None) -> list[dict[str, Any]]:
     payload = event.payload if event is not None and isinstance(event.payload, dict) else {}
     attachments = payload.get("attachments")
@@ -789,16 +886,18 @@ def _resolve_run_attachments(
     resolved = []
     seen_upload_ids: set[str] = set()
     for raw in attachments:
-        upload_id = _upload_id_from_attachment(raw)
-        if not upload_id or upload_id in seen_upload_ids:
-            continue
-        seen_upload_ids.add(upload_id)
-        upload = _owned_upload(db, user, upload_id, session_id=session_id)
-        if upload is None:
+        if _attachment_session_mismatch(raw, session_id):
+            upload_id = str(raw.get("id") or _upload_id_from_attachment(raw, session_id) or "")
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Upload not found: {upload_id}")
+        upload = _upload_from_attachment(db, user, session_id, raw)
+        if upload is None:
+            continue
+        if upload.id in seen_upload_ids:
+            continue
+        seen_upload_ids.add(upload.id)
         file_path = _upload_storage_path(settings, upload)
         if not file_path.is_file():
-            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Upload file not found: {upload_id}")
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Upload file not found: {upload.id}")
         resolved.append(_upload_out(upload))
     return resolved
 
@@ -815,26 +914,54 @@ def _store_upload(
 ) -> dict[str, Any]:
     safe_name = _safe_filename(filename)
     upload_root = settings.upload_root_dir()
-    upload_id = _new_upload_id(db)
-    upload_dir = upload_root / upload_id
+    upload_dir = upload_root / session_id
     upload_dir.mkdir(parents=True, exist_ok=True)
     destination = upload_dir / safe_name
     with destination.open("wb") as target:
         shutil.copyfileobj(source, target)
-    upload = UploadRecord(
-        id=upload_id,
-        session_id=session_id,
-        user_id=user.id,
-        filename=safe_name,
-        storage_path=_upload_storage_path_value(upload_id, safe_name),
-        content_type=content_type,
-        size=int(destination.stat().st_size),
-        status="uploaded",
-        metadata_={"original_filename": filename},
-    )
-    db.add(upload)
+    upload = _upload_record_for_filename(db, user, session_id, safe_name)
+    if upload is None:
+        upload = UploadRecord(
+            id=_new_upload_id(db),
+            session_id=session_id,
+            user_id=user.id,
+            filename=safe_name,
+        )
+        db.add(upload)
+    _apply_upload_file_state(upload, session_id, safe_name, filename, content_type, destination)
     db.flush()
     return _upload_out(upload)
+
+
+def _upload_record_for_filename(
+    db: DbSession,
+    user: UserRecord,
+    session_id: str,
+    filename: str,
+) -> UploadRecord | None:
+    return db.scalar(
+        select(UploadRecord).where(
+            UploadRecord.session_id == session_id,
+            UploadRecord.user_id == user.id,
+            UploadRecord.filename == filename,
+        )
+    )
+
+
+def _apply_upload_file_state(
+    upload: UploadRecord,
+    session_id: str,
+    safe_name: str,
+    original_filename: str,
+    content_type: str | None,
+    destination: Path,
+) -> None:
+    upload.storage_path = _upload_storage_path_value(session_id, safe_name)
+    upload.content_type = content_type
+    upload.size = int(destination.stat().st_size)
+    upload.status = "uploaded"
+    upload.deleted_at = None
+    upload.metadata_ = {"original_filename": original_filename}
 
 
 def _owned_upload(
@@ -853,7 +980,10 @@ def _owned_upload(
     )
     if session_id is not None:
         query = query.where(UploadRecord.session_id == session_id)
-    return db.scalar(query)
+    upload = db.scalar(query)
+    if upload is not None and upload.session.status == "archived":
+        return None
+    return upload
 
 
 def _new_upload_id(db: DbSession) -> str:
@@ -861,18 +991,80 @@ def _new_upload_id(db: DbSession) -> str:
         upload_id = uuid4().hex[:12]
         if db.get(UploadRecord, upload_id) is None:
             return upload_id
-    return str(uuid4())
+    raise RuntimeError("Unable to allocate upload id")
 
 
-def _upload_id_from_attachment(raw: dict[str, Any]) -> str:
+def _upload_id_from_attachment(raw: dict[str, Any], session_id: str | None = None) -> str:
     upload_id = str(raw.get("id") or "").strip()
     if upload_id:
         return upload_id
     path = _normalize_virtual_path(str(raw.get("path") or ""))
     parts = PurePosixPath(path).parts
-    if len(parts) >= 3 and parts[0] == "/" and parts[1] == "uploads":
+    if len(parts) >= 5 and parts[0] == "/" and parts[1] == "uploads":
+        return parts[3]
+    if (
+        session_id
+        and len(parts) >= 4
+        and parts[0] == "/"
+        and parts[1] == "uploads"
+        and parts[2] == session_id
+    ):
+        return ""
+    if len(parts) >= 4 and parts[0] == "/" and parts[1] == "uploads":
         return parts[2]
     return ""
+
+
+def _upload_from_attachment(
+    db: DbSession,
+    user: UserRecord,
+    session_id: str,
+    raw: dict[str, Any],
+) -> UploadRecord | None:
+    upload_id = _upload_id_from_attachment(raw, session_id)
+    if upload_id:
+        upload = _owned_upload(db, user, upload_id, session_id=session_id)
+        if upload is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Upload not found: {upload_id}")
+        return upload
+    filename = _upload_filename_from_attachment_path(raw, session_id)
+    if not filename:
+        return None
+    return db.scalar(
+        select(UploadRecord)
+        .where(
+            UploadRecord.session_id == session_id,
+            UploadRecord.user_id == user.id,
+            UploadRecord.filename == filename,
+            UploadRecord.status != "deleted",
+        )
+        .order_by(UploadRecord.created_at.desc())
+    )
+
+
+def _upload_filename_from_attachment_path(raw: dict[str, Any], session_id: str) -> str:
+    path = _normalize_virtual_path(str(raw.get("path") or ""))
+    parts = PurePosixPath(path).parts
+    if len(parts) >= 4 and parts[0] == "/" and parts[1] == "uploads" and parts[2] == session_id:
+        return PurePosixPath(*parts[3:]).as_posix()
+    return ""
+
+
+def _attachment_session_mismatch(raw: dict[str, Any], session_id: str) -> bool:
+    raw_session_id = str(raw.get("session_id") or raw.get("sessionId") or "").strip()
+    if raw_session_id and raw_session_id != session_id:
+        return True
+
+    path = _normalize_virtual_path(str(raw.get("path") or ""))
+    parts = PurePosixPath(path).parts
+    if len(parts) >= 5 and parts[0] == "/" and parts[1] == "uploads":
+        return parts[2] != session_id
+    if len(parts) >= 4 and parts[0] == "/" and parts[1] == "uploads":
+        raw_upload_id = str(raw.get("id") or "").strip()
+        if raw_upload_id and parts[2] == raw_upload_id:
+            return False
+        return parts[2] != session_id
+    return False
 
 
 def _upload_out(upload: UploadRecord) -> dict[str, Any]:
@@ -882,6 +1074,7 @@ def _upload_out(upload: UploadRecord) -> dict[str, Any]:
         "size": int(upload.size),
         "status": upload.status,
         "path": _upload_model_path(upload),
+        "session_id": upload.session_id,
         "download_url": f"/api/uploads/{upload.id}/content",
         "content_type": upload.content_type,
     }
@@ -894,8 +1087,8 @@ def _upload_storage_path(settings: Settings, upload: UploadRecord) -> Path:
     return settings.upload_root_dir().joinpath(*relative.parts)
 
 
-def _upload_storage_path_value(upload_id: str, filename: str) -> str:
-    return PurePosixPath(upload_id, filename).as_posix()
+def _upload_storage_path_value(session_id: str, filename: str) -> str:
+    return PurePosixPath(session_id, filename).as_posix()
 
 
 def _upload_model_path(upload: UploadRecord) -> str:
@@ -956,16 +1149,26 @@ def _terminal_event(
     return event
 
 
-def _owned_session(db: DbSession, user: CurrentUser, session_id: str) -> SessionRecord:
+def _owned_session(
+    db: DbSession,
+    user: CurrentUser,
+    session_id: str,
+    *,
+    include_archived: bool = False,
+) -> SessionRecord:
     session = db.get(SessionRecord, session_id)
-    if session is None or session.owner_user_id != user.id:
+    if (
+        session is None
+        or session.owner_user_id != user.id
+        or (session.status == "archived" and not include_archived)
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     return session
 
 
 def _owned_run(db: DbSession, user: CurrentUser, run_id: str) -> RunRecord:
     run = db.get(RunRecord, run_id)
-    if run is None or run.user_id != user.id:
+    if run is None or run.user_id != user.id or run.session.status == "archived":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
     return run
 
@@ -980,6 +1183,16 @@ def _active_run_exists(db: DbSession, session_id: str) -> bool:
         )
         is not None
     )
+
+
+def _run_accepts_runtime_events(request: Request, run_id: str) -> bool:
+    with request.app.state.database.session() as db:
+        run = db.get(RunRecord, run_id)
+        return bool(
+            run is not None
+            and run.status == "running"
+            and run.session.status != "archived"
+        )
 
 
 def _append_event_chunk(request: Request, **kwargs: Any) -> str:

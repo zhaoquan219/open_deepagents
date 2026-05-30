@@ -87,8 +87,8 @@ Product tables never store checkpoint internals. Runtime state is restored by
 the LangGraph checkpointer/store through `sessions.thread_id`.
 The sqlite checkpoint mode defaults to `./data/checkpoints.db`. Postgresql
 requires `DEEPAGENTS_CHECKPOINT_DATABASE_URL`. Checkpoint stores refuse to share
-`DATABASE_URL`; `/ready` validates that the product database contains the
-expected product tables.
+`DATABASE_URL`; `/ready` validates the product schema without repairing it and
+performs a read-only runtime checkpoint/store probe.
 
 ### Product Database Examples
 
@@ -117,12 +117,12 @@ Important distinction:
 | `GET /api/sessions` | List the current user's sessions. |
 | `POST /api/sessions` | Create a session with a stable LangGraph `thread_id`. |
 | `PATCH /api/sessions/{session_id}` | Update session `title` or `metadata`. |
-| `DELETE /api/sessions/{session_id}` | Delete an owned session and its events. |
+| `DELETE /api/sessions/{session_id}` | Archive an owned session, hide normal history, and revoke its uploads. |
 | `GET /api/sessions/{session_id}/events?after_seq=N` | Load durable ordered history. |
 | `POST /api/sessions/{session_id}/uploads` | Store one owned upload and return its model-facing `/uploads/...` path. |
 | `POST /api/sessions/{session_id}/runs` | Run to completion and return the final run row. |
 | `POST /api/sessions/{session_id}/runs/stream` | Start one run and stream SSE events. |
-| `GET /api/uploads/{upload_id}/content` | Download an owned upload. |
+| `GET /api/uploads/{upload_id}/content` | Download an owned upload with bearer-header auth. |
 | `DELETE /api/uploads/{upload_id}` | Delete an owned upload. |
 | `GET /api/runs/{run_id}` | Return run status and audit metadata. |
 | `POST /api/runs/{run_id}/cancel` | Mark a running run cancelled. |
