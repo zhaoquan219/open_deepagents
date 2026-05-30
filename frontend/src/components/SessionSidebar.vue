@@ -1,18 +1,18 @@
 <script setup>
-import { RefreshRight } from '@element-plus/icons-vue'
+import { RefreshRight } from "@element-plus/icons-vue";
 
-import { uiCopy } from '../lib/copy.js'
+import { uiCopy } from "../lib/copy.js";
 
-defineEmits(['new-session', 'refresh', 'select-session', 'delete-session'])
+defineEmits(["new-session", "refresh", "select-session", "delete-session"]);
 
 const props = defineProps({
   currentSessionId: {
     type: String,
-    default: '',
+    default: "",
   },
   error: {
     type: String,
-    default: '',
+    default: "",
   },
   loading: {
     type: Boolean,
@@ -24,9 +24,9 @@ const props = defineProps({
   },
   deletingSessionId: {
     type: String,
-    default: '',
+    default: "",
   },
-})
+});
 </script>
 
 <template>
@@ -36,7 +36,11 @@ const props = defineProps({
         <p class="eyebrow">{{ uiCopy.sidebar.eyebrow }}</p>
         <h2>{{ uiCopy.sidebar.title }}</h2>
         <p class="muted-copy sidebar-header-copy">
-          {{ props.currentSessionId ? uiCopy.sidebar.currentHint : uiCopy.sidebar.emptyHint }}
+          {{
+            props.currentSessionId
+              ? uiCopy.sidebar.currentHint
+              : uiCopy.sidebar.emptyHint
+          }}
         </p>
       </div>
     </div>
@@ -62,7 +66,9 @@ const props = defineProps({
       </div>
     </div>
 
-    <p v-if="props.error" class="inline-error sidebar-hint">{{ props.error }}</p>
+    <p v-if="props.error" class="inline-error sidebar-hint">
+      {{ props.error }}
+    </p>
 
     <el-empty
       v-if="props.loading"
@@ -79,14 +85,34 @@ const props = defineProps({
 
     <el-scrollbar v-else class="session-list-scrollbar">
       <ul class="session-list">
-        <li v-for="session in props.sessions" :key="session.id" class="session-item">
-          <div class="session-card" :class="{ active: session.id === props.currentSessionId }">
-            <button class="session-button" type="button" @click="$emit('select-session', session.id)">
-              <span class="session-state-dot" :class="{ active: session.id === props.currentSessionId }"></span>
+        <li
+          v-for="session in props.sessions"
+          :key="session.id"
+          class="session-item"
+        >
+          <div
+            class="session-card"
+            :class="{ active: session.id === props.currentSessionId }"
+          >
+            <button
+              class="session-button"
+              type="button"
+              @click="$emit('select-session', session.id)"
+            >
+              <span
+                class="session-state-dot"
+                :class="{ active: session.id === props.currentSessionId }"
+              ></span>
               <span class="session-copy">
-                <span class="session-title">{{ session.title || uiCopy.sidebar.unnamed }}</span>
+                <span class="session-title">{{
+                  session.title || uiCopy.sidebar.unnamed
+                }}</span>
                 <span class="session-meta">
-                  {{ session.id === props.currentSessionId ? uiCopy.sidebar.currentSession : uiCopy.sidebar.continueSession }}
+                  {{
+                    session.id === props.currentSessionId
+                      ? uiCopy.sidebar.currentSession
+                      : uiCopy.sidebar.continueSession
+                  }}
                 </span>
               </span>
             </button>
@@ -98,7 +124,11 @@ const props = defineProps({
               :loading="props.deletingSessionId === session.id"
               @click="$emit('delete-session', session.id)"
             >
-              {{ props.deletingSessionId === session.id ? uiCopy.sidebar.deleting : uiCopy.sidebar.remove }}
+              {{
+                props.deletingSessionId === session.id
+                  ? uiCopy.sidebar.deleting
+                  : uiCopy.sidebar.remove
+              }}
             </el-button>
           </div>
         </li>

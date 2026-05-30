@@ -1,275 +1,91 @@
-import { describe, expect, it } from 'vitest'
-import { createInitialRun, createRunStore, reduceRunState } from '../../../src/store/runStore.js'
+import { describe, expect, it } from "vitest";
+import {
+  createInitialRun,
+  createRunStore,
+  reduceRunState,
+} from "../../../src/store/runStore.js";
 
-describe('runStore reducer', () => {
-  it('tracks status updates and timeline entries', () => {
-    const started = createInitialRun('run-1', 'session-1')
+describe("runStore reducer", () => {
+  it("tracks run status without maintaining a side-panel timeline", () => {
+    const started = createInitialRun("run-1", "session-1");
     const running = reduceRunState(started, {
-      eventId: 'evt-1',
-      type: 'status',
-      runId: 'run-1',
-      sessionId: 'session-1',
-      timestamp: '2026-04-12T14:00:00.000Z',
-      status: 'running',
-      label: 'Run started',
-      detail: 'Booting runtime',
-    })
-    const completed = reduceRunState(running, {
-      eventId: 'evt-2',
-      type: 'message.final',
-      runId: 'run-1',
-      sessionId: 'session-1',
-      timestamp: '2026-04-12T14:00:10.000Z',
-      status: 'running',
-      label: 'Assistant message finalized',
-      detail: 'Stored final transcript row',
-    })
-    const settled = reduceRunState(completed, {
-      eventId: 'evt-3',
-      type: 'status',
-      runId: 'run-1',
-      sessionId: 'session-1',
-      timestamp: '2026-04-12T14:00:11.000Z',
-      status: 'completed',
-      label: 'Run completed',
-      detail: 'DeepAgents run completed.',
-    })
+      eventId: "evt-1",
+      type: "message.final",
+      runId: "run-1",
+      sessionId: "session-1",
+      timestamp: "2026-04-12T14:00:10.000Z",
+      status: "running",
+    });
+    const settled = reduceRunState(running, {
+      eventId: "evt-2",
+      type: "status",
+      runId: "run-1",
+      sessionId: "session-1",
+      timestamp: "2026-04-12T14:00:11.000Z",
+      status: "completed",
+    });
 
-    expect(running.status).toBe('running')
-    expect(completed.status).toBe('running')
-    expect(settled.status).toBe('completed')
-    expect(settled.timeline).toHaveLength(3)
-  })
+    expect(settled).toMatchObject({
+      status: "completed",
+      connected: false,
+      connectionState: "closed",
+      lastEventId: "evt-2",
+    });
+    expect("timeline" in settled).toBe(false);
+  });
 
-  it('keeps the run open when an assistant message finalizes mid-run', () => {
-    const started = createInitialRun('run-mid', 'session-mid')
-    const afterMessage = reduceRunState(started, {
-      eventId: 'evt-mid-1',
-      type: 'message.final',
-      runId: 'run-mid',
-      sessionId: 'session-mid',
-      timestamp: '2026-04-12T14:00:10.000Z',
-      status: 'running',
-      label: 'message.completed',
-      detail: 'Assistant response updated.',
-    })
+  it("keeps duplicate stream events from mutating run state twice", () => {
+    const store = createRunStore();
+    store.beginRun({ runId: "run-2", sessionId: "session-2" });
 
-    expect(afterMessage.status).toBe('running')
-    expect(afterMessage.finishedAt).toBe('')
-  })
+    const envelope = {
+      eventId: "evt-1",
+      type: "status",
+      runId: "run-2",
+      sessionId: "session-2",
+      timestamp: "2026-04-12T14:00:11.000Z",
+      status: "completed",
+    };
 
-  it('marks the run as connected and closed around stream lifecycle', () => {
-    const store = createRunStore()
-    store.beginRun({ runId: 'run-2', sessionId: 'session-2' })
+    expect(store.consume(envelope)).toBe(true);
+    expect(store.consume(envelope)).toBe(false);
+    expect(store.state.activeRun.status).toBe("completed");
+  });
 
-    store.markConnected('run-2')
-    store.markDisconnected('run-2', '最终回复已返回。')
+  it("tracks connection and stop states for composer locking", () => {
+    const store = createRunStore();
+    store.beginRun({ runId: "run-stop", sessionId: "session-stop" });
+    store.markConnected("run-stop");
+    store.markCancelling("run-stop");
+    store.markCancelled("run-stop");
 
     expect(store.state.activeRun).toMatchObject({
-      runId: 'run-2',
-      connectionState: 'closed',
+      runId: "run-stop",
+      status: "cancelled",
       connected: false,
-    })
-    expect(store.state.activeRun.timeline.at(-1)).toMatchObject({
-      label: '实时连接已关闭',
-      detail: '最终回复已返回。',
-    })
-  })
+      connectionState: "closed",
+      lastError: "",
+    });
+  });
 
-  it('tracks a reconnecting state without marking the run as failed', () => {
-    const store = createRunStore()
-    store.beginRun({ runId: 'run-4', sessionId: 'session-4' })
-
-    store.markConnected('run-4')
-    store.markConnecting('run-4', '实时连接短暂中断，正在自动恢复。')
-
-    expect(store.state.activeRun).toMatchObject({
-      runId: 'run-4',
-      status: 'running',
-      connectionState: 'connecting',
-      connected: false,
-    })
-    expect(store.state.activeRun.timeline.at(-1)).toMatchObject({
-      label: '实时连接恢复中',
-      detail: '实时连接短暂中断，正在自动恢复。',
-      status: 'running',
-    })
-  })
-
-  it('can recover a completed run after a duplicate terminal event replay', () => {
-    const store = createRunStore()
-    store.beginRun({ runId: 'run-5', sessionId: 'session-5' })
-    store.markConnecting('run-5', '实时连接短暂中断，正在自动恢复。')
-
-    store.markCompleted('run-5', '检测到终态事件重放，已同步最终回复。')
-
-    expect(store.state.activeRun).toMatchObject({
-      runId: 'run-5',
-      status: 'completed',
-      connectionState: 'closed',
-      connected: false,
-    })
-    expect(store.state.activeRun.timeline.at(-1)).toMatchObject({
-      label: '处理完成',
-      detail: '检测到终态事件重放，已同步最终回复。',
-      status: 'completed',
-    })
-  })
-
-  it('marks a run cancelled immediately without leaving the connection open', () => {
-    const store = createRunStore()
-    store.beginRun({ runId: 'run-stop', sessionId: 'session-stop' })
-    store.markConnected('run-stop')
-    store.recordClientIssue({
-      sessionId: 'session-stop',
-      label: '临时错误',
-      detail: '稍后会清除',
-    })
-
-    store.markCancelled('run-stop', '已手动停止当前运行。')
-
-    expect(store.state.error).toBe('')
-    expect(store.state.activeRun).toMatchObject({
-      runId: 'run-stop',
-      status: 'cancelled',
-      connectionState: 'closed',
-      connected: false,
-      lastError: '',
-    })
-    expect(store.state.activeRun.timeline.at(-1)).toMatchObject({
-      label: '运行已手动停止',
-      detail: '已手动停止当前运行。',
-      status: 'cancelled',
-    })
-  })
-
-  it('marks abnormal stream termination as a terminal failed state', () => {
-    const store = createRunStore()
-    store.beginRun({ runId: 'run-error', sessionId: 'session-error' })
-    store.markConnected('run-error')
-
-    store.markErrored('run-error', 'stream closed unexpectedly')
-
-    expect(store.state.activeRun).toMatchObject({
-      runId: 'run-error',
-      status: 'failed',
-      connectionState: 'error',
-      connected: false,
-      lastError: 'stream closed unexpectedly',
-    })
-    expect(store.state.activeRun.finishedAt).not.toBe('')
-  })
-
-  it('coalesces consecutive message delta entries in the timeline', () => {
-    const started = createInitialRun('run-3', 'session-3')
-    const afterFirstDelta = reduceRunState(started, {
-      eventId: 'evt-3',
-      type: 'message.delta',
-      runId: 'run-3',
-      sessionId: 'session-3',
-      timestamp: '2026-04-12T14:00:01.000Z',
-      detail: '第一段',
-    })
-    const afterSecondDelta = reduceRunState(afterFirstDelta, {
-      eventId: 'evt-4',
-      type: 'message.delta',
-      runId: 'run-3',
-      sessionId: 'session-3',
-      timestamp: '2026-04-12T14:00:02.000Z',
-      detail: '第二段',
-    })
-
-    expect(afterSecondDelta.timeline).toHaveLength(1)
-    expect(afterSecondDelta.timeline[0]).toMatchObject({
-      kind: 'message.delta',
-      aggregateCount: 2,
-      detail: '已连续接收 2 段回复内容。',
-      timestamp: '2026-04-12T14:00:02.000Z',
-    })
-  })
-
-  it('keeps subagent payload data for runtime panel details', () => {
-    const started = createInitialRun('run-subagent', 'session-subagent')
-    const afterSubagent = reduceRunState(started, {
-      eventId: 'evt-subagent',
-      type: 'subagent',
-      runId: 'run-subagent',
-      sessionId: 'session-subagent',
-      timestamp: '2026-04-12T14:00:03.000Z',
-      status: 'completed',
-      label: 'subagent.completed',
-      detail: 'code-reviewer',
-      data: {
-        input: { subagent_type: 'code-reviewer', task: 'review the diff' },
-        output: { text: 'looks good' },
-      },
-    })
-
-    expect(afterSubagent.timeline[0]).toMatchObject({
-      kind: 'subagent',
-      detail: 'code-reviewer',
-      data: {
-        input: { subagent_type: 'code-reviewer', task: 'review the diff' },
-        output: { text: 'looks good' },
-      },
-    })
-  })
-
-  it('caps timeline entries so long tool runs do not get slower over time', () => {
-    let run = createInitialRun('run-long', 'session-long')
-    for (let index = 0; index < 350; index += 1) {
-      run = reduceRunState(run, {
-        eventId: `evt-${index}`,
-        type: 'tool',
-        runId: 'run-long',
-        sessionId: 'session-long',
-        timestamp: '2026-04-12T14:00:03.000Z',
-        status: 'completed',
-        label: `tool.${index}`,
-        detail: `Tool ${index}`,
-      })
-    }
-
-    expect(run.timeline).toHaveLength(300)
-    expect(run.timeline[0].label).toBe('tool.50')
-    expect(run.timeline.at(-1).label).toBe('tool.349')
-  })
-
-  it('records client-side failures outside the active stream timeline', () => {
-    const store = createRunStore()
+  it("keeps client failures as top-level errors instead of process noise", () => {
+    const store = createRunStore();
 
     store.recordClientIssue({
-      sessionId: 'session-9',
-      label: '附件上传失败',
-      detail: '网络中断',
-    })
+      sessionId: "session-9",
+      label: "附件上传失败",
+      detail: "网络中断",
+    });
+    store.recordClientNotice({});
 
-    expect(store.state.error).toBe('网络中断')
+    expect(store.state.error).toBe("");
     expect(store.state.diagnostics).toEqual([
       expect.objectContaining({
-        sessionId: 'session-9',
-        label: '附件上传失败',
-        detail: '网络中断',
-        status: 'failed',
+        sessionId: "session-9",
+        label: "附件上传失败",
+        detail: "网络中断",
+        status: "failed",
       }),
-    ])
-  })
-
-  it('clears stale client error when recording a successful notice', () => {
-    const store = createRunStore()
-    store.recordClientIssue({
-      sessionId: 'session-9',
-      label: '附件上传失败',
-      detail: 'File too large',
-    })
-
-    store.recordClientNotice({
-      sessionId: 'session-9',
-      label: '附件上传完成',
-      detail: '已上传 1 个附件。',
-      status: 'completed',
-    })
-
-    expect(store.state.error).toBe('')
-  })
-})
+    ]);
+  });
+});

@@ -12,7 +12,6 @@ backend/agents/
 ├── prompts/system.md            Main system prompt
 ├── tools/__init__.py            Custom tools
 ├── middleware/__init__.py       Runtime middleware
-├── hooks/__init__.py            Run-input and upload hooks
 ├── skills/__init__.py           Selected DeepAgents skills
 ├── memory/__init__.py           Selected memory files
 ├── memory/*.md                  Markdown memory resources
@@ -37,7 +36,6 @@ subagents/<name>/
 ```python
 from pathlib import Path
 
-from agents.hooks import RUN_INPUT_HOOKS, UPLOAD_HOOKS
 from agents.memory import MEMORY
 from agents.middleware import MIDDLEWARE
 from agents.skills import SKILLS
@@ -46,26 +44,20 @@ from agents.tools import TOOLS
 
 ROOT = Path(__file__).parent
 
-READ_ONLY_BUILTIN_TOOLS = (
-    "write_todos",
-    "ls",
-    "read_file",
-    "glob",
-    "grep",
-    "task",
-)
-
 AGENT = {
     "id": "main",
     "system_prompt": ROOT / "prompts" / "system.md",
-    "workspace": "/workspace/main",
     "tools": TOOLS,
-    "builtin_tools": READ_ONLY_BUILTIN_TOOLS,
-    "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
     "middleware": MIDDLEWARE,
-    "hooks": {"run_input": RUN_INPUT_HOOKS, "upload": UPLOAD_HOOKS},
     "skills": SKILLS,
     "memory": MEMORY,
+    "permissions": [
+        {
+            "operations": ("read",),
+            "paths": ["/workspace/main", "/skills", "/uploads"],
+        },
+        {"operations": ("write",), "paths": ["/workspace/main/output"]},
+    ],
     "subagents": SUBAGENTS,
 }
 ```
@@ -81,28 +73,22 @@ AGENT = {
     "id": "main",
     "system_prompt": ROOT / "prompts" / "system.md",
     "tools": TOOLS,
-    "builtin_tools": ("ls", "read_file", "glob", "grep", "task"),
-    "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
-    "hooks": {"run_input": RUN_INPUT_HOOKS, "upload": UPLOAD_HOOKS},
     "skills": ["skill-creator"],
     "memory": ["project"],
     "subagents": ["code_reviewer"],
     # Optional:
     "model": "openai/gpt-5-4",
-    "workspace": "/workspace/main",
     "permissions": [
-        {"operations": ["read"], "paths": ["/workspace/main"]},
-    ],
-    "permissions": [
-        {"operations": ["read"], "paths": ["/workspace/main"]},
+        {"operations": ("read",), "paths": ["/workspace/main", "/skills", "/uploads"]},
+        {"operations": ("write",), "paths": ["/workspace/main/output"]},
     ],
 }
 ```
 
 - `model` 不写时，使用当前默认模型。
-- `workspace` 只是给 UI/日志/作者看的描述字段，不是权限边界。
-- `permissions` 才是文件读写边界。
+- `permissions[].operations` 使用 DeepAgents 原生文件权限，控制虚拟路径读写。
 - `skills` / `memory` / `subagents` 直接写列表，默认最容易看懂。
+- 这些选择会相对于当前 agent package 解析，而不是错误地从 `backend/` 根目录拼接。
 
 ## Subagent Shape
 
@@ -113,30 +99,28 @@ SUBAGENT = {
     "label": "Code reviewer",
     "description": "Review implementation changes for defects.",
     "system_prompt": ROOT / "prompts" / "system.md",
-    "workspace": "/workspace/reviews",
     "tools": TOOLS,
-    "builtin_tools": READ_ONLY_BUILTIN_TOOLS,
-    "disabled_builtin_tools": ("execute", "write_file", "edit_file"),
     "middleware": MIDDLEWARE,
     "skills": SKILLS,
     "memory": MEMORY,
     "permissions": [
-        {"operations": ["read"], "paths": ["/workspace/reviews", "/workspace/shared"]},
+        {
+            "operations": ("read",),
+            "paths": ["/workspace/reviews", "/workspace/shared", "/skills", "/uploads"],
+        },
     ],
 }
 ```
 
 Subagents are resolved recursively. Nested subagents can define their own prompt,
-model, tools, built-in tool filter, permissions, skills, memory, middleware, and
-children.
-`workspace` is descriptive metadata for UI/logging and agent authoring. It does
-not narrow filesystem or tool access by itself; use sandbox backend selection and
-`permissions` for enforcement.
+model, tools, permissions, skills, memory, middleware, and children.
+Use sandbox backend selection and `permissions` for filesystem enforcement.
 
 ## Selection Patterns
 
-Selection files such as `skills/__init__.py`, `memory/__init__.py`, and
-`subagents/__init__.py` can export one item, a list, named presets, or `"*"`.
+Selection files such as `tools/__init__.py`, `middleware/__init__.py`,
+`skills/__init__.py`, `memory/__init__.py`, and `subagents/__init__.py` can
+export one item, a list, named presets, or `"*"`.
 
 For the default scaffold, keep them simple:
 
@@ -149,6 +133,8 @@ SUBAGENTS = ["code_reviewer"]
 Select everything in a directory:
 
 ```python
+TOOLS = "*"
+MIDDLEWARE = "*"
 SKILLS = "*"
 MEMORY = "*"
 SUBAGENTS = "*"
@@ -191,103 +177,69 @@ from agents.tools.search import search_docs
 TOOLS = [search_docs]
 ```
 
-These are different from DeepAgents built-in tools. Custom tools are passed
-through by the built-in tool filter.
-
-## Built-in Tool Visibility
-
-Use `builtin_tools` to expose only the DeepAgents built-ins you want the model to
-see. Use `disabled_builtin_tools` to hide specific built-ins. If a built-in
-appears in both lists, `disabled_builtin_tools` wins.
-
-When no subagents are active, the backend automatically hides the built-in
-`task` tool even if it appears in `builtin_tools`.
-
-```python
-"builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
-"disabled_builtin_tools": ("execute", "write_file", "edit_file"),
-```
-
-Useful built-in names include:
-
-- `write_todos`
-- `ls`
-- `read_file`
-- `write_file`
-- `edit_file`
-- `glob`
-- `grep`
-- `execute`
-- `task`
+These are different from DeepAgents built-in tools. Custom tools are passed to
+the DeepAgents runtime unchanged.
 
 ## Permissions
 
-Permissions are path authorization for visible file tools.
+Permissions are native DeepAgents filesystem permissions. They authorize file
+operations against virtual sandbox paths. Built-in tool visibility is not
+configured by this scaffold.
 
 ```python
 "permissions": [
-    {"operations": ["read"], "paths": ["/workspace/main"]},
-    {"operations": ["write"], "paths": ["/workspace/main/output"]},
+    {"operations": ("read",), "paths": ["/workspace/main", "/skills", "/uploads"]},
+    {"operations": ("write",), "paths": ["/workspace/main/output"]},
 ]
 ```
 
-`operations=["read"]` covers `ls`, `read_file`, `glob`, and `grep`.
-`operations=["write"]` covers `write_file` and `edit_file`.
+`read` covers filesystem reads such as `ls`, `read_file`, `glob`, and `grep`
+when the runtime exposes those tools. `write` covers filesystem writes such as
+`write_file` and `edit_file` when available.
 
-Tool visibility and permissions must both allow an action:
+The permissions surface must allow an action:
 
-- If `read_file` is hidden, the model cannot call it.
-- If `read_file` is visible but the path is not permitted, the call is blocked.
-- If a path is writable but `write_file` and `edit_file` are hidden, the model
-  still cannot write through those built-ins.
+- If a path is readable, file read operations may read it.
+- If a path is writable, file write operations may write it.
+- If a path is not matched, the backend appends deny rules for read and write.
 
-## Hooks
+## Middleware-First Customization
 
-Run-input hooks can rewrite or enrich message content before the runtime sees it.
-They receive session/run IDs, role, content, attachments, and whether the message
-is for the current run.
-
-Upload hooks receive upload metadata only. They can return extra metadata to
-store on the upload record.
-
-Default hook examples live in `hooks/attachment_hooks.py`.
-
-## Prompt Injections
-
-Prompt injections are still supported. The implementation moved to
-`app.core.session_scope.PromptInjectionService`; it was not removed.
-
-They are backend-controlled runtime instructions and are intentionally not
-accepted through the public message or run payloads.
-
-Programmatic use:
+不要再维护单独的 hooks 目录。运行时输入增强、上下文查看、工具调用审计、
+以及提示词补充都统一放在 middleware。
 
 ```python
-app.state.prompt_injections.inject_prompt(
-    session_id=session_id,
-    content="Always verify the attachment before answering.",
-    visibility="hidden",   # hidden or visible
-    position="before_user",  # before_system / after_system / before_user / after_user
-    source="backend.rule",
-)
+from langchain.agents.middleware import before_agent
+from langgraph.runtime import Runtime
+
+@before_agent(name="ReadSessionContext")
+async def read_session_context(state, runtime: Runtime[object]) -> None:
+    del state
+    context = runtime.context or {}
+    session_id = context.get("session_id", "")
+    metadata = context.get("session_metadata", {})
+    _ = (session_id, metadata)
 ```
 
-Scoped to one run only:
+需要的上下文字段直接从 runtime context 读取，不再额外配置 hooks。
+
+上传文件也是同一路径：后端把文件信息放入
+`runtime.context.current_attachments`，不直接改写用户 prompt。如果确实要把上传
+文件路径注入成额外 message，可以在 middleware 中显式选择：
 
 ```python
-app.state.prompt_injections.inject_prompt(
-    session_id=session_id,
-    run_id=run_id,
-    content="Use the uploaded CSV as the source of truth.",
-    position="after_user",
+from agents.middleware.audit_middleware import (
+    AuditAttachmentToolCall,
+    inject_attachment_context_message,
+    log_run_context,
 )
+
+MIDDLEWARE = [
+    log_run_context,
+    inject_attachment_context_message,
+    AuditAttachmentToolCall(),
+]
 ```
-
-Behavior:
-
-- hidden injections affect runtime input but do not appear in the default transcript
-- visible injections still persist as injection records, but the public transcript stays clean
-- run-scoped injections apply only to the target run
 
 ## Skills and Memory
 
@@ -301,5 +253,4 @@ facts, policies, terminology, and reviewer context.
 
 Sandbox backend selection is global and configured through `backend/.env`.
 Agents and subagents do not define their own sandbox backend. They can define
-`workspace` as metadata, built-in tool visibility to shape model-visible tools,
-and permissions to enforce file access inside the global backend.
+permissions to enforce file access inside the global backend.

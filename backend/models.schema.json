@@ -22,7 +22,8 @@
           "name": { "type": "string" },
           "options": {
             "type": "object",
-            "additionalProperties": false,
+            "description": "Provider-level ChatOpenAI keyword arguments. Unknown keys are ignored with a runtime warning.",
+            "additionalProperties": true,
             "properties": {
               "api_key": { "type": "string" },
               "base_url": { "type": "string" },
@@ -31,7 +32,15 @@
                 "additionalProperties": { "type": "string" }
               },
               "timeout": { "type": ["number", "integer", "null"] },
-              "max_retries": { "type": ["integer", "null"] }
+              "max_retries": { "type": ["integer", "null"] },
+              "extra_body": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "model_kwargs": {
+                "type": "object",
+                "additionalProperties": true
+              }
             }
           },
           "models": {
@@ -40,7 +49,8 @@
             "additionalProperties": {
               "type": "object",
               "required": ["model"],
-              "additionalProperties": false,
+              "description": "Model-level ChatOpenAI keyword arguments plus the UI-only display name. Unknown keys are ignored with a runtime warning.",
+              "additionalProperties": true,
               "properties": {
                 "name": { "type": "string" },
                 "model": { "type": "string" },

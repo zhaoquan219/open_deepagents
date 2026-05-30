@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-deepagents.local/contracts/deepagents-ui-sse-envelope.json",
+  "title": "DeepAgents UI SSE Envelope",
+  "description": "UI-facing SSE envelope emitted by the native backend and consumed by the Vue workspace.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "event_id",
+    "type",
+    "run_id",
+    "session_id",
+    "timestamp",
+    "label",
+    "detail",
+    "data"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "status",
+        "message.delta",
+        "message.final",
+        "step",
+        "tool",
+        "skill",
+        "subagent",
+        "sandbox",
+        "error"
+      ]
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string"
+    },
+    "label": {
+      "type": "string"
+    },
+    "detail": {
+      "type": "string"
+    },
+    "data": {
+      "type": "object"
+    }
+  }
+}

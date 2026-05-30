@@ -1,19 +1,22 @@
 # open_deepagents Backend
 
-The backend is a FastAPI service that owns authentication, users, sessions,
-messages, uploads, run orchestration, event streaming, generated-file export,
-and the bridge into DeepAgents.
+The backend is a compact FastAPI service around DeepAgents. It owns auth,
+per-user sessions, durable run rows, a typed SQL event projection, model/agent
+configuration, and fetch-stream execution. DeepAgents and LangGraph own runtime
+state via the configured `thread_id`, checkpointer, store, cache, and backend.
 
-## Main Responsibilities
+## Current Scope
 
-- Load application settings from `backend/.env`.
-- Load model/provider choices from `backend/models.json`.
-- Resolve the main agent package from `DEEPAGENTS_MAIN_AGENT`.
-- Persist sessions, messages, uploads, runs, runtime links, and event views.
-- Start and cancel DeepAgents runs.
-- Normalize runtime events into the UI SSE contract.
-- Export generated files from the `state` backend into downloadable uploads.
-- Serve authenticated upload download links.
+- Login with JWT bearer tokens.
+- Sync configured admin users into SQL on startup.
+- Persist product tables: `users`, `sessions`, `runs`, `uploads`, and `events`.
+- Resolve `backend/agents:AGENT`, `backend/models.json`, tools, middleware,
+  skills, memory, native filesystem permissions, and subagents.
+- Stream DeepAgents runtime events after persisting each durable event.
+- Support SQLite, PostgreSQL, and MySQL for the product database.
+- Resolve LangGraph runtime persistence through memory, official SQLite/Postgres
+  packages, or an explicit `DEEPAGENTS_RUNTIME_FACTORY`.
+- Store session uploads and expose model-facing `/uploads/...` virtual paths.
 
 ## Directory Map
 
@@ -21,16 +24,17 @@ and the bridge into DeepAgents.
 backend/
 ├── agents/                    Default recursive agent package
 ├── app/
-│   ├── api/                   FastAPI routes and dependencies
-│   ├── core/                  Settings, runtime catalog, database bootstrap
-│   ├── db/                    SQLAlchemy models and schema management
-│   ├── schemas/               API response/request schemas
-│   ├── services/              Run/session orchestration
-│   └── storage.py             Local upload storage
-├── deepagents_integration/    DeepAgents adapter layer
+│   ├── main.py                FastAPI app factory and startup
+│   ├── routes.py              Auth, models, sessions, history, run stream
+│   ├── settings.py            .env settings and import-spec resolution
+│   ├── db.py                  SQLAlchemy users/sessions/uploads/runs/events schema
+│   ├── auth.py                Password hashing, JWT, current user
+│   ├── catalog.py             models.json and agent package resolver
+│   ├── agent.py               create_deep_agent wiring
+│   └── runtime/               DeepAgents runtime helpers owned by the app
 ├── models.example.json        Model catalog template
 ├── pyproject.toml             Python project and tooling
-└── tests/                     Backend test suite
+└── tests/                     Backend tests
 ```
 
 ## Local Development
@@ -40,169 +44,141 @@ cd backend
 uv sync --group dev
 cp .env.example .env
 cp models.example.json models.json
-uv run python -m app.db.manage init
 uv run uvicorn app.main:app --reload
 ```
 
-The service is available at:
+The schema is created on application startup. The service defaults to:
 
-- API root: `http://127.0.0.1:8000/api`
-- Health check: `http://127.0.0.1:8000/health`
-
-The app initializes the schema on startup. The explicit `init` command is useful
-for MySQL and harmless for SQLite.
+- API: `http://127.0.0.1:8000/api`
+- Health: `http://127.0.0.1:8000/health`
 
 ## Configuration
 
 The backend reads `backend/.env`.
 
-### Application and Auth
-
 | Setting | Purpose |
 | --- | --- |
-| `DATABASE_URL` | SQLAlchemy database URL. SQLite and MySQL are supported by the included dependencies. |
-| `ADMIN_AUTH_ENABLED` | Enables the login gate and per-user session isolation. |
-| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | Default login credentials. |
+| `DATABASE_URL` | SQLAlchemy URL. SQLite, PostgreSQL, and MySQL are product DB targets. |
+| `ADMIN_AUTH_ENABLED` | Enables login and per-user session isolation. |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | Default configured login user. |
 | `ADMIN_USERS` | Optional JSON map or comma-separated `username=password` pairs. |
 | `ADMIN_TOKEN_SECRET` | JWT signing secret. Use a long random value outside local dev. |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated frontend origins. |
-
-### Uploads
-
-| Setting | Purpose |
-| --- | --- |
-| `UPLOAD_STORAGE_DIR` | Directory for user uploads and exported generated files. |
-| `MAX_UPLOAD_SIZE_BYTES` | Per-file upload limit. |
-
-Uploads are stored on disk and tracked in the database. Browser download links
-use bearer auth or an `access_token` query parameter.
-
-### DeepAgents Runtime
-
-| Setting | Purpose |
-| --- | --- |
-| `DEEPAGENTS_MAIN_AGENT` | Import spec for the main agent. Default: `agents:AGENT`. |
+| `DEEPAGENTS_MAIN_AGENT` | Main agent import spec. Default: `agents:AGENT`. |
 | `DEEPAGENTS_MODEL_CONFIG_PATH` | Model catalog path. Default: `./models.json`. |
-| `DEEPAGENTS_AGENT_NAME` | Name passed to `create_deep_agent`. |
-| `DEEPAGENTS_DEBUG` | Enables DeepAgents debug behavior. |
-| `DEEPAGENTS_DEFAULT_TIMEZONE` | Backend timezone for persisted timestamps and auth/session events. |
-| `DEEPAGENTS_RECURSION_LIMIT` | LangGraph recursion limit for runs. |
-| `DEEPAGENTS_STREAM_IDLE_TIMEOUT` | Seconds without runtime/model/tool events before a run is marked failed. Use `0` to disable. |
+| `DEEPAGENTS_SANDBOX_PROFILE` | High-level sandbox preset: `safe`, `files`, `shell`, or `custom`. |
+| `DEEPAGENTS_SANDBOX_ROOT_DIR` | Workspace root used by `files` and `shell` profiles. |
+| `DEEPAGENTS_UPLOAD_ROOT_DIR` | Session upload root mounted read-only at `/uploads`. |
+| `DEEPAGENTS_CHECKPOINT_BACKEND` | `sqlite` by default; supports `memory`, `sqlite`, and `postgresql`. |
+| `DEEPAGENTS_CHECKPOINT_DATABASE_URL` | Optional sqlite/postgresql checkpoint/store DSN. |
+| `BACKEND_LOG_LEVEL` | `info` by default; `debug` logs concise runtime event summaries. |
+| `AUDIT_COMPILED_PROMPTS` | `hash` by default; `redacted`, `full`, and `off` are explicit modes. |
 
-Model providers and model-specific options belong in `models.json`.
+Recommended flow:
 
-Every web session is mapped to an internal stable LangGraph thread id. The
-backend database remains a product ledger for sessions, messages, uploads, and
-replayable event views.
+- Local development: copy `.env.example`, change the admin password and token
+  secret, then fill `models.json`.
+- Keep `DEEPAGENTS_SANDBOX_PROFILE=safe` unless you need filesystem writes or a
+  trusted local shell.
+- Production deployment: set `ENVIRONMENT=production`, strong auth secrets, and
+  `DEEPAGENTS_CHECKPOINT_BACKEND=sqlite` or `postgresql`.
+
+Product tables never store checkpoint internals. Runtime state is restored by
+the LangGraph checkpointer/store through `sessions.thread_id`.
+The sqlite checkpoint mode defaults to `./data/checkpoints.db`. Postgresql
+requires `DEEPAGENTS_CHECKPOINT_DATABASE_URL`. Checkpoint stores refuse to share
+`DATABASE_URL`; `/ready` validates the product schema without repairing it and
+performs a read-only runtime checkpoint/store probe.
+
+### Product Database Examples
+
+```dotenv
+DATABASE_URL=sqlite+pysqlite:///./data/backend.db
+DATABASE_URL=postgresql+psycopg://app:change-me@127.0.0.1:5432/open_deepagents
+DATABASE_URL=mysql+pymysql://app:change-me@127.0.0.1:3306/open_deepagents?charset=utf8mb4
+```
+
+The backend creates the target database on startup when needed, then initializes
+the scaffold tables.
+
+Important distinction:
+
+- `DATABASE_URL` stores users, sessions, uploads, runs, and ordered events.
+- `DEEPAGENTS_CHECKPOINT_BACKEND` and `DEEPAGENTS_CHECKPOINT_DATABASE_URL`
+  configure LangGraph/DeepAgents checkpoint and store state.
+
+## API Contract
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/auth/login` | Login and receive a bearer token. |
+| `GET /api/auth/me` | Return the current user. |
+| `GET /api/models` | Return safe model selector metadata. |
+| `GET /api/sessions` | List the current user's sessions. |
+| `POST /api/sessions` | Create a session with a stable LangGraph `thread_id`. |
+| `PATCH /api/sessions/{session_id}` | Update session `title` or `metadata`. |
+| `DELETE /api/sessions/{session_id}` | Archive an owned session, hide normal history, and revoke its uploads. |
+| `GET /api/sessions/{session_id}/events?after_seq=N` | Load durable ordered history. |
+| `POST /api/sessions/{session_id}/uploads` | Store one owned upload and return its model-facing `/uploads/...` path. |
+| `POST /api/sessions/{session_id}/runs` | Run to completion and return the final run row. |
+| `POST /api/sessions/{session_id}/runs/stream` | Start one run and stream SSE events. |
+| `GET /api/uploads/{upload_id}/content` | Download an owned upload with bearer-header auth. |
+| `DELETE /api/uploads/{upload_id}` | Delete an owned upload. |
+| `GET /api/runs/{run_id}` | Return run status and audit metadata. |
+| `POST /api/runs/{run_id}/cancel` | Mark a running run cancelled. |
+| `GET /api/runs/{run_id}/events` | Load durable ordered events for one run. |
+| `GET /health` | Process liveness. |
+| `GET /ready` | DB, schema, runtime, catalog, sandbox, and agent readiness. |
+
+Each run appends `run.started`, `user.message`, any middleware-generated
+`system.message` rows, audit events, runtime events, and a terminal
+`run.completed`, `run.failed`, or `run.cancelled` event. Events are persisted
+before they are emitted to stream clients.
 
 ## Agent Package Loading
 
 The backend loads `backend/agents:AGENT` by default. The mapping can define:
 
 - `system_prompt`
-- `model`
-- `workspace`
 - `tools`
-- `builtin_tools`
-- `disabled_builtin_tools`
 - `middleware`
-- `hooks`
 - `skills`
 - `memory`
 - `permissions`
 - `subagents`
 
-The recommended style is to keep the default example small: `id`,
-`system_prompt`, `tools`, built-in tool visibility, hooks, skills, memory, and
-explicit `subagents`. Add `model` or `permissions` only when they are needed.
+`permissions[].operations` is the native DeepAgents filesystem permission
+surface. It controls read/write authorization for virtual sandbox paths. Built-in
+tool visibility is not configured by the scaffold.
+Package-local `tools`, `middleware`, `skills`, `memory`, and `subagents` are
+resolved relative to the current agent package instead of the backend root.
+Use `"*"` to discover all exports in a component folder.
 
-Subagents are resolved recursively and support the same runtime-facing controls.
-See [agents/README.md](agents/README.md).
+See [agents/README.md](agents/README.md) for examples.
 
-## Built-in Tools and Permissions
+## Native Integration Helpers
 
-Use built-in tool filtering to decide what the model can see:
+The current FastAPI app owns application policy and request handling. `app/`
+decides auth, sessions, SQL persistence, runtime configuration, and agent
+resolution. `app/runtime/` now holds the raw DeepAgents-facing helpers:
 
-```python
-"builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
-"disabled_builtin_tools": ("execute", "write_file", "edit_file"),
-```
+- import-spec loading;
+- permissions and sandbox backend resolution;
+- skill-source routing;
+- SSE normalization helpers used by backend runtime tests.
 
-Use permissions to decide what visible file tools may access:
+Keep new runtime behavior in these shared helpers instead of rebuilding local
+normalizers inside route handlers.
 
-```python
-"permissions": [
-    {"operations": ["read"], "paths": ["/workspace/main"]},
-    {"operations": ["write"], "paths": ["/workspace/main/output"]},
-]
-```
-
-`read` covers `ls`, `read_file`, `glob`, and `grep`.
-`write` covers `write_file` and `edit_file`.
-
-When permission specs are configured, unmatched read/write paths are denied.
-When no subagents are active, the backend automatically hides the built-in
-`task` tool.
-
-## Prompt Injections
-
-Prompt injections are backend-controlled runtime instructions. The feature still
-exists; the implementation now lives in `app/core/session_scope.py` as
-`PromptInjectionService`.
-
-Use it from backend code, middleware, or hooks:
-
-```python
-app.state.prompt_injections.inject_prompt(
-    session_id=session_id,
-    content="Use the uploaded file as the source of truth.",
-    visibility="hidden",
-    position="before_user",
-    source="backend.rule",
-)
-```
-
-The public message/run APIs intentionally reject hidden prompt injection fields.
-
-## Sandbox Backends
-
-| Kind | Setting | Behavior |
-| --- | --- | --- |
-| `state` | `DEEPAGENTS_SANDBOX_KIND=state` | Virtual in-memory file state. |
-| `filesystem` | `DEEPAGENTS_SANDBOX_KIND=filesystem` | File tools operate under `DEEPAGENTS_SANDBOX_ROOT_DIR`. |
-| `local_shell` | `DEEPAGENTS_SANDBOX_KIND=local_shell` | File tools plus host command execution through `execute`. |
-| `custom` | `DEEPAGENTS_SANDBOX_KIND=custom` | Loads `DEEPAGENTS_SANDBOX_BACKEND_SPEC`. |
-
-For `filesystem` and `local_shell`, the app uses virtual path semantics so `/`
-inside file tools maps to the configured sandbox root. See
-[../docs/sandbox.md](../docs/sandbox.md).
-
-## Run Events
-
-DeepAgents runtime events are normalized before they reach the UI. The backend:
-
-- streams transient assistant deltas without persisting every token;
-- persists concise event views for status, tool, skill, subagent, sandbox, final
-  message, and error events;
-- redacts oversized strings and base64-like payloads before SSE serialization;
-- caps in-memory replay backlog for long-running sessions;
-- preserves terminal status events for reconnect and cancellation flows.
-
-## Generated Files
-
-In `state` sandbox mode, the run input can contain virtual files under
-`/uploads/...`. When the runtime returns changed or new virtual files, the
-backend exports them to `UPLOAD_STORAGE_DIR`, creates upload records, and attaches
-them to the final assistant message.
-
-## Useful Commands
+## Verification
 
 ```bash
 cd backend
-uv run python -m app.db.manage init
-uv run uvicorn app.main:app --reload
-uv run pytest
 uv run ruff check .
-uv run mypy app/core/config.py app/core/runtime_catalog.py app/services/runs.py deepagents_integration
-uv run pytest ../tests/backend/test_deepagents_integration.py
+uv run mypy app
+uv run pytest
+
+cd ..
+PYTHONPATH=backend backend/.venv/bin/python -m pytest tests tests/backend
+python verification/scaffold_audit.py
 ```

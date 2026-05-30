@@ -1,24 +1,24 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it } from "vitest";
 
 import {
   BOTTOM_SCROLL_THRESHOLD,
   isNearBottom,
   scrollMetrics,
   shouldForceFollowLatest,
-} from '../../../src/lib/scroll.js'
+} from "../../../src/lib/scroll.js";
 
-describe('scroll helpers', () => {
-  it('treats positions within the follow threshold as pinned to the bottom', () => {
+describe("scroll helpers", () => {
+  it("treats positions within the follow threshold as pinned to the bottom", () => {
     expect(
       isNearBottom({
         scrollTop: 176,
         clientHeight: 200,
         scrollHeight: 400,
       }),
-    ).toBe(true)
-  })
+    ).toBe(true);
+  });
 
-  it('stops auto-follow when the user scrolls clearly away from the latest content', () => {
+  it("stops auto-follow when the user scrolls clearly away from the latest content", () => {
     expect(
       isNearBottom(
         {
@@ -28,10 +28,10 @@ describe('scroll helpers', () => {
         },
         BOTTOM_SCROLL_THRESHOLD,
       ),
-    ).toBe(false)
-  })
+    ).toBe(false);
+  });
 
-  it('can read element scroll metrics with an explicit scroll top override', () => {
+  it("can read element scroll metrics with an explicit scroll top override", () => {
     expect(
       scrollMetrics(
         {
@@ -45,60 +45,88 @@ describe('scroll helpers', () => {
       scrollTop: 300,
       clientHeight: 100,
       scrollHeight: 500,
-    })
-  })
+    });
+  });
 
-  it('forces follow mode when a new user message is appended', () => {
+  it("forces follow mode when a new user message is appended", () => {
     expect(
       shouldForceFollowLatest(
-        [{ id: 'assistant-1', role: 'assistant', content: 'older' }],
+        [{ id: "assistant-1", role: "assistant", content: "older" }],
         [
-          { id: 'assistant-1', role: 'assistant', content: 'older' },
-          { id: 'user-2', role: 'user', content: 'new prompt' },
+          { id: "assistant-1", role: "assistant", content: "older" },
+          { id: "user-2", role: "user", content: "new prompt" },
         ],
       ),
-    ).toBe(true)
-  })
+    ).toBe(true);
+  });
 
-  it('does not force follow mode while a history load is being reconciled', () => {
+  it("does not force follow mode while a history load is being reconciled", () => {
     expect(
       shouldForceFollowLatest(
         [],
-        [{ id: 'user-1', role: 'user', content: 'historical prompt' }],
+        [{ id: "user-1", role: "user", content: "historical prompt" }],
         { suppressUserAppend: true },
       ),
-    ).toBe(false)
-  })
+    ).toBe(false);
+  });
 
-  it('does not force follow mode while the user has scrolled away from the bottom', () => {
+  it("does not force follow mode while the user has scrolled away from the bottom", () => {
     expect(
       shouldForceFollowLatest(
-        [{ id: 'assistant-1', role: 'assistant', content: 'older' }],
+        [{ id: "assistant-1", role: "assistant", content: "older" }],
         [
-          { id: 'assistant-1', role: 'assistant', content: 'older' },
-          { id: 'user-2', role: 'user', content: 'new prompt' },
+          { id: "assistant-1", role: "assistant", content: "older" },
+          { id: "user-2", role: "user", content: "new prompt" },
         ],
         { userScrollLocked: true },
       ),
-    ).toBe(false)
-  })
+    ).toBe(false);
+  });
 
-  it('does not force follow mode for assistant streaming updates', () => {
+  it("does not force follow mode for assistant streaming updates", () => {
     expect(
       shouldForceFollowLatest(
-        [{ id: 'stream:run-1', role: 'assistant', content: 'hello', streaming: true }],
-        [{ id: 'stream:run-1', role: 'assistant', content: 'hello world', streaming: true }],
+        [
+          {
+            id: "stream:run-1",
+            role: "assistant",
+            content: "hello",
+            streaming: true,
+          },
+        ],
+        [
+          {
+            id: "stream:run-1",
+            role: "assistant",
+            content: "hello world",
+            streaming: true,
+          },
+        ],
       ),
-    ).toBe(false)
-  })
+    ).toBe(false);
+  });
 
-  it('forces follow mode for assistant updates during a live run', () => {
+  it("forces follow mode for assistant updates during a live run", () => {
     expect(
       shouldForceFollowLatest(
-        [{ id: 'stream:run-1', role: 'assistant', content: 'hello', streaming: true }],
-        [{ id: 'stream:run-1', role: 'assistant', content: 'hello world', streaming: true }],
+        [
+          {
+            id: "stream:run-1",
+            role: "assistant",
+            content: "hello",
+            streaming: true,
+          },
+        ],
+        [
+          {
+            id: "stream:run-1",
+            role: "assistant",
+            content: "hello world",
+            streaming: true,
+          },
+        ],
         { forceLiveRun: true },
       ),
-    ).toBe(true)
-  })
-})
+    ).toBe(true);
+  });
+});

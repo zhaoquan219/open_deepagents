@@ -29,7 +29,8 @@
   --radius-md: 14px;
   --radius-sm: 10px;
   --heading-font:
-    "Baskerville", "Iowan Old Style", "Palatino Linotype", "Noto Serif SC", "Songti SC", "STSong", serif;
+    "Baskerville", "Iowan Old Style", "Palatino Linotype", "Noto Serif SC",
+    "Songti SC", "STSong", serif;
   --user-bubble: linear-gradient(160deg, #0c68c1 0%, #0a4c92 100%);
   --el-color-primary: #0b5cad;
   --el-color-primary-light-3: #397abf;
@@ -48,7 +49,9 @@
   --el-font-size-small: 13px;
   --el-component-size: 34px;
   --el-component-size-small: 28px;
-  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", sans-serif;
+  font-family:
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue",
+    sans-serif;
   background: var(--bg);
   color: var(--text);
 }
@@ -69,8 +72,16 @@ body {
   min-height: 100dvh;
   overflow: hidden;
   background:
-    radial-gradient(circle at top left, rgba(11, 92, 173, 0.12), transparent 28%),
-    radial-gradient(circle at top right, rgba(161, 131, 63, 0.1), transparent 22%),
+    radial-gradient(
+      circle at top left,
+      rgba(11, 92, 173, 0.12),
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at top right,
+      rgba(161, 131, 63, 0.1),
+      transparent 22%
+    ),
     linear-gradient(180deg, #fbf7f0 0%, #edf3fa 100%);
   color: var(--text);
 }
@@ -118,8 +129,7 @@ button {
 .toolbar-brand,
 .sidebar-heading,
 .workspace-header-main,
-.workspace-heading,
-.runtime-heading {
+.workspace-heading {
   min-width: 0;
 }
 
@@ -161,20 +171,8 @@ button {
   color: var(--text);
 }
 
-.runtime-heading h3 {
-  margin: 0;
-  font-family: var(--heading-font);
-  font-size: clamp(0.98rem, 1.25vw, 1.14rem);
-  line-height: 1.12;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--text);
-}
-
 .topbar-copy,
 .auth-copy,
-.runtime-copy,
-.runtime-detail,
 .workspace-runtime-copy,
 .sidebar-summary,
 .sidebar-hint,
@@ -188,15 +186,13 @@ button {
   color: var(--text-soft);
 }
 
-.workspace-summary-list,
-.runtime-summary-grid {
+.workspace-summary-list {
   display: grid;
   gap: 8px;
   margin: 0;
 }
 
-.workspace-summary-list div,
-.runtime-summary-grid div {
+.workspace-summary-list div {
   min-width: 0;
   padding: 10px 12px;
   border-radius: var(--radius-md);
@@ -205,7 +201,6 @@ button {
 }
 
 .workspace-summary-list dt,
-.runtime-summary-grid dt,
 .auth-summary dt {
   margin: 0 0 4px;
   color: var(--text-faint);
@@ -216,7 +211,6 @@ button {
 }
 
 .workspace-summary-list dd,
-.runtime-summary-grid dd,
 .auth-summary dd {
   margin: 0;
   color: var(--text);
@@ -229,8 +223,7 @@ button {
 .sidebar-toolbar,
 .upload-row,
 .composer-actions,
-.message-header-main,
-.runtime-header-actions {
+.message-header-main {
   display: flex;
   gap: 10px;
   align-items: center;
@@ -267,10 +260,6 @@ button {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-}
-
-.workspace-shell--wide {
-  grid-template-columns: minmax(0, 1fr) clamp(252px, 24vw, 320px);
 }
 
 .sidebar,
@@ -361,15 +350,13 @@ button {
 
 .session-list,
 .upload-list,
-.attachment-list,
-.runtime-list {
+.attachment-list {
   list-style: none;
   padding: 0;
   margin: 0;
 }
 
-.session-list-scrollbar,
-.runtime-list-scrollbar {
+.session-list-scrollbar {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -378,7 +365,6 @@ button {
 }
 
 .session-list-scrollbar .el-scrollbar__wrap,
-.runtime-list-scrollbar .el-scrollbar__wrap,
 .message-thread .el-scrollbar__wrap {
   min-height: 0;
 }
@@ -653,6 +639,87 @@ button {
   margin-bottom: 0;
 }
 
+.process-block {
+  margin: 0 0 12px;
+  border: 1px solid rgba(11, 92, 173, 0.14);
+  border-radius: 12px;
+  background: rgba(246, 250, 255, 0.76);
+  overflow: hidden;
+}
+
+.process-block > summary {
+  min-height: 36px;
+  padding: 9px 11px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--accent-strong);
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  list-style: none;
+}
+
+.process-block > summary::-webkit-details-marker {
+  display: none;
+}
+
+.process-list {
+  margin: 0;
+  padding: 0 11px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+}
+
+.process-item {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
+  overflow: hidden;
+}
+
+.process-item > summary {
+  min-height: 34px;
+  padding: 8px 9px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text);
+  font-size: 0.8rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.process-item > summary::-webkit-details-marker {
+  display: none;
+}
+
+.process-item > summary span {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.process-item pre {
+  margin: 0 0 8px;
+  padding: 0 9px 9px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  font-family: inherit;
+}
+
+.process-list li:last-child pre {
+  margin-bottom: 0;
+}
+
 .message-row[data-role="user"] .thinking-block {
   border-color: rgba(255, 255, 255, 0.18);
   background: rgba(4, 26, 56, 0.18);
@@ -719,7 +786,6 @@ button {
 }
 
 .empty-state,
-.runtime-empty,
 .sidebar-empty {
   margin: 12px;
   padding: 16px 14px;
@@ -728,7 +794,6 @@ button {
   background: rgba(248, 251, 255, 0.72);
 }
 
-.runtime-empty .el-empty__image,
 .sidebar-empty .el-empty__image {
   display: none;
 }
@@ -824,8 +889,19 @@ button {
 }
 
 .composer-textarea,
+.composer-instruction-textarea,
 .auth-input {
   width: 100%;
+}
+
+.composer-instruction-textarea .el-textarea__inner {
+  min-height: 58px !important;
+  max-height: 120px;
+  padding: 8px 11px;
+  border-radius: 12px;
+  line-height: 1.45;
+  font-size: 0.88rem;
+  background: rgba(246, 250, 255, 0.9);
 }
 
 .composer-textarea .el-textarea__inner {
@@ -841,6 +917,12 @@ button {
 .composer-panel .el-textarea__inner,
 .auth-card .el-input__wrapper {
   box-shadow: 0 0 0 1px var(--line) inset;
+}
+
+.composer-instruction-hint {
+  margin: -2px 2px 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
 }
 
 .composer-panel .el-textarea__inner:focus,
@@ -865,53 +947,6 @@ button {
   flex: 0 0 auto;
 }
 
-.timeline-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(14, 24, 36, 0.18);
-  z-index: 2;
-}
-
-.timeline-shell {
-  display: flex;
-  min-width: 0;
-  min-height: 0;
-  border-left: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(245, 249, 255, 0.82) 0%, rgba(255, 251, 245, 0.94) 100%);
-  overflow: hidden;
-}
-
-.timeline-shell--overlay {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  bottom: 10px;
-  width: min(340px, calc(100% - 20px));
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  box-shadow: var(--shadow-panel);
-  z-index: 3;
-  overflow: hidden;
-}
-
-.runtime-card {
-  height: 100%;
-  min-height: 0;
-  padding: 13px;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  overflow: hidden;
-}
-
-.runtime-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: var(--panel-header-row-height);
-}
-
 .sidebar-toolbar-button.el-button {
   width: 100%;
   min-height: 36px;
@@ -928,10 +963,6 @@ button {
   gap: 8px;
   align-self: center;
   flex: 0 0 auto;
-}
-
-.runtime-header-actions {
-  align-self: center;
 }
 
 .sidebar-new-button.el-button {
@@ -975,71 +1006,7 @@ button {
   margin-right: 2px;
 }
 
-.runtime-summary-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-}
-
-.runtime-summary-grid > :last-child {
-  grid-column: 1 / -1;
-}
-
-.runtime-list {
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 2px 2px 4px 0;
-}
-
-.runtime-entry {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: start;
-  padding: 9px 11px;
-  border-radius: 14px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.86);
-  box-shadow: none;
-}
-
-.runtime-label {
-  margin: 0 0 4px;
-  color: var(--text);
-  font-weight: 700;
-  font-size: 0.88rem;
-  line-height: 1.42;
-}
-
-.runtime-copy,
-.runtime-detail,
-.runtime-meta {
-  font-size: 0.84rem;
-  line-height: 1.5;
-}
-
-.runtime-meta {
-  margin: 4px 0 0;
-  color: var(--text-faint);
-  overflow-wrap: anywhere;
-}
-
-.runtime-summary-grid div {
-  min-height: 68px;
-  padding: 8px 10px;
-}
-
-.runtime-summary-grid dt {
-  font-size: 0.64rem;
-}
-
-.runtime-summary-grid dd {
-  font-size: 0.92rem;
-}
-
-.workspace-summary-list dt,
-.runtime-summary-grid dt {
+.workspace-summary-list dt {
   display: -webkit-box;
   line-height: 1.25;
   overflow: hidden;
@@ -1048,7 +1015,6 @@ button {
 }
 
 .workspace-runtime-copy,
-.runtime-copy,
 .topbar-copy,
 .sidebar-header-copy {
   text-wrap: pretty;
@@ -1084,11 +1050,6 @@ button {
 
 .composer-primary-button.el-button {
   box-shadow: 0 8px 16px rgba(11, 92, 173, 0.14);
-}
-
-.runtime-entry[data-status="cancelled"] {
-  border-color: rgba(147, 105, 26, 0.18);
-  background: linear-gradient(180deg, rgba(255, 250, 240, 0.96) 0%, rgba(255, 246, 230, 0.9) 100%);
 }
 
 .auth-layout {
@@ -1206,17 +1167,8 @@ button {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .runtime-summary-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .runtime-summary-grid > :last-child {
-    grid-column: auto;
-  }
-
   .sidebar-header,
-  .workspace-header,
-  .runtime-header {
+  .workspace-header {
     flex-direction: column;
     align-items: stretch;
   }
@@ -1226,7 +1178,6 @@ button {
   }
 
   .session-card,
-  .runtime-entry,
   .upload-row,
   .composer-actions {
     grid-template-columns: 1fr;
@@ -1274,8 +1225,7 @@ button {
   .app-toolbar,
   .sidebar-header,
   .workspace-header,
-  .composer-panel,
-  .runtime-card {
+  .composer-panel {
     padding-left: 16px;
     padding-right: 16px;
   }
@@ -1303,11 +1253,6 @@ button {
   .composer-upload-button.el-button,
   .composer-primary-button.el-button {
     width: 100%;
-  }
-
-  .timeline-shell--overlay {
-    inset: 8px;
-    width: auto;
   }
 
   .sidebar-shell {

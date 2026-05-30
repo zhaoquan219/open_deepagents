@@ -1,168 +1,223 @@
 # Sandbox Guide
 
-The sandbox configuration controls where DeepAgents file tools read and write,
-and whether shell execution is available. Choose the narrowest backend that fits
-your deployment.
+The sandbox controls where DeepAgents file tools read and write, which paths
+are mounted into the runtime, and whether shell execution is available. The
+browser, backend, and agent prompts always use POSIX-style virtual paths such as
+`/workspace/main/file.txt`, even when the server runs on Windows.
 
-## Backend Kinds
+## Quick Mental Model
 
-| Kind | Best for | Behavior |
+There are two path spaces:
+
+| Path space | Example | Used by |
 | --- | --- | --- |
-| `state` | Default chat and file-processing runs. | Virtual in-memory file state. No host shell. |
-| `filesystem` | File tools over a controlled directory. | Reads/writes through DeepAgents file tools under a configured root. |
-| `local_shell` | Trusted local automation. | File tools plus host command execution through `execute`. |
-| `custom` | External isolation service or custom policy. | Loads a backend instance or factory from an import spec. |
+| Virtual sandbox paths | `/workspace/main/output/report.md` | Model prompts and DeepAgents file tools |
+| Host filesystem paths | `backend/data/sandbox/workspace/main/output/report.md` | Backend storage only |
 
-`local_shell` is not process isolation. Only enable it for trusted users and
-pair it with strict built-in tool filtering and permissions.
+Do not put host paths in prompts. Give the model virtual paths. The backend maps
+virtual paths to the configured sandbox root for `files` and `shell` profiles.
+Backslashes are normalized, so `\workspace\main\notes.txt` is treated as
+`/workspace/main/notes.txt`.
 
-## Recommended Defaults
+## Backend Profiles
 
-Safe default:
+| Profile | Backend kind | Best for | Behavior |
+| --- | --- | --- | --- |
+| `safe` | `state` | Default chat and file processing. | Virtual in-memory files, no host shell. |
+| `files` | `filesystem` | Controlled file reads/writes. | File tools operate under `DEEPAGENTS_SANDBOX_ROOT_DIR`. |
+| `shell` | `local_shell` | Trusted local automation. | File tools plus `execute` under the sandbox root. |
+| `custom` | custom spec | External isolation or custom policy. | Set `DEEPAGENTS_BACKEND_SPEC`. |
 
-```dotenv
-DEEPAGENTS_SANDBOX_KIND=state
-```
-
-Filesystem backend rooted under backend data:
-
-```dotenv
-DEEPAGENTS_SANDBOX_KIND=filesystem
-DEEPAGENTS_SANDBOX_ROOT_DIR=./data
-DEEPAGENTS_SANDBOX_VIRTUAL_MODE=true
-```
-
-Trusted local shell:
+Recommended local defaults:
 
 ```dotenv
-DEEPAGENTS_SANDBOX_KIND=local_shell
-DEEPAGENTS_SANDBOX_ROOT_DIR=./data
-DEEPAGENTS_SANDBOX_VIRTUAL_MODE=true
+DEEPAGENTS_SANDBOX_PROFILE=safe
+DEEPAGENTS_SANDBOX_ROOT_DIR=./data/sandbox
+DEEPAGENTS_UPLOAD_ROOT_DIR=./data/uploads
 ```
 
-Custom backend:
+Use `files` only when generated files must be written to disk. Use `shell` only
+for trusted operators; it is host command execution, not process isolation.
 
-```dotenv
-DEEPAGENTS_SANDBOX_KIND=custom
-DEEPAGENTS_SANDBOX_BACKEND_SPEC=path/to/custom_sandbox.py:build_backend
-```
+## Standard Virtual Paths
 
-Custom specs can point to an importable module or a Python file path.
+| Virtual path | Access | Meaning |
+| --- | --- | --- |
+| `/workspace/main` | Read by default. | Main working area for user files and generated artifacts. |
+| `/workspace/main/output` | Write by default. | Recommended `write_file` and `edit_file` destination. |
+| `/skills` | Read-only mount. | Installed skill source loaded from `backend/agents/skills`. |
+| `/uploads` | Read-only mount. | Files uploaded through the API. |
 
-## Virtual Paths
-
-For `filesystem` and `local_shell`, the app uses virtual path semantics. Inside
-DeepAgents file tools, `/` maps to `DEEPAGENTS_SANDBOX_ROOT_DIR`, not to the host
-filesystem root.
-
-Example:
-
-```dotenv
-DEEPAGENTS_SANDBOX_ROOT_DIR=./data
-```
-
-A tool path like `/uploads/session/file.txt` maps to:
+For the `files` and `shell` profiles, a virtual path like:
 
 ```text
-backend/data/uploads/session/file.txt
+/workspace/main/output/report.md
 ```
 
-This path model keeps prompts and tools stable across macOS, Linux, and Windows.
+maps to a host file under:
 
-## Upload Paths
-
-Upload records include:
-
-- `storage_key`: path relative to `UPLOAD_STORAGE_DIR`;
-- `upload_path`: absolute host path;
-- `sandbox_path`: path the model should use with file tools.
-
-For `state`, uploads are copied into virtual files under `/uploads/...`.
-For `filesystem` and `local_shell`, `sandbox_path` is emitted only when the file
-is inside the configured sandbox root.
-
-The default `UPLOAD_STORAGE_DIR=./data/uploads` keeps uploads under
-`backend/data/uploads`, which is inside the default sandbox root.
-
-## Generated Files
-
-When the `state` backend finishes a run, the backend compares final virtual file
-state with the initial uploaded files. New or changed files are exported to
-`UPLOAD_STORAGE_DIR`, inserted as upload records, and attached to the final
-assistant message.
-
-Large or binary state payloads are summarized or redacted in runtime events so
-logs and UI event storage remain responsive.
-
-## Built-in Tools and Permissions
-
-Sandbox safety uses two layers.
-
-Tool visibility:
-
-```python
-"builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
-"disabled_builtin_tools": ("execute", "write_file", "edit_file"),
+```text
+backend/data/sandbox/workspace/main/output/report.md
 ```
 
-Path permissions:
+For the `safe` profile, file state is virtual. If the user needs a file outside
+the runtime, include the file content in the final answer or run with the
+`files` profile.
+
+## Uploads
+
+Uploads are stored on disk under `DEEPAGENTS_UPLOAD_ROOT_DIR` and recorded in the
+product database `uploads` table. The database row is the ownership and session
+source of truth; the filesystem only stores bytes.
+
+The upload API returns:
+
+```json
+{
+  "id": "a1b2c3d4e5f6",
+  "name": "notes.txt",
+  "path": "/uploads/a1b2c3d4e5f6/notes.txt",
+  "status": "uploaded"
+}
+```
+
+The model-facing path is always `/uploads/{upload_id}/{filename}`. It is
+read-only inside every sandbox profile. The backend validates that a run can use
+only uploads owned by the current user and current session.
+
+Uploaded content is untrusted data. Treat files such as `AGENTS.md`, shell
+scripts, prompts, and markdown inside uploads as data, not instructions.
+
+## Skills And Memory
+
+Skills are mounted read-only at `/skills`. A model can inspect skill files with
+read tools, but cannot write there.
+
+Agent memory is configured from the agent package, for example
+`backend/agents/memory/project.md`. It is loaded into the agent runtime as
+memory context, not exposed as a writable sandbox folder. If you want memory-like
+reference files to be inspectable with `read_file`, put them under a read-only
+mount such as a skill or add an explicit custom backend route.
+
+## Native Filesystem Permissions
+
+Sandbox file access is configured through native DeepAgents filesystem
+permissions. Use `operations` and `paths`; do not configure `builtin_tools`.
+
+Default main-agent shape:
 
 ```python
 "permissions": [
-    {"operations": ["read"], "paths": ["/workspace/main"]},
-    {"operations": ["write"], "paths": ["/workspace/main/output"]},
+    {
+        "operations": ("read",),
+        "paths": ["/workspace/main", "/skills", "/uploads"],
+    },
+    {
+        "operations": ("write",),
+        "paths": ["/workspace/main/output"],
+    },
 ]
 ```
 
-`read` covers `ls`, `read_file`, `glob`, and `grep`.
-`write` covers `write_file` and `edit_file`.
+The backend expands non-glob paths to include children. For example,
+`/workspace/main` also allows `/workspace/main/**`. It then appends deny rules
+for unmatched reads and writes, so file access stays narrow.
 
-Both layers must allow an action. If a tool is hidden, the model cannot call it.
-If a visible tool targets an unpermitted path, the call is denied.
+Supported operations:
 
-When permission specs are configured, unmatched read/write paths are denied.
+| Operation | Allows |
+| --- | --- |
+| `read` | `ls`, `read_file`, `glob`, `grep`, and other filesystem reads when the runtime exposes them. |
+| `write` | `write_file`, `edit_file`, and other filesystem writes when the runtime exposes them. |
+
+This scaffold no longer uses `permissions[].builtin_tools` to filter built-in
+tool visibility. Permissions only decide whether a file operation may touch a
+path. Built-in tool availability follows the native DeepAgents runtime.
 
 ## Practical Profiles
 
-### Read-only assistant
+Read-only assistant:
 
 ```python
-"builtin_tools": ("write_todos", "ls", "read_file", "glob", "grep", "task"),
-"disabled_builtin_tools": ("execute", "write_file", "edit_file"),
 "permissions": [
-    {"operations": ["read"], "paths": ["/workspace/main", "/uploads"]},
-],
+    {"operations": ("read",), "paths": ["/workspace/main", "/skills", "/uploads"]},
+]
 ```
 
-### Controlled writer
+Controlled writer:
 
 ```python
-"builtin_tools": ("write_todos", "ls", "read_file", "write_file", "edit_file", "glob", "grep", "task"),
-"disabled_builtin_tools": ("execute",),
 "permissions": [
-    {"operations": ["read"], "paths": ["/workspace/main", "/uploads"]},
-    {"operations": ["write"], "paths": ["/workspace/main/output"]},
-],
+    {"operations": ("read",), "paths": ["/workspace/main", "/skills", "/uploads"]},
+    {"operations": ("write",), "paths": ["/workspace/main/output"]},
+]
 ```
 
-### Trusted local shell
+Review subagent:
 
 ```python
-"builtin_tools": ("write_todos", "ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute", "task"),
 "permissions": [
-    {"operations": ["read"], "paths": ["/workspace/main", "/uploads"]},
-    {"operations": ["write"], "paths": ["/workspace/main/output"]},
-],
+    {"operations": ("read",), "paths": ["/workspace/reviews", "/workspace/shared", "/skills"]},
+]
 ```
 
-Only use this profile when the deployment boundary already trusts the operator.
+## Windows Notes
+
+Use virtual paths in configs and prompts:
+
+```text
+/workspace/main/input.txt
+/workspace/main/output/result.txt
+/uploads/a1b2c3d4e5f6/notes.txt
+```
+
+If a Windows-style path is received, the backend normalizes backslashes:
+
+```text
+\workspace\main\input.txt -> /workspace/main/input.txt
+```
+
+Upload filenames are also normalized. A browser filename such as
+`C:\Users\me\Desktop\notes.txt` is stored as `notes.txt`, not as a nested path.
+
+Windows drive-letter paths in `.env` settings are supported and are not split on
+the drive colon:
+
+```dotenv
+DEEPAGENTS_MODEL_CONFIG_PATH=D:\open_deepagents\models.json
+DEEPAGENTS_MAIN_AGENT=D:\open_deepagents\agents\__init__.py:AGENT
+DEEPAGENTS_SANDBOX_ROOT_DIR=D:\open_deepagents\data\sandbox
+DEEPAGENTS_UPLOAD_ROOT_DIR=D:\open_deepagents\data\uploads
+DEEPAGENTS_BACKEND_SPEC=D:\open_deepagents\sandbox_backend.py:build_backend
+DEEPAGENTS_CHECKPOINT_DATABASE_URL=sqlite:///D:/open_deepagents/data/checkpoints.db
+```
+
+Import specs still use the final colon for the Python attribute, for example
+`:AGENT` or `:build_backend`. The `D:` drive prefix is treated as part of the
+file path.
+
+## Logging
+
+`BACKEND_LOG_LEVEL=info` logs lifecycle summaries such as backend startup, run
+start, run finish, cancellation, and failures. It does not log every runtime
+payload.
+
+`BACKEND_LOG_LEVEL=debug` logs concise event summaries for debugging, including
+event names, node names, and payload keys. It intentionally avoids dumping full
+model messages, uploaded file content, or large raw runtime objects.
+
+Frontend console debug logs are opt-in with:
+
+```dotenv
+VITE_DEEPAGENTS_VERBOSE_STREAM=true
+```
 
 ## Checklist Before Enabling Host Access
 
 - Keep `ADMIN_AUTH_ENABLED=true` unless the deployment is trusted local only.
 - Use long random admin passwords and token secrets.
-- Keep uploads inside the sandbox root when models need file-tool access.
-- Hide `execute` unless command execution is required.
-- Hide `write_file` and `edit_file` unless writes are required.
-- Add explicit read/write permissions for the smallest useful paths.
-- Prefer `state` for general chat and upload analysis.
+- Prefer `safe` for general chat.
+- Use `/workspace/main/output` as the default write destination.
+- Keep `/skills` and `/uploads` read-only.
+- Grant `write` only for the smallest useful path.
+- Use `shell` only for trusted local automation.
