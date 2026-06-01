@@ -4,8 +4,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-MAX_TEXT = 16384
-MAX_ITEMS = 25
+MAX_TEXT = 1000000
+MAX_ITEMS = 50
 MAX_DEPTH = 5
 
 
