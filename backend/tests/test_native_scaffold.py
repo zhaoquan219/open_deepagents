@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import threading
+import time
 import warnings
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -1165,6 +1166,67 @@ def test_run_lifecycle_persists_runs_events_and_native_context(
         assert run.thread_id == session["thread_id"]
         assert run.model_id == "test/fake"
         assert run.ended_at is not None
+
+
+def test_blocking_runtime_middleware_does_not_stall_session_reads(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    monkeypatch,
+) -> None:
+    started = threading.Event()
+    stream_errors: list[BaseException] = []
+
+    class BlockingMiddlewareGraph:
+        async def astream_events(
+            self,
+            agent_input: Any,
+            *,
+            config: Any,
+            context: Any,
+        ) -> AsyncIterator[dict[str, Any]]:
+            del agent_input, config, context
+            started.set()
+            time.sleep(0.6)
+            yield {
+                "event": "on_chain_end",
+                "name": "deepagents-web",
+                "data": {"output": {"messages": [AIMessage(content="done")]}},
+            }
+
+    monkeypatch.setattr(
+        "app.routes.runtime_agent.build_deep_agent",
+        lambda settings, model_id=None: BlockingMiddlewareGraph(),
+    )
+    session = client.post("/api/sessions", headers=auth_headers, json={}).json()
+
+    def read_stream() -> None:
+        try:
+            with client.stream(
+                "POST",
+                f"/api/sessions/{session['id']}/runs/stream",
+                headers=auth_headers,
+                json={"prompt": "slow middleware"},
+            ) as response:
+                assert response.status_code == 200
+                payloads = sse_events(response.read().decode())
+                assert [event["label"] for event in payloads].count("run.completed") == 1
+        except BaseException as exc:
+            stream_errors.append(exc)
+
+    stream_thread = threading.Thread(target=read_stream)
+    stream_thread.start()
+    assert started.wait(timeout=2)
+
+    started_at = time.perf_counter()
+    response = client.get("/api/sessions", headers=auth_headers)
+    elapsed = time.perf_counter() - started_at
+
+    stream_thread.join(timeout=2)
+    assert not stream_thread.is_alive()
+    if stream_errors:
+        raise stream_errors[0]
+    assert response.status_code == 200
+    assert elapsed < 0.3
 
 
 def test_backend_debug_logging_captures_concise_runtime_summaries(

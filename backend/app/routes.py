@@ -6,9 +6,11 @@ import json
 import logging
 import re
 import shutil
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from queue import Full, Queue
+from threading import Event, Thread
 from typing import Any
 from uuid import uuid4
 
@@ -36,6 +38,8 @@ LOGGER = logging.getLogger("app.routes")
 PLACEHOLDER_SESSION_TITLES = {"", "new session", "untitled", "untitled session", "新会话"}
 MAX_DERIVED_TITLE_CHARS = 32
 TRANSCRIPT_MESSAGE_KINDS = ("system.message", "user.message", "assistant.message")
+STREAM_WORKER_QUEUE_SIZE = 256
+STREAM_WORKER_JOIN_TIMEOUT_SECONDS = 0.2
 
 USER_FIELDS = ("id", "username", "email", "role", "is_active")
 SESSION_FIELDS = (
@@ -310,8 +314,8 @@ async def create_run(
     request: Request,
     user: CurrentUser,
 ) -> dict[str, Any]:
-    run_id, _ = _start_run(request, session_id, payload, user)
-    async for _ in _execute_run_sse(request, run_id):
+    run_id, _ = await asyncio.to_thread(_start_run, request, session_id, payload, user.id)
+    async for _ in _execute_run_sse_worker(request, run_id):
         pass
     with request.app.state.database.session() as db:
         run = db.get(RunRecord, run_id)
@@ -326,12 +330,18 @@ async def stream_run(
     request: Request,
     user: CurrentUser,
 ) -> StreamingResponse:
-    run_id, initial_events = _start_run(request, session_id, payload, user)
+    run_id, initial_events = await asyncio.to_thread(
+        _start_run,
+        request,
+        session_id,
+        payload,
+        user.id,
+    )
 
     async def generate() -> AsyncIterator[str]:
         for event in initial_events:
             yield sse_payload(event)
-        async for chunk in _execute_run_sse(request, run_id):
+        async for chunk in _execute_run_sse_worker(request, run_id):
             yield chunk
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -375,12 +385,12 @@ def _start_run(
     request: Request,
     session_id: str,
     payload: RunIn,
-    user: UserRecord,
+    user_id: str,
 ) -> tuple[str, list[EventRecord]]:
     settings: Settings = request.app.state.settings
     with request.app.state.database.session() as db:
         session = db.get(SessionRecord, session_id)
-        if session is None or session.owner_user_id != user.id or session.status == "archived":
+        if session is None or session.owner_user_id != user_id or session.status == "archived":
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
         if _active_run_exists(db, session.id):
             raise HTTPException(
@@ -390,7 +400,7 @@ def _start_run(
         model_id = default_model_id(settings, payload.model_id or str(agent.get("model") or ""))
         run = RunRecord(
             session_id=session.id,
-            user_id=user.id,
+            user_id=user_id,
             thread_id=session.thread_id,
             agent_id=str(agent["id"]),
             model_id=model_id,
@@ -406,7 +416,7 @@ def _start_run(
         attachments = _resolve_run_attachments(
             db,
             settings,
-            user,
+            user_id,
             session.id,
             payload.attachments,
         )
@@ -427,6 +437,86 @@ def _start_run(
             len(attachments),
         )
         return run.id, events
+
+
+async def _execute_run_sse_worker(request: Request, run_id: str) -> AsyncIterator[str]:
+    async for chunk in _async_iterator_in_worker_thread(
+        lambda: _execute_run_sse(request, run_id),
+        name=f"deepagents-run-{run_id[:8]}",
+    ):
+        yield chunk
+
+
+async def _async_iterator_in_worker_thread(
+    factory: Callable[[], AsyncIterator[str]],
+    *,
+    name: str,
+) -> AsyncIterator[str]:
+    output: Queue[tuple[str, Any]] = Queue(maxsize=STREAM_WORKER_QUEUE_SIZE)
+    stop = Event()
+    worker_loop: dict[str, asyncio.AbstractEventLoop] = {}
+    worker_task: dict[str, asyncio.Task[None]] = {}
+
+    def enqueue(kind: str, payload: Any = None) -> bool:
+        while True:
+            if stop.is_set() and kind == "chunk":
+                return False
+            try:
+                output.put((kind, payload), timeout=0.1)
+                return True
+            except Full:
+                if stop.is_set():
+                    return False
+
+    async def consume() -> None:
+        try:
+            async for chunk in factory():
+                if stop.is_set():
+                    break
+                if not enqueue("chunk", chunk):
+                    break
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            enqueue("error", exc)
+
+    def worker() -> None:
+        loop = asyncio.new_event_loop()
+        worker_loop["loop"] = loop
+        asyncio.set_event_loop(loop)
+        task = loop.create_task(consume())
+        worker_task["task"] = task
+        try:
+            loop.run_until_complete(task)
+        except asyncio.CancelledError:
+            pass
+        except BaseException as exc:
+            enqueue("error", exc)
+        finally:
+            enqueue("done")
+            loop.close()
+
+    thread = Thread(target=worker, name=name, daemon=True)
+    thread.start()
+    try:
+        while True:
+            kind, payload = await asyncio.to_thread(output.get)
+            if kind == "chunk":
+                yield str(payload)
+                continue
+            if kind == "error":
+                if isinstance(payload, BaseException):
+                    raise payload
+                raise RuntimeError("Run stream worker failed")
+            if kind == "done":
+                break
+    finally:
+        stop.set()
+        loop = worker_loop.get("loop")
+        task = worker_task.get("task")
+        if loop is not None and task is not None and not task.done():
+            loop.call_soon_threadsafe(task.cancel)
+        thread.join(timeout=STREAM_WORKER_JOIN_TIMEOUT_SECONDS)
 
 
 async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
@@ -879,7 +969,7 @@ def _event_attachments(event: EventRecord | None) -> list[dict[str, Any]]:
 def _resolve_run_attachments(
     db: DbSession,
     settings: Settings,
-    user: UserRecord,
+    user_id: str,
     session_id: str,
     attachments: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -889,7 +979,7 @@ def _resolve_run_attachments(
         if _attachment_session_mismatch(raw, session_id):
             upload_id = str(raw.get("id") or _upload_id_from_attachment(raw, session_id) or "")
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Upload not found: {upload_id}")
-        upload = _upload_from_attachment(db, user, session_id, raw)
+        upload = _upload_from_attachment(db, user_id, session_id, raw)
         if upload is None:
             continue
         if upload.id in seen_upload_ids:
@@ -1017,13 +1107,13 @@ def _upload_id_from_attachment(raw: dict[str, Any], session_id: str | None = Non
 
 def _upload_from_attachment(
     db: DbSession,
-    user: UserRecord,
+    user_id: str,
     session_id: str,
     raw: dict[str, Any],
 ) -> UploadRecord | None:
     upload_id = _upload_id_from_attachment(raw, session_id)
     if upload_id:
-        upload = _owned_upload(db, user, upload_id, session_id=session_id)
+        upload = _owned_upload_for_user_id(db, user_id, upload_id, session_id=session_id)
         if upload is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Upload not found: {upload_id}")
         return upload
@@ -1034,12 +1124,34 @@ def _upload_from_attachment(
         select(UploadRecord)
         .where(
             UploadRecord.session_id == session_id,
-            UploadRecord.user_id == user.id,
+            UploadRecord.user_id == user_id,
             UploadRecord.filename == filename,
             UploadRecord.status != "deleted",
         )
         .order_by(UploadRecord.created_at.desc())
     )
+
+
+def _owned_upload_for_user_id(
+    db: DbSession,
+    user_id: str,
+    upload_id: str,
+    *,
+    session_id: str | None = None,
+) -> UploadRecord | None:
+    if not _is_safe_upload_id(upload_id):
+        return None
+    query = select(UploadRecord).where(
+        UploadRecord.id == upload_id,
+        UploadRecord.user_id == user_id,
+        UploadRecord.status != "deleted",
+    )
+    if session_id is not None:
+        query = query.where(UploadRecord.session_id == session_id)
+    upload = db.scalar(query)
+    if upload is not None and upload.session.status == "archived":
+        return None
+    return upload
 
 
 def _upload_filename_from_attachment_path(raw: dict[str, Any], session_id: str) -> str:
