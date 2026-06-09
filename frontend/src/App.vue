@@ -91,7 +91,13 @@ function consumeSessionRunEvent(envelope) {
   scheduleSessionDeltaFlush();
 }
 
-const sessions = computed(() => sessionStore.state.sessions);
+const displaySessions = computed(() =>
+  sessionStore.state.searchQuery
+    ? sessionStore.state.searchResults
+    : sessionStore.state.sessions,
+);
+const searchingSessions = computed(() => sessionStore.state.searching);
+const searchQuery = computed(() => sessionStore.state.searchQuery);
 const currentSessionId = computed(() => sessionStore.state.currentSessionId);
 const currentSession = computed(() => sessionStore.getCurrentSession());
 const currentMessages = computed(() => sessionStore.getCurrentMessages());
@@ -231,8 +237,22 @@ async function ensureSession() {
   return handleCreateSession();
 }
 
+let searchDebounceTimer = 0;
+function handleSearchSessions(query) {
+  if (searchDebounceTimer) {
+    globalThis.clearTimeout(searchDebounceTimer);
+  }
+  searchDebounceTimer = globalThis.setTimeout(() => {
+    searchDebounceTimer = 0;
+    void sessionStore.searchSessions(query);
+  }, 250);
+}
+
 async function handleRefreshSessions() {
   await sessionStore.loadSessions({ preserveSelection: true });
+  if (sessionStore.state.searchQuery) {
+    await sessionStore.searchSessions(sessionStore.state.searchQuery);
+  }
 }
 
 async function handleCreateSession() {
@@ -246,7 +266,7 @@ async function handleSelectSession(sessionId) {
 }
 
 async function handleDeleteSession(sessionId) {
-  const session = sessions.value.find((item) => item.id === sessionId);
+  const session = displaySessions.value.find((item) => item.id === sessionId);
   const title = session?.title || uiCopy.app.deleteSession.fallbackTitle;
 
   try {
@@ -545,6 +565,9 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  if (searchDebounceTimer) {
+    globalThis.clearTimeout(searchDebounceTimer);
+  }
   closeStream();
 });
 </script>
@@ -597,13 +620,16 @@ onBeforeUnmount(() => {
       <main class="layout-grid">
         <aside class="sidebar-shell">
           <SessionSidebar
-            :sessions="sessions"
+            :sessions="displaySessions"
             :current-session-id="currentSessionId"
             :loading="loadingSessions"
+            :searching="searchingSessions"
+            :search-query="searchQuery"
             :error="sessionError"
             :deleting-session-id="deletingSessionId"
             @new-session="handleCreateSession"
             @refresh="handleRefreshSessions"
+            @search="handleSearchSessions"
             @select-session="handleSelectSession"
             @delete-session="handleDeleteSession"
           />

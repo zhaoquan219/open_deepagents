@@ -118,8 +118,17 @@ settings above.
 ```bash
 cd backend
 uv sync --group dev
-uv run uvicorn app.main:app --reload
+uv run python -m app
 ```
+
+`python -m app` is the recommended entry point. It sets the asyncio event loop
+policy before uvicorn binds its socket, which is required for the Postgres
+checkpoint/store backend on Windows (psycopg async mode cannot run on the default
+`ProactorEventLoop`). It respects `BACKEND_HOST`, `BACKEND_PORT`, and
+`BACKEND_RELOAD` (reload defaults to on). The bare
+`uv run uvicorn app.main:app --reload` command works for SQLite/in-memory
+checkpoints, but on Windows with Postgres checkpoints it will hang on every
+request, so prefer `python -m app`.
 
 The app initializes the schema on startup. The API defaults to:
 

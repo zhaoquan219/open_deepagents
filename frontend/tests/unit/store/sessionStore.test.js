@@ -734,4 +734,48 @@ describe("sessionStore transcript helpers", () => {
     store.clearPendingUploads("session-new");
     expect(store.state.uploadError).toBe("");
   });
+
+  it("searches sessions by keyword and exposes the visible list", async () => {
+    const apiClient = {
+      createSession: vi.fn(),
+      deleteSession: vi.fn(),
+      getSessionMessages: vi.fn(async () => []),
+      listSessions: vi.fn(async () => [
+        {
+          id: "session-2",
+          title: "预算复盘",
+          updatedAt: "2026-05-05T00:00:01Z",
+        },
+      ]),
+      uploadFiles: vi.fn(),
+    };
+    const store = createSessionStore(apiClient);
+    store.state.sessions = [
+      { id: "session-1", title: "会话一", updatedAt: "2026-05-05T00:00:02Z" },
+      { id: "session-2", title: "预算复盘", updatedAt: "2026-05-05T00:00:01Z" },
+    ];
+
+    expect(store.getVisibleSessions().map((session) => session.id)).toEqual([
+      "session-1",
+      "session-2",
+    ]);
+
+    await store.searchSessions("预算");
+
+    expect(apiClient.listSessions).toHaveBeenCalledWith({ query: "预算" });
+    expect(store.state.searchQuery).toBe("预算");
+    expect(store.getVisibleSessions().map((session) => session.id)).toEqual([
+      "session-2",
+    ]);
+
+    await store.searchSessions("   ");
+
+    expect(store.state.searchQuery).toBe("");
+    expect(store.state.searchResults).toEqual([]);
+    expect(store.getVisibleSessions().map((session) => session.id)).toEqual([
+      "session-1",
+      "session-2",
+    ]);
+    expect(apiClient.listSessions).toHaveBeenCalledTimes(1);
+  });
 });

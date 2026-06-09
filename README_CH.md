@@ -53,8 +53,15 @@ cp backend/models.example.json backend/models.json
 ```bash
 cd backend
 uv sync --group dev
-uv run uvicorn app.main:app --reload
+uv run python -m app
 ```
+
+推荐用 `python -m app` 启动：它会在 uvicorn 绑定端口之前设置 asyncio 事件循环策略，
+这对 Windows 上使用 PostgreSQL 检查点/存储后端是必需的（psycopg 的异步模式无法运行在
+Windows 默认的 `ProactorEventLoop` 上）。该入口支持 `BACKEND_HOST`、`BACKEND_PORT`、
+`BACKEND_RELOAD`（默认开启热重载）。直接使用 `uv run uvicorn app.main:app --reload`
+对 SQLite/内存检查点仍然可用，但在 Windows 上配合 PostgreSQL 检查点时会导致每个请求都卡住，
+因此请改用 `python -m app`。
 
 应用启动时会自动初始化 schema。默认地址：
 

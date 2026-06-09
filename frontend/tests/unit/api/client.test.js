@@ -222,6 +222,31 @@ describe("createApiClient session normalization", () => {
     ]);
   });
 
+  it("passes the trimmed keyword to the sessions list route when searching", async () => {
+    const storage = {
+      getItem: vi.fn(() => "token-123"),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    };
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ sessions: [] }),
+    }));
+
+    vi.stubGlobal("window", {
+      location: { origin: "http://localhost:5173" },
+      localStorage: storage,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createApiClient("/api").listSessions({ query: "  预算 计划  " });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      `/api/sessions?q=${encodeURIComponent("预算 计划")}`,
+    );
+  });
+
   it("updates session metadata through the session patch route", async () => {
     const storage = {
       getItem: vi.fn(() => "token-123"),

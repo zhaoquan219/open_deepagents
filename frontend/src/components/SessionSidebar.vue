@@ -1,9 +1,16 @@
 <script setup>
-import { RefreshRight } from "@element-plus/icons-vue";
+import { ref, watch } from "vue";
+import { Loading, RefreshRight, Search } from "@element-plus/icons-vue";
 
 import { uiCopy } from "../lib/copy.js";
 
-defineEmits(["new-session", "refresh", "select-session", "delete-session"]);
+const emit = defineEmits([
+  "new-session",
+  "refresh",
+  "search",
+  "select-session",
+  "delete-session",
+]);
 
 const props = defineProps({
   currentSessionId: {
@@ -18,6 +25,14 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  searching: {
+    type: Boolean,
+    default: false,
+  },
+  searchQuery: {
+    type: String,
+    default: "",
+  },
   sessions: {
     type: Array,
     default: () => [],
@@ -26,6 +41,21 @@ const props = defineProps({
     type: String,
     default: "",
   },
+});
+
+const searchTerm = ref(props.searchQuery);
+
+watch(
+  () => props.searchQuery,
+  (value) => {
+    if (value !== searchTerm.value) {
+      searchTerm.value = value;
+    }
+  },
+);
+
+watch(searchTerm, (value) => {
+  emit("search", value);
 });
 </script>
 
@@ -46,6 +76,20 @@ const props = defineProps({
     </div>
 
     <div class="sidebar-toolbar">
+      <el-input
+        v-model="searchTerm"
+        class="sidebar-search"
+        clearable
+        :prefix-icon="Search"
+        :aria-label="uiCopy.sidebar.searchAria"
+        :placeholder="uiCopy.sidebar.searchPlaceholder"
+      >
+        <template v-if="props.searching" #suffix>
+          <el-icon class="sidebar-search-spinner is-loading">
+            <Loading />
+          </el-icon>
+        </template>
+      </el-input>
       <div class="sidebar-toolbar-actions">
         <el-button
           class="sidebar-toolbar-button sidebar-new-button"
@@ -80,7 +124,9 @@ const props = defineProps({
       v-else-if="props.sessions.length === 0"
       class="sidebar-empty"
       :image-size="72"
-      :description="uiCopy.sidebar.empty"
+      :description="
+        searchTerm.trim() ? uiCopy.sidebar.searchEmpty : uiCopy.sidebar.empty
+      "
     />
 
     <el-scrollbar v-else class="session-list-scrollbar">

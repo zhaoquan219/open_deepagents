@@ -44,13 +44,46 @@ cd backend
 uv sync --group dev
 cp .env.example .env
 cp models.example.json models.json
-uv run uvicorn app.main:app --reload
+uv run python -m app
 ```
+
+`python -m app` is the recommended entry point: it configures the asyncio event
+loop policy before uvicorn binds its socket, which is required for the Postgres
+checkpoint/store backend on Windows (psycopg's async mode cannot run on Windows'
+default `ProactorEventLoop`). It honors `BACKEND_HOST`, `BACKEND_PORT`, and
+`BACKEND_RELOAD` (reload is on by default).
+
+The bare `uv run uvicorn app.main:app --reload` command still works for SQLite/
+in-memory checkpoints, but on Windows with the Postgres checkpoint backend it
+binds the listening socket before the loop policy can be set and the server will
+accept connections without ever responding. Use `python -m app` instead.
 
 The schema is created on application startup. The service defaults to:
 
 - API: `http://127.0.0.1:8000/api`
 - Health: `http://127.0.0.1:8000/health`
+
+## Concurrency and scaling
+
+Agent runs execute on a dedicated asyncio loop (`app/runtime_loop.py`) that owns
+the LangGraph checkpointer/store. Because model calls and checkpoint I/O are
+async, many runs interleave on this single loop concurrently — a run that is
+waiting on the model never blocks other runs. Per-event product-database writes
+are dispatched to a thread pool so they never block the loop either.
+
+For CPU-bound throughput beyond one core, scale out with multiple worker
+processes — each gets its own runtime loop, checkpointer, and database
+connections (so LangGraph's per-saver write lock no longer serializes across
+workers):
+
+```bash
+# production: disable reload and run N worker processes
+BACKEND_RELOAD=false BACKEND_WORKERS=4 uv run python -m app
+```
+
+`BACKEND_WORKERS` is ignored while `BACKEND_RELOAD` is on (uvicorn does not allow
+reload together with multiple workers). Behind a load balancer you can also run
+multiple instances/containers for horizontal scaling.
 
 ## Configuration
 
@@ -94,18 +127,84 @@ performs a read-only runtime checkpoint/store probe.
 
 ```dotenv
 DATABASE_URL=sqlite+pysqlite:///./data/backend.db
-DATABASE_URL=postgresql+psycopg://app:change-me@127.0.0.1:5432/open_deepagents
+DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/open_deepagents
 DATABASE_URL=mysql+pymysql://app:change-me@127.0.0.1:3306/open_deepagents?charset=utf8mb4
 ```
 
-The backend creates the target database on startup when needed, then initializes
-the scaffold tables.
+The backend auto-provisions storage on startup for every supported engine:
+
+- The target database is created automatically when it does not exist (PostgreSQL
+  and MySQL), and the SQLite file's parent directory is created for SQLite.
+- The scaffold tables (`users`, `sessions`, `runs`, `uploads`, `events`) are
+  created if missing (idempotent), so a missing table is never a hard error.
+- The same applies to the LangGraph checkpoint/store database when
+  `DEEPAGENTS_CHECKPOINT_BACKEND=postgresql`.
+
+Driver normalization keeps URLs forgiving:
+
+- A bare `postgresql://` (or `postgres://`) is rewritten to the installed psycopg
+  v3 driver (`postgresql+psycopg://`); you do not need psycopg2.
+- A bare `mysql://` is rewritten to `mysql+pymysql://`.
+- `DEEPAGENTS_CHECKPOINT_DATABASE_URL` accepts both `postgresql://` and
+  `postgresql+psycopg://`; the driver suffix is stripped before it is handed to
+  LangGraph/psycopg.
+
+MySQL notes:
+
+- MySQL is a product-DB target only. LangGraph's official checkpoint/store
+  packages cover SQLite and PostgreSQL, so with a MySQL `DATABASE_URL` use a
+  `sqlite`/`postgresql`/`memory` checkpoint backend (or a custom
+  `DEEPAGENTS_RUNTIME_FACTORY`).
+- The "one running run per session" guarantee uses a partial unique index on
+  SQLite/PostgreSQL. MySQL has no partial indexes, so that index is skipped and
+  the rule is enforced by the application-level active-run check.
+
+Cross-platform: all of the above works on both Windows and Linux/macOS. On
+Windows, the Postgres checkpoint backend automatically switches to a selector
+event loop, because psycopg's async mode cannot run on the default
+`ProactorEventLoop`; this is a no-op elsewhere.
 
 Important distinction:
 
 - `DATABASE_URL` stores users, sessions, uploads, runs, and ordered events.
 - `DEEPAGENTS_CHECKPOINT_BACKEND` and `DEEPAGENTS_CHECKPOINT_DATABASE_URL`
   configure LangGraph/DeepAgents checkpoint and store state.
+
+### Local PostgreSQL setup
+
+The product DB and checkpoint DB only need a running server and valid
+credentials; the databases themselves are created for you.
+
+- macOS: `brew install postgresql@16 && brew services start postgresql@16`
+- Debian/Ubuntu: `sudo apt-get install -y postgresql && sudo service postgresql start`
+- Windows (Chocolatey): `choco install postgresql16 --params "/Password:postgres" -y`
+  installs the server as the `postgresql-x64-16` service and adds `psql` to `PATH`.
+- Docker (any OS):
+  `docker run --name pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgres:16`
+
+Then point `.env` at it, for example:
+
+```dotenv
+DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/open_deepagents
+DEEPAGENTS_CHECKPOINT_BACKEND=postgresql
+DEEPAGENTS_CHECKPOINT_DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/open_deepagents_checkpoints
+```
+
+### Local MySQL setup
+
+- macOS: `brew install mysql && brew services start mysql`
+- Debian/Ubuntu: `sudo apt-get install -y mysql-server && sudo service mysql start`
+- Windows (Chocolatey): `choco install mysql -y` installs the `mysql` service
+  (root has an empty password by default) and adds `mysql` to `PATH`.
+- Docker (any OS):
+  `docker run --name mysql -e MYSQL_ROOT_PASSWORD=change-me -p 3306:3306 -d mysql:8`
+
+Then, with a SQLite checkpoint (MySQL is product-DB only):
+
+```dotenv
+DATABASE_URL=mysql+pymysql://root:change-me@127.0.0.1:3306/open_deepagents?charset=utf8mb4
+DEEPAGENTS_CHECKPOINT_BACKEND=sqlite
+```
 
 ## API Contract
 

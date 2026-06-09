@@ -24,6 +24,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -36,9 +37,102 @@ from sqlalchemy.orm import (
 PRODUCT_TABLES = frozenset({"users", "sessions", "runs", "events", "uploads"})
 _EVENT_LOCK = Lock()
 
+# Maintenance databases that always exist on a stock PostgreSQL server. We connect
+# to one of these to create the target database when it does not exist yet.
+_POSTGRES_MAINTENANCE_DBS = ("postgres", "template1")
+
+
+def normalize_database_url(database_url: str) -> str:
+    """Return a SQLAlchemy URL with an explicit, installed driver.
+
+    Bare ``postgresql://`` / ``postgres://`` URLs resolve to the psycopg2 dialect in
+    SQLAlchemy, which is not installed here, so they are rewritten to use psycopg
+    (v3). Bare ``mysql://`` URLs are rewritten to use PyMySQL. URLs that already name
+    a driver (for example ``postgresql+psycopg``) are left untouched.
+    """
+    url = make_url(database_url)
+    driver = url.drivername.lower()
+    base, _, suffix = driver.partition("+")
+    if base in {"postgres", "postgresql"}:
+        new_driver = f"postgresql+{suffix}" if suffix else "postgresql+psycopg"
+        url = url.set(drivername=new_driver)
+    elif base in {"mysql", "mariadb"} and not suffix:
+        url = url.set(drivername=f"{base}+pymysql")
+    return url.render_as_string(hide_password=False)
+
+
+def to_libpq_conn_string(database_url: str) -> str:
+    """Convert a SQLAlchemy URL into a libpq connection string for psycopg.
+
+    LangGraph's Postgres checkpoint/store connect through psycopg directly, which
+    rejects SQLAlchemy's ``postgresql+psycopg://`` form. This strips the driver
+    suffix so ``postgresql://...`` (optionally with query options such as
+    ``?sslmode=require``) is produced.
+    """
+    url = make_url(normalize_database_url(database_url)).set(drivername="postgresql")
+    return url.render_as_string(hide_password=False)
+
+
+def _quote_pg_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def ensure_postgres_database(database_url: str) -> None:
+    """Create the target PostgreSQL database if it does not already exist.
+
+    Connects to a maintenance database (``postgres`` then ``template1``) and issues
+    ``CREATE DATABASE`` when the target is missing. If no maintenance database can be
+    reached the call is a no-op so the caller's own connection surfaces the real
+    error.
+    """
+    url = make_url(normalize_database_url(database_url))
+    target = url.database
+    if not target:
+        return
+    for maintenance_db in _POSTGRES_MAINTENANCE_DBS:
+        admin_engine = create_engine(
+            url.set(database=maintenance_db),
+            future=True,
+            isolation_level="AUTOCOMMIT",
+        )
+        try:
+            with admin_engine.connect() as conn:
+                exists = conn.execute(
+                    text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                    {"name": target},
+                ).scalar()
+                if not exists:
+                    conn.exec_driver_sql(
+                        f"CREATE DATABASE {_quote_pg_identifier(target)}"
+                    )
+            return
+        except (OperationalError, ProgrammingError):
+            continue
+        finally:
+            admin_engine.dispose()
+
 
 def now() -> datetime:
     return datetime.now(UTC)
+
+
+def _supports_partial_index(
+    ddl: Any,
+    target: Any,
+    bind: Any,
+    tables: Any = None,
+    state: Any = None,
+    *,
+    dialect: Any,
+    compiler: Any = None,
+    checkfirst: bool = False,
+    **kw: Any,
+) -> bool:
+    """ddl_if callback: only emit the filtered unique index where it is supported.
+
+    SQLite and PostgreSQL support partial/filtered indexes; MySQL does not.
+    """
+    return bool(dialect.name in {"sqlite", "postgresql"})
 
 
 def new_id() -> str:
@@ -96,13 +190,18 @@ class RunRecord(Base):
         Index("ix_runs_user_id", "user_id"),
         Index("ix_runs_status", "status"),
         Index("ix_runs_session_status", "session_id", "status"),
+        # Partial unique index: at most one running run per session. MySQL does not
+        # support partial/filtered indexes, so this is only emitted on SQLite and
+        # PostgreSQL; MySQL relies on the application-level active-run guard. Without
+        # the filter a plain unique index on session_id would wrongly forbid more
+        # than one run per session over the session's lifetime.
         Index(
             "uq_runs_one_running_per_session",
             "session_id",
             unique=True,
             sqlite_where=text("status = 'running'"),
             postgresql_where=text("status = 'running'"),
-        ),
+        ).ddl_if(callable_=_supports_partial_index),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -180,11 +279,16 @@ class EventRecord(Base):
 
 class Database:
     def __init__(self, database_url: str) -> None:
-        self.database_url = database_url
-        if self.database_url.startswith("mysql"):
+        self.database_url = normalize_database_url(database_url)
+        family = make_url(self.database_url).get_backend_name()
+        if family in {"mysql", "mariadb"}:
             self._ensure_mysql_database()
-        connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-        self.engine = create_engine(database_url, future=True, connect_args=connect_args)
+        elif family in {"postgresql", "postgres"}:
+            ensure_postgres_database(self.database_url)
+        connect_args = (
+            {"check_same_thread": False} if self.database_url.startswith("sqlite") else {}
+        )
+        self.engine = create_engine(self.database_url, future=True, connect_args=connect_args)
         self.session_factory = sessionmaker(self.engine, expire_on_commit=False, future=True)
 
     def initialize_schema(self) -> None:

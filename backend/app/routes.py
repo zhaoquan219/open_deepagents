@@ -10,14 +10,14 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from queue import Full, Queue
-from threading import Event, Thread
+from threading import Event
 from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app import agent as runtime_agent
 from app.auth import CurrentUser, DbSession, create_token, verify_password
@@ -31,6 +31,7 @@ from app.db import (
     append_event,
     now,
 )
+from app.runtime_loop import RuntimeLoop
 from app.settings import Settings
 
 router = APIRouter()
@@ -39,7 +40,6 @@ PLACEHOLDER_SESSION_TITLES = {"", "new session", "untitled", "untitled session",
 MAX_DERIVED_TITLE_CHARS = 32
 TRANSCRIPT_MESSAGE_KINDS = ("system.message", "user.message", "assistant.message")
 STREAM_WORKER_QUEUE_SIZE = 256
-STREAM_WORKER_JOIN_TIMEOUT_SECONDS = 0.2
 
 USER_FIELDS = ("id", "username", "email", "role", "is_active")
 SESSION_FIELDS = (
@@ -132,12 +132,35 @@ def models(request: Request, _: CurrentUser) -> dict[str, Any]:
 
 
 @router.get("/sessions")
-def list_sessions(db: DbSession, user: CurrentUser) -> list[dict[str, Any]]:
-    rows = db.scalars(
+def list_sessions(
+    db: DbSession,
+    user: CurrentUser,
+    q: str | None = None,
+) -> list[dict[str, Any]]:
+    query = (
         select(SessionRecord)
         .where(SessionRecord.owner_user_id == user.id, SessionRecord.status != "archived")
         .order_by(SessionRecord.updated_at.desc())
-    ).all()
+    )
+    keyword = " ".join(str(q or "").split())
+    if keyword:
+        pattern = f"%{_escape_like(keyword)}%"
+        sessions_with_match = (
+            select(EventRecord.session_id)
+            .where(
+                EventRecord.kind.in_(TRANSCRIPT_MESSAGE_KINDS),
+                EventRecord.content.is_not(None),
+                EventRecord.content.ilike(pattern, escape="\\"),
+            )
+            .scalar_subquery()
+        )
+        query = query.where(
+            or_(
+                SessionRecord.title.ilike(pattern, escape="\\"),
+                SessionRecord.id.in_(sessions_with_match),
+            )
+        )
+    rows = db.scalars(query).all()
     return [_record_out(row, SESSION_FIELDS) for row in rows]
 
 
@@ -440,22 +463,28 @@ def _start_run(
 
 
 async def _execute_run_sse_worker(request: Request, run_id: str) -> AsyncIterator[str]:
-    async for chunk in _async_iterator_in_worker_thread(
+    runtime_loop: RuntimeLoop = request.app.state.runtime_loop
+    async for chunk in _async_iterator_on_runtime_loop(
         lambda: _execute_run_sse(request, run_id),
-        name=f"deepagents-run-{run_id[:8]}",
+        runtime_loop=runtime_loop,
     ):
         yield chunk
 
 
-async def _async_iterator_in_worker_thread(
+async def _async_iterator_on_runtime_loop(
     factory: Callable[[], AsyncIterator[str]],
     *,
-    name: str,
+    runtime_loop: RuntimeLoop,
 ) -> AsyncIterator[str]:
+    """Drive an async generator on the shared runtime loop, bridged via a queue.
+
+    The graph and the async checkpointer/store both live on ``runtime_loop``, so
+    consuming the run there keeps every persistence ``await`` on the loop the
+    locks/connections were created on. Chunks are handed back to the request's
+    own event loop through a thread-safe queue.
+    """
     output: Queue[tuple[str, Any]] = Queue(maxsize=STREAM_WORKER_QUEUE_SIZE)
     stop = Event()
-    worker_loop: dict[str, asyncio.AbstractEventLoop] = {}
-    worker_task: dict[str, asyncio.Task[None]] = {}
 
     def enqueue(kind: str, payload: Any = None) -> bool:
         while True:
@@ -477,27 +506,12 @@ async def _async_iterator_in_worker_thread(
                     break
         except asyncio.CancelledError:
             raise
-        except BaseException as exc:
-            enqueue("error", exc)
-
-    def worker() -> None:
-        loop = asyncio.new_event_loop()
-        worker_loop["loop"] = loop
-        asyncio.set_event_loop(loop)
-        task = loop.create_task(consume())
-        worker_task["task"] = task
-        try:
-            loop.run_until_complete(task)
-        except asyncio.CancelledError:
-            pass
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 - surfaced to the request task
             enqueue("error", exc)
         finally:
             enqueue("done")
-            loop.close()
 
-    thread = Thread(target=worker, name=name, daemon=True)
-    thread.start()
+    future = runtime_loop.submit(consume())
     try:
         while True:
             kind, payload = await asyncio.to_thread(output.get)
@@ -512,11 +526,7 @@ async def _async_iterator_in_worker_thread(
                 break
     finally:
         stop.set()
-        loop = worker_loop.get("loop")
-        task = worker_task.get("task")
-        if loop is not None and task is not None and not task.done():
-            loop.call_soon_threadsafe(task.cancel)
-        thread.join(timeout=STREAM_WORKER_JOIN_TIMEOUT_SECONDS)
+        future.cancel()
 
 
 async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
@@ -553,7 +563,7 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
             config=config,
             context=context,
         ):
-            if not _run_accepts_runtime_events(request, run_id):
+            if not await asyncio.to_thread(_run_accepts_runtime_events, request, run_id):
                 LOGGER.info(
                     "run stream stopped run_id=%s session_id=%s status=no-longer-running",
                     run_id,
@@ -578,7 +588,7 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
             if envelope is None:
                 continue
             _log_runtime_envelope(run_id, state["session_id"], envelope)
-            if not _run_accepts_runtime_events(request, run_id):
+            if not await asyncio.to_thread(_run_accepts_runtime_events, request, run_id):
                 LOGGER.info(
                     "runtime envelope dropped after cancellation run_id=%s session_id=%s label=%s",
                     run_id,
@@ -586,7 +596,8 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
                     envelope.label,
                 )
                 return
-            chunk, final_emitted, terminal_emitted = _persist_runtime_envelope(
+            chunk, final_emitted, terminal_emitted = await asyncio.to_thread(
+                _persist_runtime_envelope,
                 request,
                 run_id=run_id,
                 session_id=state["session_id"],
@@ -1225,6 +1236,10 @@ def _normalize_virtual_path(path: str) -> str:
     return PurePosixPath(normalized).as_posix()
 
 
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _is_placeholder_title(value: str | None) -> bool:
     return " ".join(str(value or "").split()).lower() in PLACEHOLDER_SESSION_TITLES
 
@@ -1400,7 +1415,17 @@ def _record_out(record: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     for field in fields:
         value = getattr(record, "metadata_" if field == "metadata" else field)
-        payload[field] = value.isoformat() if hasattr(value, "isoformat") else value
+        if isinstance(value, datetime):
+            # Emit a consistent UTC ISO-8601 string regardless of whether the
+            # value is the freshly-created in-memory datetime or one read back
+            # from a timestamptz column (which the driver returns in the server
+            # timezone). Mixed offsets break client-side string sorting.
+            normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+            payload[field] = normalized.astimezone(UTC).isoformat()
+        elif hasattr(value, "isoformat"):
+            payload[field] = value.isoformat()
+        else:
+            payload[field] = value
     return payload
 
 

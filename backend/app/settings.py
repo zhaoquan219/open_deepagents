@@ -21,8 +21,8 @@ from sqlalchemy.engine import make_url
 from app.path_utils import app_path, is_absolute_path, split_import_spec
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ADMIN_PASSWORD = "change-me"
-DEFAULT_TOKEN_SECRET = "change-me-too"
+DEFAULT_ADMIN_PASSWORD = "password"
+DEFAULT_TOKEN_SECRET = "token"
 DEFAULT_SANDBOX_ROOT = BACKEND_ROOT / "data" / "sandbox"
 DEFAULT_UPLOAD_ROOT = BACKEND_ROOT / "data" / "uploads"
 DEFAULT_RUNTIME_DB_URL = "sqlite+pysqlite:///./data/checkpoints.db"
@@ -495,6 +495,11 @@ def _create_runtime_components(*, mode: str, database_url: str) -> dict[str, Any
         ),
     }
     checkpoint_module, checkpoint_class, store_module, store_class, connection = specs[mode]
+    if mode == "postgres":
+        from app.db import ensure_postgres_database, to_libpq_conn_string
+
+        ensure_postgres_database(database_url)
+        connection = to_libpq_conn_string(database_url)
     try:
         checkpoint = import_module(checkpoint_module)
         store = import_module(store_module)
@@ -539,6 +544,11 @@ async def _acreate_runtime_components(*, mode: str, database_url: str) -> dict[s
         ),
     }
     checkpoint_module, checkpoint_class, store_module, store_class, connection = specs[mode]
+    if mode == "postgres":
+        from app.db import ensure_postgres_database, to_libpq_conn_string
+
+        ensure_postgres_database(database_url)
+        connection = to_libpq_conn_string(database_url)
     try:
         checkpoint = import_module(checkpoint_module)
         store = import_module(store_module)

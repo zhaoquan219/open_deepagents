@@ -481,8 +481,10 @@ export function createApiClient(baseUrl = resolveApiBaseUrl()) {
       window.localStorage.removeItem("deepagents.admin.token");
     },
 
-    async listSessions() {
-      const payload = await fetchJson(`${baseUrl}/sessions`);
+    async listSessions({ query } = {}) {
+      const keyword = String(query ?? "").trim();
+      const suffix = keyword ? `?q=${encodeURIComponent(keyword)}` : "";
+      const payload = await fetchJson(`${baseUrl}/sessions${suffix}`);
       return unwrapCollection(payload, "sessions").map(normalizeSession);
     },
 

@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -14,11 +16,37 @@ from app.catalog import load_model_catalog, resolve_agent, validate_model_catalo
 from app.db import PRODUCT_TABLES, Database
 from app.routes import router
 from app.runtime.extensions import SandboxConfig
+from app.runtime_loop import RuntimeLoop
 from app.settings import Settings, get_settings
+
+
+def _ensure_windows_postgres_event_loop(settings: Settings) -> None:
+    """Use a selector event loop on Windows when async psycopg is in play.
+
+    LangGraph's Postgres checkpoint/store connect through psycopg in async mode,
+    which raises on Windows' default ProactorEventLoop. Switching to the selector
+    policy at import time (before uvicorn creates its loop) keeps Postgres working.
+    This is a no-op on Linux/macOS, where the default loop already works.
+    """
+    if sys.platform != "win32":
+        return
+    selector_policy = getattr(asyncio, "WindowsSelectorEventLoopPolicy", None)
+    if selector_policy is None:
+        return
+    try:
+        needs_postgres = settings.runtime_driver_mode() == "postgres"
+    except Exception:
+        needs_postgres = False
+    if not needs_postgres:
+        return
+    if isinstance(asyncio.get_event_loop_policy(), selector_policy):
+        return
+    asyncio.set_event_loop_policy(selector_policy())
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings or get_settings()
+    _ensure_windows_postgres_event_loop(resolved_settings)
     configure_backend_logging(resolved_settings)
     resolved_settings.validate_startup()
     database = Database(resolved_settings.database_url)
@@ -26,7 +54,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         resolved_settings.prepare_paths()
-        await resolved_settings.ainitialize_runtime_components()
+        runtime_loop = RuntimeLoop()
+        app.state.runtime_loop = runtime_loop
+        # Create the async checkpointer/store on the runtime loop so their
+        # asyncio locks bind to the loop that also executes graph runs.
+        await asyncio.to_thread(
+            runtime_loop.run, resolved_settings.ainitialize_runtime_components()
+        )
         database.initialize_schema()
         with database.session() as db:
             sync_configured_users(db, resolved_settings)
@@ -36,7 +70,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved_settings.database_url,
         )
         yield
-        await resolved_settings.aclose_runtime_components()
+        await asyncio.to_thread(
+            runtime_loop.run, resolved_settings.aclose_runtime_components()
+        )
+        runtime_loop.close()
         database.dispose()
 
     app = FastAPI(
@@ -85,7 +122,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         checks["model_catalog"] = "ok"
         resolved_settings.assert_runtime_persistence_allowed()
         try:
-            await _probe_runtime_persistence(resolved_settings)
+            await asyncio.to_thread(
+                app.state.runtime_loop.run,
+                _probe_runtime_persistence(resolved_settings),
+            )
         except Exception:
             logging.exception("runtime persistence readiness probe failed")
             checks["runtime_persistence"] = "error"

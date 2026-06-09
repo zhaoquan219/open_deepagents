@@ -49,14 +49,20 @@ function createEmptyState() {
     error: "",
     uploadError: "",
     deletingSessionId: "",
+    searchQuery: "",
+    searching: false,
+    searchResults: [],
   };
+}
+
+function sessionSortKey(value) {
+  const parsed = Date.parse(String(value || ""));
+  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 function sortSessions(sessions) {
   return [...sessions].sort((left, right) => {
-    return String(right.updatedAt || "").localeCompare(
-      String(left.updatedAt || ""),
-    );
+    return sessionSortKey(right.updatedAt) - sessionSortKey(left.updatedAt);
   });
 }
 
@@ -406,6 +412,39 @@ export function createSessionStore(apiClient) {
     }
   }
 
+  function getVisibleSessions() {
+    return state.searchQuery ? state.searchResults : state.sessions;
+  }
+
+  async function searchSessions(rawQuery) {
+    const query = String(rawQuery || "").trim();
+    state.searchQuery = query;
+    if (!query) {
+      state.searching = false;
+      state.searchResults = [];
+      return;
+    }
+    state.searching = true;
+    state.error = "";
+    try {
+      state.searchResults = sortSessions(await apiClient.listSessions({ query }));
+    } catch (error) {
+      state.error =
+        error instanceof Error
+          ? error.message
+          : uiCopy.store.session.loadSessionsFailed;
+      state.searchResults = [];
+    } finally {
+      state.searching = false;
+    }
+  }
+
+  function clearSearch() {
+    state.searchQuery = "";
+    state.searching = false;
+    state.searchResults = [];
+  }
+
   async function createSession() {
     clearErrors();
     const session = await apiClient.createSession();
@@ -426,6 +465,9 @@ export function createSessionStore(apiClient) {
     try {
       await apiClient.deleteSession(normalizedId);
       state.sessions = state.sessions.filter(
+        (session) => session.id !== normalizedId,
+      );
+      state.searchResults = state.searchResults.filter(
         (session) => session.id !== normalizedId,
       );
       delete state.messagesBySession[normalizedId];
@@ -674,14 +716,17 @@ export function createSessionStore(apiClient) {
     createSession,
     clearErrors,
     clearPendingUploads,
+    clearSearch,
     deletePendingUpload,
     deleteSession,
     discardStreamingMessage,
     getCurrentMessages,
     getCurrentSession,
     getPendingUploads,
+    getVisibleSessions,
     isDeletingUpload,
     loadSessions,
+    searchSessions,
     selectSession,
     setSubmitting,
     uploadFiles,

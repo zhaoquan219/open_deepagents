@@ -320,9 +320,19 @@ button {
 }
 
 .sidebar-toolbar {
+  flex-direction: column;
+  align-items: stretch;
   justify-content: flex-start;
   padding: 10px 16px 12px;
   gap: 10px;
+}
+
+.sidebar-search {
+  width: 100%;
+}
+
+.sidebar-search-spinner {
+  color: var(--muted, #94a3b8);
 }
 
 .sidebar-header-copy {

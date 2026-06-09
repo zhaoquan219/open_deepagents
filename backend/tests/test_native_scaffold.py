@@ -304,6 +304,47 @@ def test_sessions_are_owner_isolated(client: TestClient, auth_headers: dict[str,
     assert client.get(f"/api/sessions/{session['id']}", headers=bob).status_code == 404
 
 
+def test_session_search_matches_title_and_message_content(
+    client: TestClient,
+    auth_headers: dict[str, str],
+) -> None:
+    alpha = client.post(
+        "/api/sessions", headers=auth_headers, json={"title": "Alpha planning"}
+    ).json()
+    beta = client.post(
+        "/api/sessions", headers=auth_headers, json={"title": "Beta review"}
+    ).json()
+    with client.app.state.database.session() as db:
+        append_event(
+            db,
+            session_id=beta["id"],
+            kind="user.message",
+            type="step",
+            role="user",
+            content="please summarize the quarterly budget",
+        )
+
+    by_title = client.get(
+        "/api/sessions", headers=auth_headers, params={"q": "alpha"}
+    ).json()
+    assert [row["id"] for row in by_title] == [alpha["id"]]
+
+    by_message = client.get(
+        "/api/sessions", headers=auth_headers, params={"q": "budget"}
+    ).json()
+    assert [row["id"] for row in by_message] == [beta["id"]]
+
+    no_match = client.get(
+        "/api/sessions", headers=auth_headers, params={"q": "nonexistent-keyword"}
+    ).json()
+    assert no_match == []
+
+    blank_query = client.get(
+        "/api/sessions", headers=auth_headers, params={"q": "   "}
+    ).json()
+    assert {row["id"] for row in blank_query} == {alpha["id"], beta["id"]}
+
+
 def test_query_string_tokens_are_rejected(
     client: TestClient,
     auth_headers: dict[str, str],
@@ -504,13 +545,12 @@ def test_windows_drive_paths_from_env_are_not_rebased_to_backend_root() -> None:
     assert sandbox["root_dir"] == r"D:\deepagents\sandbox"
     assert sandbox["uploads_root_dir"] == r"D:\deepagents\uploads"
     assert str(settings.upload_root_dir()) == r"D:\deepagents\uploads"
-    assert str(_sqlite_database_path("sqlite:///D:/deepagents/checkpoints.db")) == (
+    assert _sqlite_database_path("sqlite:///D:/deepagents/checkpoints.db") == Path(
         "D:/deepagents/checkpoints.db"
     )
-    assert _database_target("sqlite:///D:/deepagents/backend.db") == (
-        "sqlite",
-        "D:/deepagents/backend.db",
-    )
+    backend_target = _database_target("sqlite:///D:/deepagents/backend.db")
+    assert backend_target[0] == "sqlite"
+    assert Path(backend_target[1]) == Path("D:/deepagents/backend.db")
 
 
 def test_empty_model_config_env_disables_catalog_file(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2063,3 +2103,150 @@ def test_mysql_schema_initialization_creates_database_if_needed(monkeypatch) -> 
     assert statements[0] == "CREATE DATABASE IF NOT EXISTS `deepagents_platform`"
     assert statements[-1] == "create_all"
     assert disposed == ["disposed"]
+
+
+def test_normalize_database_url_uses_installed_drivers() -> None:
+    from app.db import normalize_database_url
+
+    assert (
+        normalize_database_url("postgresql://u:p@h:5432/db")
+        == "postgresql+psycopg://u:p@h:5432/db"
+    )
+    assert (
+        normalize_database_url("postgres://u:p@h/db")
+        == "postgresql+psycopg://u:p@h/db"
+    )
+    assert (
+        normalize_database_url("postgresql+psycopg://u:p@h:5432/db")
+        == "postgresql+psycopg://u:p@h:5432/db"
+    )
+    assert (
+        normalize_database_url("mysql://u:p@h:3306/db")
+        == "mysql+pymysql://u:p@h:3306/db"
+    )
+    assert (
+        normalize_database_url("mysql+pymysql://u:p@h:3306/db")
+        == "mysql+pymysql://u:p@h:3306/db"
+    )
+    sqlite_url = "sqlite+pysqlite:///./data/backend.db"
+    assert normalize_database_url(sqlite_url) == sqlite_url
+
+
+def test_to_libpq_conn_string_strips_sqlalchemy_driver() -> None:
+    from app.db import to_libpq_conn_string
+
+    assert (
+        to_libpq_conn_string("postgresql+psycopg://u:p@h:5432/db?sslmode=require")
+        == "postgresql://u:p@h:5432/db?sslmode=require"
+    )
+    assert (
+        to_libpq_conn_string("postgresql://u:p@h:5432/db")
+        == "postgresql://u:p@h:5432/db"
+    )
+
+
+def test_postgres_database_is_created_when_missing(monkeypatch) -> None:
+    executed: list[tuple[str, Any]] = []
+    created_urls: list[str] = []
+
+    class FakeResult:
+        def __init__(self, value: object) -> None:
+            self._value = value
+
+        def scalar(self) -> object:
+            return self._value
+
+    class FakeConnection:
+        def __enter__(self) -> FakeConnection:
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+        def execute(self, statement: Any, params: Any = None) -> FakeResult:
+            executed.append(("execute", str(statement)))
+            return FakeResult(None)
+
+        def exec_driver_sql(self, statement: str) -> None:
+            executed.append(("ddl", statement))
+
+    class FakeEngine:
+        def connect(self) -> FakeConnection:
+            return FakeConnection()
+
+        def dispose(self) -> None:
+            executed.append(("dispose", None))
+
+    def fake_create_engine(url: Any, *args: Any, **kwargs: Any) -> FakeEngine:
+        del args, kwargs
+        created_urls.append(str(url))
+        return FakeEngine()
+
+    monkeypatch.setattr("app.db.create_engine", fake_create_engine)
+    from app.db import ensure_postgres_database
+
+    ensure_postgres_database("postgresql://postgres:postgres@127.0.0.1:5432/open_deepagents")
+
+    assert created_urls[0].endswith("/postgres")
+    ddl = [stmt for kind, stmt in executed if kind == "ddl"]
+    assert ddl == ['CREATE DATABASE "open_deepagents"']
+
+
+def test_running_run_partial_index_is_dialect_scoped() -> None:
+    from sqlalchemy import create_mock_engine
+
+    from app.db import Base
+
+    index_name = "uq_runs_one_running_per_session"
+
+    def emitted_for(url: str) -> list[str]:
+        statements: list[str] = []
+
+        def dump(sql: Any, *args: Any, **kwargs: Any) -> None:
+            statements.append(str(sql.compile(dialect=engine.dialect)))
+
+        engine = create_mock_engine(url, dump)
+        Base.metadata.create_all(engine, checkfirst=False)
+        return [stmt for stmt in statements if index_name in stmt]
+
+    assert emitted_for("sqlite://"), "partial index missing on sqlite"
+    assert emitted_for("postgresql+psycopg://"), "partial index missing on postgresql"
+    assert not emitted_for("mysql+pymysql://"), "partial index must be skipped on mysql"
+
+
+def test_postgres_database_creation_skipped_when_present(monkeypatch) -> None:
+    executed: list[str] = []
+
+    class FakeResult:
+        def scalar(self) -> object:
+            return 1
+
+    class FakeConnection:
+        def __enter__(self) -> FakeConnection:
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+        def execute(self, statement: Any, params: Any = None) -> FakeResult:
+            return FakeResult()
+
+        def exec_driver_sql(self, statement: str) -> None:
+            executed.append(statement)
+
+    class FakeEngine:
+        def connect(self) -> FakeConnection:
+            return FakeConnection()
+
+        def dispose(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "app.db.create_engine",
+        lambda url, *a, **k: FakeEngine(),
+    )
+    from app.db import ensure_postgres_database
+
+    ensure_postgres_database("postgresql+psycopg://postgres:postgres@127.0.0.1:5432/existing")
+
+    assert executed == []
