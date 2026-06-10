@@ -21,11 +21,9 @@ def normalize_runtime_event(
     raw_event: Mapping[str, Any],
     *,
     bridge_run_id: str,
-    session_id: str = "",
     sequence: int,
     tool_inputs: dict[str, Any] | None = None,
 ) -> SseEventEnvelope | None:
-    del session_id
     event = str(raw_event.get("event", ""))
     data = _mapping(raw_event.get("data"))
     metadata = _mapping(raw_event.get("metadata"))

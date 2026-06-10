@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     app_name: str = "DeepAgents Native Scaffold Backend"
     api_prefix: str = "/api"
     database_url: str = "sqlite+pysqlite:///./data/backend.db"
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
     environment: str = "development"
     cors_allowed_origins: str | None = "http://127.0.0.1:5173,http://localhost:5173"
 

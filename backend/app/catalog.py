@@ -20,12 +20,24 @@ from app.settings import BACKEND_ROOT, Settings, import_from_spec
 
 MODEL_DISPLAY_KEYS = {"name"}
 
+# Cache parsed models.json keyed by absolute path, invalidated on file mtime. The
+# catalog is read several times per run (default_model_id, build_model, options); this
+# avoids re-reading and re-parsing the file from disk on every call.
+_MODEL_CATALOG_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
 
 def load_model_catalog(settings: Settings) -> dict[str, Any]:
     path = _path(settings.deepagents_model_config_path or "./models.json")
     if not path.exists():
         return {"model": "", "provider": {}}
-    return dict(json.loads(path.read_text(encoding="utf-8")))
+    key = str(path)
+    mtime = path.stat().st_mtime
+    cached = _MODEL_CATALOG_CACHE.get(key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    catalog = dict(json.loads(path.read_text(encoding="utf-8")))
+    _MODEL_CATALOG_CACHE[key] = (mtime, catalog)
+    return catalog
 
 
 def validate_model_catalog(

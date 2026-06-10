@@ -3,6 +3,7 @@ import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from threading import Lock
 from typing import Any
 
 from fastapi import FastAPI
@@ -13,8 +14,9 @@ from uvicorn.logging import DefaultFormatter
 
 from app.auth import sync_configured_users
 from app.catalog import load_model_catalog, resolve_agent, validate_model_catalog
-from app.db import PRODUCT_TABLES, Database
+from app.db import PRODUCT_TABLES, Database, EventWriter
 from app.routes import router
+from app.run_control import RunControlRegistry
 from app.runtime.extensions import SandboxConfig
 from app.runtime_loop import RuntimeLoop
 from app.settings import Settings, get_settings
@@ -49,7 +51,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     _ensure_windows_postgres_event_loop(resolved_settings)
     configure_backend_logging(resolved_settings)
     resolved_settings.validate_startup()
-    database = Database(resolved_settings.database_url)
+    database = Database(
+        resolved_settings.database_url,
+        pool_size=resolved_settings.db_pool_size,
+        max_overflow=resolved_settings.db_max_overflow,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -64,12 +70,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         database.initialize_schema()
         with database.session() as db:
             sync_configured_users(db, resolved_settings)
+        event_writer = EventWriter(database)
+        app.state.event_writer = event_writer
         logging.info(
             "backend started checkpoint_backend=%s product_db=%s",
             resolved_settings.runtime_driver_mode(),
             resolved_settings.database_url,
         )
         yield
+        event_writer.close()
         await asyncio.to_thread(
             runtime_loop.run, resolved_settings.aclose_runtime_components()
         )
@@ -90,6 +99,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = resolved_settings
     app.state.database = database
+    app.state.run_registry = RunControlRegistry()
+    # Compiled agent graphs are reused across runs (LangGraph graphs are stateless;
+    # conversation state lives in the checkpointer). Compiling per run re-ran agent
+    # resolution and graph compilation on every request, so cache per (agent, model).
+    app.state.graph_cache = {}
+    app.state.graph_cache_lock = Lock()
     app.include_router(router, prefix=resolved_settings.api_prefix)
 
     @app.get("/health", tags=["system"])

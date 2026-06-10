@@ -24,13 +24,17 @@ from app.auth import CurrentUser, DbSession, create_token, verify_password
 from app.catalog import default_model_id, model_options, resolve_agent
 from app.db import (
     EventRecord,
+    EventSpec,
+    EventWriter,
     RunRecord,
     SessionRecord,
     UploadRecord,
     UserRecord,
     append_event,
+    forget_event_seq,
     now,
 )
+from app.run_control import RunControlRegistry
 from app.runtime_loop import RuntimeLoop
 from app.settings import Settings
 
@@ -211,7 +215,9 @@ def delete_session(
     user: CurrentUser,
 ) -> Response:
     session = _owned_session(db, user, session_id, include_archived=True)
-    _archive_session(db, request.app.state.settings, user, session)
+    _archive_session(
+        db, request.app.state.settings, user, session, request.app.state.run_registry
+    )
     return Response(status_code=204)
 
 
@@ -220,6 +226,7 @@ def _archive_session(
     settings: Settings,
     user: UserRecord,
     session: SessionRecord,
+    registry: RunControlRegistry,
 ) -> None:
     archived_at = now()
     for run in db.scalars(
@@ -229,6 +236,8 @@ def _archive_session(
             RunRecord.status == "running",
         )
     ):
+        # Signal the streaming loop to stop persisting further events for this run.
+        registry.request_cancel(run.id)
         run.cancel_requested_at = run.cancel_requested_at or archived_at
         run.status = "cancelled"
         run.ended_at = archived_at
@@ -376,9 +385,14 @@ def get_run(run_id: str, db: DbSession, user: CurrentUser) -> dict[str, Any]:
 
 
 @router.post("/runs/{run_id}/cancel")
-def cancel_run(run_id: str, db: DbSession, user: CurrentUser) -> dict[str, Any]:
+def cancel_run(
+    run_id: str, request: Request, db: DbSession, user: CurrentUser
+) -> dict[str, Any]:
     run = _owned_run(db, user, run_id)
     if run.status == "running":
+        # In-memory signal first so an in-flight stream stops on its next event
+        # without waiting to observe the database write.
+        request.app.state.run_registry.request_cancel(run.id)
         run.cancel_requested_at = now()
         run.status = "cancelled"
         run.ended_at = now()
@@ -450,7 +464,7 @@ def _start_run(
             run,
             payload.prompt,
             attachments,
-            agent["middleware"],
+            agent,
         )
         LOGGER.info(
             "run started run_id=%s session_id=%s model_id=%s attachments=%s",
@@ -543,10 +557,11 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
         thread_id=state["thread_id"],
         session_metadata=state["metadata"],
         current_attachments=tuple(state["attachments"]),
-        attachments=tuple(state["attachments"]),
+        session_attachments=tuple(state["session_attachments"]),
     )
+    registry = request.app.state.run_registry
     try:
-        graph = runtime_agent.build_deep_agent(settings, state["model_id"])
+        graph = await asyncio.to_thread(_get_compiled_graph, request, state["model_id"])
         config = {
             "configurable": {"thread_id": state["thread_id"]},
             "recursion_limit": settings.deepagents_recursion_limit,
@@ -563,52 +578,33 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
             config=config,
             context=context,
         ):
-            if not await asyncio.to_thread(_run_accepts_runtime_events, request, run_id):
+            # Cancellation is an in-memory signal (set by the cancel endpoint / session
+            # archival), so this guard never touches the database on the hot path.
+            if registry.is_cancelled(run_id):
                 LOGGER.info(
-                    "run stream stopped run_id=%s session_id=%s status=no-longer-running",
+                    "run stream stopped run_id=%s session_id=%s status=cancelled",
                     run_id,
                     state["session_id"],
                 )
                 return
-            if LOGGER.isEnabledFor(logging.DEBUG):
-                LOGGER.debug(
-                    "runtime event run_id=%s session_id=%s %s",
-                    run_id,
-                    state["session_id"],
-                    _runtime_event_summary(raw),
-                )
-            envelope = runtime_agent.normalize_runtime_event(
-                raw,
-                bridge_run_id=run_id,
+            # Normalize + persist off the runtime loop: deep-copying/truncating payloads
+            # is CPU work that would otherwise stall every other run sharing the loop.
+            chunk, final_emitted, terminal_emitted = await asyncio.to_thread(
+                _process_runtime_event,
+                request,
+                raw=raw,
+                run_id=run_id,
                 session_id=state["session_id"],
                 sequence=sequence,
                 tool_inputs=tool_inputs,
-            )
-            sequence += 1
-            if envelope is None:
-                continue
-            _log_runtime_envelope(run_id, state["session_id"], envelope)
-            if not await asyncio.to_thread(_run_accepts_runtime_events, request, run_id):
-                LOGGER.info(
-                    "runtime envelope dropped after cancellation run_id=%s session_id=%s label=%s",
-                    run_id,
-                    state["session_id"],
-                    envelope.label,
-                )
-                return
-            chunk, final_emitted, terminal_emitted = await asyncio.to_thread(
-                _persist_runtime_envelope,
-                request,
-                run_id=run_id,
-                session_id=state["session_id"],
-                envelope=envelope,
                 final_emitted=final_emitted,
                 terminal_emitted=terminal_emitted,
             )
+            sequence += 1
             if chunk:
                 yield chunk
             await asyncio.sleep(0)
-        if not terminal_emitted and _run_accepts_runtime_events(request, run_id):
+        if not terminal_emitted and not registry.is_cancelled(run_id):
             event = _append_event(
                 request,
                 session_id=state["session_id"],
@@ -621,7 +617,7 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
             yield sse_payload(event)
     except asyncio.CancelledError:
         LOGGER.info("run cancelled run_id=%s session_id=%s", run_id, state["session_id"])
-        if _run_accepts_runtime_events(request, run_id):
+        if not registry.is_cancelled(run_id):
             event = _terminal_event(request, state["session_id"], run_id, "cancelled")
             yield sse_payload(event)
         raise
@@ -629,6 +625,64 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
         LOGGER.exception("run failed run_id=%s session_id=%s", run_id, state["session_id"])
         event = _terminal_event(request, state["session_id"], run_id, "failed", str(exc))
         yield sse_payload(event)
+    finally:
+        # Drain the background writer before the stream closes so the durable event
+        # log is complete for the next read (history reload, next turn's transcript).
+        await _flush_event_writer(request, run_id)
+        # Bounded cleanup: the run is over, so drop its in-memory cancel flag and the
+        # session's seq high-water mark (the next run re-primes from the flushed DB max).
+        registry.discard(run_id)
+        forget_event_seq(state["session_id"])
+
+
+def _process_runtime_event(
+    request: Request,
+    *,
+    raw: Any,
+    run_id: str,
+    session_id: str,
+    sequence: int,
+    tool_inputs: dict[str, Any],
+    final_emitted: bool,
+    terminal_emitted: bool,
+) -> tuple[str | None, bool, bool]:
+    if LOGGER.isEnabledFor(logging.DEBUG):
+        LOGGER.debug(
+            "runtime event run_id=%s session_id=%s %s",
+            run_id,
+            session_id,
+            _runtime_event_summary(raw),
+        )
+    envelope = runtime_agent.normalize_runtime_event(
+        raw,
+        bridge_run_id=run_id,
+        sequence=sequence,
+        tool_inputs=tool_inputs,
+    )
+    if envelope is None:
+        return None, final_emitted, terminal_emitted
+    _log_runtime_envelope(run_id, session_id, envelope)
+    return _persist_runtime_envelope(
+        request,
+        run_id=run_id,
+        session_id=session_id,
+        envelope=envelope,
+        final_emitted=final_emitted,
+        terminal_emitted=terminal_emitted,
+    )
+
+
+def _get_compiled_graph(request: Request, model_id: str) -> Any:
+    cache = request.app.state.graph_cache
+    graph = cache.get(model_id)
+    if graph is not None:
+        return graph
+    with request.app.state.graph_cache_lock:
+        graph = cache.get(model_id)
+        if graph is None:
+            graph = runtime_agent.build_deep_agent(request.app.state.settings, model_id)
+            cache[model_id] = graph
+        return graph
 
 
 def _persist_runtime_envelope(
@@ -707,8 +761,9 @@ def _initial_run_events(
     run: RunRecord,
     prompt: str,
     attachments: list[dict[str, Any]],
-    middleware: list[Any] | tuple[Any, ...],
+    agent: dict[str, Any],
 ) -> list[EventRecord]:
+    middleware = agent["middleware"]
     events = [
         append_event(
             db,
@@ -737,7 +792,12 @@ def _initial_run_events(
             },
         ),
     ]
-    events.extend(_middleware_initial_run_events(db, session, run, prompt, attachments, middleware))
+    session_attachments = _session_attachments(db, run.user_id, session.id)
+    events.extend(
+        _middleware_initial_run_events(
+            db, session, run, prompt, attachments, session_attachments, middleware
+        )
+    )
     events.append(
         append_event(
             db,
@@ -767,6 +827,7 @@ def _initial_run_events(
         run.model_id,
         prompt,
         attachments,
+        agent["system_prompt"],
     )
     if audit is not None:
         events.append(audit)
@@ -779,6 +840,7 @@ def _middleware_initial_run_events(
     run: RunRecord,
     prompt: str,
     attachments: list[dict[str, Any]],
+    session_attachments: list[dict[str, Any]],
     middleware: list[Any] | tuple[Any, ...],
 ) -> list[EventRecord]:
     context = {
@@ -789,7 +851,7 @@ def _middleware_initial_run_events(
         "model_id": run.model_id,
         "prompt": prompt,
         "current_attachments": tuple(attachments),
-        "attachments": tuple(attachments),
+        "session_attachments": tuple(session_attachments),
     }
     events: list[EventRecord] = []
     for item in middleware or ():
@@ -828,6 +890,7 @@ def _prompt_audit(
     model_id: str,
     prompt: str,
     attachments: list[dict[str, Any]],
+    system_prompt: str,
 ) -> EventRecord | None:
     mode = settings.audit_compiled_prompts
     if mode == "off":
@@ -836,7 +899,7 @@ def _prompt_audit(
         "agent_id": agent_id,
         "model_id": model_id,
         "message_count": 1 + int(bool(attachments)),
-        "system_prompt_hash": _sha256(resolve_agent(settings)["system_prompt"]),
+        "system_prompt_hash": _sha256(system_prompt),
         "compiled_prompt_hash": _sha256(prompt),
         "context": {
             "attachment_count": len(attachments),
@@ -891,6 +954,7 @@ def _load_run_state(request: Request, run_id: str) -> dict[str, Any]:
             "prompt": prompt_event.content if prompt_event else "",
             "messages": _session_transcript_until(db, run, prompt_event),
             "attachments": _event_attachments(prompt_event),
+            "session_attachments": _session_attachments(db, run.user_id, run.session_id),
         }
 
 
@@ -975,6 +1039,24 @@ def _event_attachments(event: EventRecord | None) -> list[dict[str, Any]]:
     payload = event.payload if event is not None and isinstance(event.payload, dict) else {}
     attachments = payload.get("attachments")
     return list(attachments) if isinstance(attachments, list) else []
+
+
+def _session_attachments(db: DbSession, user_id: str, session_id: str) -> list[dict[str, Any]]:
+    """All non-deleted uploads in the session (session-wide attachment context).
+
+    Distinct from the per-message ``current_attachments`` (only the files the user
+    attached to *this* run): ``attachments`` is every file available in the session.
+    """
+    uploads = db.scalars(
+        select(UploadRecord)
+        .where(
+            UploadRecord.session_id == session_id,
+            UploadRecord.user_id == user_id,
+            UploadRecord.status != "deleted",
+        )
+        .order_by(UploadRecord.created_at)
+    ).all()
+    return [_upload_out(upload) for upload in uploads]
 
 
 def _resolve_run_attachments(
@@ -1260,7 +1342,7 @@ def _terminal_event(
     run_id: str,
     status_: str,
     error: str | None = None,
-) -> EventRecord:
+) -> EventSpec:
     event = _append_event(
         request,
         session_id=session_id,
@@ -1312,23 +1394,26 @@ def _active_run_exists(db: DbSession, session_id: str) -> bool:
     )
 
 
-def _run_accepts_runtime_events(request: Request, run_id: str) -> bool:
-    with request.app.state.database.session() as db:
-        run = db.get(RunRecord, run_id)
-        return bool(
-            run is not None
-            and run.status == "running"
-            and run.session.status != "archived"
-        )
-
-
 def _append_event_chunk(request: Request, **kwargs: Any) -> str:
     return sse_payload(_append_event(request, **kwargs))
 
 
-def _append_event(request: Request, **kwargs: Any) -> EventRecord:
-    with request.app.state.database.session() as db:
-        return append_event(db, **kwargs)
+def _append_event(request: Request, **kwargs: Any) -> EventSpec:
+    # Hand the event to the background writer: seq/id/timestamp are allocated in
+    # memory and the SSE chunk is built from the returned spec, so streaming never
+    # blocks on the database. The writer batches the actual INSERTs off this path.
+    writer: EventWriter = request.app.state.event_writer
+    return writer.enqueue(**kwargs)
+
+
+async def _flush_event_writer(request: Request, run_id: str) -> None:
+    writer = getattr(request.app.state, "event_writer", None)
+    if writer is None:
+        return
+    try:
+        await asyncio.to_thread(writer.flush)
+    except Exception:
+        LOGGER.exception("event writer flush failed run_id=%s", run_id)
 
 
 def _finish_run(request: Request, run_id: str, status_: str, error: str | None) -> None:
@@ -1429,7 +1514,7 @@ def _record_out(record: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     return payload
 
 
-def sse_payload(event: EventRecord) -> str:
+def sse_payload(event: EventRecord | EventSpec) -> str:
     data = dict(event.payload or {})
     if event.type == "message.final":
         message = dict(data.get("message") or {})

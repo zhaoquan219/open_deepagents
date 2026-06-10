@@ -32,7 +32,7 @@ class DeepAgentsRunContext:
     thread_id: str
     session_metadata: dict[str, Any]
     current_attachments: tuple[dict[str, Any], ...] = ()
-    attachments: tuple[dict[str, Any], ...] = ()
+    session_attachments: tuple[dict[str, Any], ...] = ()
 
     def get(self, key: str, default: Any = None) -> Any:
         return getattr(self, key, default)

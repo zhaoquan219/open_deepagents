@@ -28,7 +28,11 @@ class BrowserE2EFakeGraph:
         thread_id = str(config.get("configurable", {}).get("thread_id") or context.thread_id)
         prompt = _latest_prompt(agent_input)
         prior_prompts = THREAD_PROMPTS.setdefault(thread_id, [])
-        attachments = list(getattr(context, "attachments", ()) or ())
+        attachments = list(
+            getattr(context, "current_attachments", ())
+            or getattr(context, "session_attachments", ())
+            or ()
+        )
         upload_path = str(attachments[0].get("path") if attachments else "")
         if prior_prompts:
             text = f"Browser E2E prior prompt: {prior_prompts[-1]}"

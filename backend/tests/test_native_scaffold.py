@@ -1550,7 +1550,7 @@ def test_uploads_are_stored_as_sandbox_readable_run_attachments(
 
         assert len(graph.contexts[-1].current_attachments) == 1
         assert graph.contexts[-1].current_attachments[0]["path"] == attachment["path"]
-        assert graph.contexts[-1].attachments[0]["path"] == attachment["path"]
+        assert graph.contexts[-1].session_attachments[0]["path"] == attachment["path"]
         assert graph.inputs[-1]["messages"][-1]["content"] == "read my upload"
 
     delete = client.delete(f"/api/uploads/{attachment['id']}", headers=auth_headers)
@@ -1814,6 +1814,7 @@ def test_runtime_stops_persisting_events_after_run_is_cancelled(
                 "name": "model",
                 "data": {"chunk": {"content": "before-cancel"}},
             }
+            client.app.state.run_registry.request_cancel(context.run_id)
             with client.app.state.database.session() as db:
                 run = db.get(RunRecord, context.run_id)
                 assert run is not None
@@ -1885,7 +1886,13 @@ def test_delete_session_cancels_active_run_and_stops_runtime_persistence(
             with client.app.state.database.session() as db:
                 session = db.get(SessionRecord, context.session_id)
                 assert session is not None
-                _archive_session(db, client.app.state.settings, session.owner, session)
+                _archive_session(
+                    db,
+                    client.app.state.settings,
+                    session.owner,
+                    session,
+                    client.app.state.run_registry,
+                )
             yield {
                 "event": "on_chat_model_stream",
                 "name": "model",
@@ -2048,7 +2055,7 @@ def test_attachment_context_middleware_lists_only_current_uploads() -> None:
             )
         }
 
-    result = asyncio.run(inject_attachment_context_message.abefore_model({}, RuntimeStub()))
+    result = asyncio.run(inject_attachment_context_message.abefore_agent({}, RuntimeStub()))
 
     assert result is not None
     content = result["messages"][0].content
@@ -2060,6 +2067,43 @@ def test_attachment_context_middleware_lists_only_current_uploads() -> None:
     assert events[0]["kind"] == "system.message"
     assert events[0]["content"] == content
     assert events[0]["payload"]["source"] == "middleware.InjectAttachmentContextMessage"
+
+
+def test_attachment_context_injected_once_per_multi_step_run() -> None:
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.tools import tool
+
+    class _FakeToolModel(GenericFakeChatModel):
+        def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+            return self
+
+    @tool
+    def ping() -> str:
+        """Return pong."""
+        return "pong"
+
+    class _Ctx:
+        current_attachments = ({"name": "a.txt", "path": "/uploads/s/a.txt"},)
+
+        def get(self, key: str, default: Any = None) -> Any:
+            return getattr(self, key, default)
+
+    # First model call requests the tool, forcing a second model call (two before_model
+    # points). before_agent must still announce the attachments exactly once.
+    tool_call = AIMessage(content="", tool_calls=[{"name": "ping", "args": {}, "id": "c1"}])
+    model = _FakeToolModel(messages=iter([tool_call, AIMessage(content="done")]))
+    agent = create_agent(model=model, tools=[ping], middleware=[inject_attachment_context_message])
+
+    result = asyncio.run(
+        agent.ainvoke({"messages": [{"role": "user", "content": "hi"}]}, context=_Ctx())
+    )
+    announcements = [
+        message
+        for message in result["messages"]
+        if type(message).__name__ == "SystemMessage" and "attached exactly" in message.content
+    ]
+    assert len(announcements) == 1
 
 
 def test_mysql_schema_initialization_creates_database_if_needed(monkeypatch) -> None:

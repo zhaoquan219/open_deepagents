@@ -5,7 +5,7 @@ from typing import Any
 
 from langchain.agents.middleware import (
     AgentState,
-    before_model,
+    before_agent,
 )
 from langchain_core.messages import SystemMessage
 from langgraph.runtime import Runtime
@@ -31,7 +31,9 @@ def attachment_context_content(attachments: tuple[dict[str, Any], ...]) -> str:
 
 
 def attachment_context_initial_events(context: Mapping[str, Any]) -> list[dict[str, Any]]:
-    attachments = tuple(context.get("current_attachments") or context.get("attachments") or ())
+    attachments = tuple(
+        context.get("current_attachments") or context.get("session_attachments") or ()
+    )
     content = attachment_context_content(attachments)
     if not content:
         return []
@@ -52,24 +54,26 @@ def attachment_context_initial_events(context: Mapping[str, Any]) -> list[dict[s
     ]
 
 
-@before_model(name="InjectAttachmentContextMessage")
+@before_agent(name="InjectAttachmentContextMessage")
 async def inject_attachment_context_message(
     state: AgentState[object],
     runtime: Runtime[Any],
 ) -> dict[str, Any] | None:
-    """Example opt-in middleware for exposing upload context to the next model call."""
+    """Expose the current message's uploads to the model, once per run.
+
+    Hooks ``before_agent`` (runs once per run, before the model loop) rather than
+    ``before_model`` (runs before every model call), so a single announcement covers
+    the whole run with no de-duplication bookkeeping.
+    """
 
     context = runtime.context or {}
     attachments = tuple(context.get("current_attachments") or ())
-    if not attachments or state.get("attachment_context_injected"):
+    if not attachments:
         return None
     content = attachment_context_content(attachments)
     if not content:
         return None
-    return {
-        "messages": [SystemMessage(content=content)],
-        "attachment_context_injected": True,
-    }
+    return {"messages": [SystemMessage(content=content)]}
 
 
 MIDDLEWARE = [inject_attachment_context_message]

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from threading import Lock
+from queue import Empty, Queue
+from threading import Event, Lock, Thread
 from typing import Any
 from uuid import uuid4
 
@@ -20,6 +23,7 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     func,
+    insert,
     select,
     text,
 )
@@ -34,8 +38,17 @@ from sqlalchemy.orm import (
     sessionmaker,
 )
 
+LOGGER = logging.getLogger("app.db")
+
 PRODUCT_TABLES = frozenset({"users", "sessions", "runs", "events", "uploads"})
 _EVENT_LOCK = Lock()
+# In-process high-water mark of the last allocated event seq per session. This lets
+# append_event allocate the next seq without a per-event ``SELECT max(seq)`` round
+# trip, which is the dominant latency cost when the product database is a remote
+# server (every streamed token would otherwise pay multiple network round trips).
+# All writes go through _EVENT_LOCK in a single process, so this stays authoritative;
+# the UniqueConstraint(session_id, seq) is the durable backstop.
+_EVENT_SEQ_HIGH_WATER: dict[str, int] = {}
 
 # Maintenance databases that always exist on a stock PostgreSQL server. We connect
 # to one of these to create the target database when it does not exist yet.
@@ -278,17 +291,36 @@ class EventRecord(Base):
 
 
 class Database:
-    def __init__(self, database_url: str) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        pool_size: int = 10,
+        max_overflow: int = 20,
+        pool_recycle: int = 1800,
+    ) -> None:
         self.database_url = normalize_database_url(database_url)
         family = make_url(self.database_url).get_backend_name()
         if family in {"mysql", "mariadb"}:
             self._ensure_mysql_database()
         elif family in {"postgresql", "postgres"}:
             ensure_postgres_database(self.database_url)
-        connect_args = (
-            {"check_same_thread": False} if self.database_url.startswith("sqlite") else {}
-        )
-        self.engine = create_engine(self.database_url, future=True, connect_args=connect_args)
+        is_sqlite = self.database_url.startswith("sqlite")
+        engine_kwargs: dict[str, Any] = {
+            "future": True,
+            "connect_args": {"check_same_thread": False} if is_sqlite else {},
+        }
+        if not is_sqlite:
+            # Networked databases: validate pooled connections before use (survives
+            # server restarts / idle timeouts) and size the pool so the streaming
+            # status reads and HTTP requests do not starve each other.
+            engine_kwargs.update(
+                pool_pre_ping=True,
+                pool_recycle=pool_recycle,
+                pool_size=pool_size,
+                max_overflow=max_overflow,
+            )
+        self.engine = create_engine(self.database_url, **engine_kwargs)
         self.session_factory = sessionmaker(self.engine, expire_on_commit=False, future=True)
 
     def initialize_schema(self) -> None:
@@ -338,7 +370,6 @@ def append_event(
     safe_payload = payload or {}
     json.dumps(safe_payload, ensure_ascii=False)
     with _EVENT_LOCK:
-        db.execute(select(SessionRecord.id).where(SessionRecord.id == session_id).with_for_update())
         seq = _next_event_seq(db, session_id)
         event = EventRecord(
             session_id=session_id,
@@ -360,7 +391,239 @@ def append_event(
 
 
 def _next_event_seq(db: Session, session_id: str) -> int:
-    current = db.execute(
-        select(func.max(EventRecord.seq)).where(EventRecord.session_id == session_id)
-    ).scalar_one_or_none()
-    return int(current or 0) + 1
+    """Allocate the next per-session event seq. Must be called while holding _EVENT_LOCK.
+
+    The first allocation for a session in this process primes the in-memory
+    high-water mark from the database; subsequent allocations increment it in
+    memory, avoiding a ``SELECT max(seq)`` network round trip per event.
+    """
+    cached = _EVENT_SEQ_HIGH_WATER.get(session_id)
+    if cached is None:
+        current = db.execute(
+            select(func.max(EventRecord.seq)).where(EventRecord.session_id == session_id)
+        ).scalar_one_or_none()
+        cached = int(current or 0)
+    seq = cached + 1
+    _EVENT_SEQ_HIGH_WATER[session_id] = seq
+    return seq
+
+
+def _allocate_seq_via_writer(database: Database, session_id: str) -> int:
+    """Allocate the next seq for a background-persisted event.
+
+    On a cache hit this is a pure in-memory increment (no database round trip). On a
+    miss the priming ``SELECT max(seq)`` is issued *outside* ``_EVENT_LOCK`` so a
+    network round trip never blocks every other session's seq allocation; the lock is
+    only held for the in-memory increment. Shares the counter with the synchronous
+    :func:`append_event` path so seq stays monotonic across both writers.
+    """
+    with _EVENT_LOCK:
+        cached = _EVENT_SEQ_HIGH_WATER.get(session_id)
+        if cached is not None:
+            seq = cached + 1
+            _EVENT_SEQ_HIGH_WATER[session_id] = seq
+            return seq
+    with database.session() as db:
+        primed = db.execute(
+            select(func.max(EventRecord.seq)).where(EventRecord.session_id == session_id)
+        ).scalar_one_or_none()
+    base = int(primed or 0)
+    with _EVENT_LOCK:
+        # Another writer may have primed/advanced the counter while we read the DB;
+        # prefer the in-memory value if present so we never hand out a stale seq.
+        current = _EVENT_SEQ_HIGH_WATER.get(session_id, base)
+        seq = current + 1
+        _EVENT_SEQ_HIGH_WATER[session_id] = seq
+        return seq
+
+
+def forget_event_seq(session_id: str) -> None:
+    """Drop a session's in-memory seq high-water mark.
+
+    Called when a run's stream ends (after the writer has flushed): with at most one
+    active run per session, the next run re-primes from the now-complete database max,
+    so this bounds memory to currently-active sessions instead of every session ever
+    seen by the process.
+    """
+    with _EVENT_LOCK:
+        _EVENT_SEQ_HIGH_WATER.pop(session_id, None)
+
+
+@dataclass(frozen=True)
+class EventSpec:
+    """A fully-allocated event awaiting durable persistence.
+
+    Carries the same attributes ``sse_payload`` reads from an ``EventRecord`` (seq, id,
+    created_at, type, kind, content, ...), so the SSE chunk can be built and streamed
+    to the client immediately, before the row is written to the database.
+    """
+
+    id: str
+    session_id: str
+    run_id: str | None
+    seq: int
+    kind: str
+    type: str
+    role: str | None
+    content: str | None
+    tool_name: str | None
+    tool_call_id: str | None
+    visibility: str
+    redaction: str
+    payload: dict[str, Any]
+    created_at: datetime
+
+    def as_mapping(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "session_id": self.session_id,
+            "run_id": self.run_id,
+            "seq": self.seq,
+            "kind": self.kind,
+            "type": self.type,
+            "role": self.role,
+            "content": self.content,
+            "tool_name": self.tool_name,
+            "tool_call_id": self.tool_call_id,
+            "visibility": self.visibility,
+            "redaction": self.redaction,
+            "payload": self.payload,
+            "created_at": self.created_at,
+        }
+
+
+class _FlushSignal:
+    """Queue marker that forces a synchronous flush and reports back to the caller."""
+
+    __slots__ = ("done", "error")
+
+    def __init__(self) -> None:
+        self.done = Event()
+        self.error: BaseException | None = None
+
+
+_SHUTDOWN = object()
+
+
+class EventWriter:
+    """Persists events on a dedicated background thread, batching inserts.
+
+    ``enqueue`` allocates the durable seq/id/timestamp synchronously in memory and
+    returns immediately, so the SSE hot path never blocks on a database round trip.
+    A worker thread flushes batches when they reach ``batch_size`` or after
+    ``flush_interval`` seconds of inactivity. ``flush`` forces a synchronous drain for
+    read-after-write points (for example when a run reaches a terminal state and the
+    durable transcript must be complete before the stream closes).
+    """
+
+    def __init__(
+        self,
+        database: Database,
+        *,
+        batch_size: int = 100,
+        flush_interval: float = 0.05,
+    ) -> None:
+        self._database = database
+        self._batch_size = max(1, batch_size)
+        self._flush_interval = flush_interval
+        self._queue: Queue[Any] = Queue()
+        self._closed = False
+        self._thread = Thread(
+            target=self._run,
+            name="deepagents-event-writer",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def enqueue(
+        self,
+        *,
+        session_id: str,
+        kind: str,
+        type: str,
+        run_id: str | None = None,
+        role: str | None = None,
+        content: str | None = None,
+        tool_name: str | None = None,
+        tool_call_id: str | None = None,
+        visibility: str = "public",
+        redaction: str = "none",
+        payload: dict[str, Any] | None = None,
+    ) -> EventSpec:
+        safe_payload = payload or {}
+        json.dumps(safe_payload, ensure_ascii=False)
+        seq = _allocate_seq_via_writer(self._database, session_id)
+        spec = EventSpec(
+            id=new_id(),
+            session_id=session_id,
+            run_id=run_id,
+            seq=seq,
+            kind=kind,
+            type=type,
+            role=role,
+            content=content,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            visibility=visibility,
+            redaction=redaction,
+            payload=safe_payload,
+            created_at=now(),
+        )
+        self._queue.put(spec)
+        return spec
+
+    def flush(self) -> None:
+        """Block until every event enqueued before this call is committed."""
+        if self._closed:
+            return
+        signal = _FlushSignal()
+        self._queue.put(signal)
+        signal.done.wait()
+        if signal.error is not None:
+            raise signal.error
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._queue.put(_SHUTDOWN)
+        self._thread.join(timeout=10)
+
+    def _run(self) -> None:
+        batch: list[EventSpec] = []
+        while True:
+            try:
+                item = self._queue.get(timeout=self._flush_interval if batch else None)
+            except Empty:
+                self._commit(batch)
+                batch = []
+                continue
+            if item is _SHUTDOWN:
+                self._commit(batch)
+                return
+            if isinstance(item, _FlushSignal):
+                try:
+                    self._write(batch)
+                except BaseException as exc:  # noqa: BLE001 - reported to flush() caller
+                    item.error = exc
+                    LOGGER.exception("event writer flush failed for %d event(s)", len(batch))
+                finally:
+                    batch = []
+                    item.done.set()
+                continue
+            batch.append(item)
+            if len(batch) >= self._batch_size:
+                self._commit(batch)
+                batch = []
+
+    def _commit(self, batch: list[EventSpec]) -> None:
+        try:
+            self._write(batch)
+        except Exception:
+            LOGGER.exception("event writer failed to persist %d event(s)", len(batch))
+
+    def _write(self, batch: list[EventSpec]) -> None:
+        if not batch:
+            return
+        with self._database.session() as db:
+            db.execute(insert(EventRecord), [spec.as_mapping() for spec in batch])
