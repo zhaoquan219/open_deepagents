@@ -1160,12 +1160,9 @@ def test_run_lifecycle_persists_runs_events_and_native_context(
         payloads = sse_events(response.read().decode())
 
     labels = [event["label"] for event in payloads]
-    assert labels[:4] == [
-        "run.started",
-        "user.message",
-        "middleware.applied",
-        "prompt.compiled",
-    ]
+    # The user message leads; run.started is no longer emitted.
+    assert labels[0] == "user.message"
+    assert "run.started" not in labels
     assert labels[-1] == "run.completed"
     assert labels.count("run.completed") == 1
     assert labels.count("assistant.message") == 1
@@ -1184,26 +1181,25 @@ def test_run_lifecycle_persists_runs_events_and_native_context(
     assert graph.contexts[0].session_metadata == {"topic": "tests"}
 
     history = client.get(f"/api/sessions/{session['id']}/events", headers=auth_headers).json()
-    # The durable transcript drops streaming deltas and per-node step noise; only
-    # messages, completed process steps, lifecycle and audit events are persisted.
+    # The durable transcript keeps only the messages and the completed tool calls that
+    # carry real content. The blank lifecycle/audit markers (run.started, run.completed,
+    # middleware.applied, prompt.compiled) and the always-empty skill.completed are
+    # streamed live but no longer persisted.
     assert [event["kind"] for event in history] == [
-        "run.started",
         "user.message",
-        "middleware.applied",
-        "prompt.compiled",
         "tool.completed",
         "sandbox.completed",
         "assistant.message",
-        "run.completed",
     ]
     history_kinds = {event["kind"] for event in history}
     assert "assistant.delta" not in history_kinds
     assert "step.completed" not in history_kinds
     assert "step.started" not in history_kinds
-    prompt_audit = next(event for event in history if event["kind"] == "prompt.compiled")
-    assert prompt_audit["redaction"] == "hash"
-    assert "compiled_prompt_hash" in prompt_audit["payload"]
-    assert "hello" not in json.dumps(prompt_audit)
+    assert "run.started" not in history_kinds
+    assert "run.completed" not in history_kinds
+    assert "middleware.applied" not in history_kinds
+    assert "prompt.compiled" not in history_kinds
+    assert "skill.completed" not in history_kinds
     assert any(event["tool_name"] == "echo" for event in history)
     tool_event = next(
         event
@@ -1214,10 +1210,11 @@ def test_run_lifecycle_persists_runs_events_and_native_context(
     # full result (the tool message) are persisted.
     assert tool_event["payload"]["input"] == {"text": "hello"}
     assert tool_event["payload"]["output"] == {"text": "echo:hello"}
-    # The durable ``content`` shows the call as ``name(input)`` so the tool call is
-    # visible without digging into the payload.
+    # The durable ``content`` shows the full ``name(input) -> output`` so both the tool
+    # call and its result (the tool message) are visible without digging into the payload.
     assert tool_event["content"].startswith("echo(")
     assert "hello" in tool_event["content"]
+    assert "echo:hello" in tool_event["content"]
     sandbox_event = next(
         event
         for event in history
@@ -1609,22 +1606,10 @@ def test_uploads_are_stored_as_sandbox_readable_run_attachments(
     assert system_event["payload"]["source"] == "middleware.InjectAttachmentContextMessage"
     assert system_event["payload"]["attachment_count"] == 1
     assert system_event["payload"]["attachment_paths"] == [attachment["path"]]
-    middleware_event = next(
-        event
-        for event in history
-        if event["kind"] == "middleware.applied"
-        and event["payload"]["attachment_paths"] == [attachment["path"]]
-    )
-    assert middleware_event["payload"]["attachment_count"] == 1
-    audit_event = next(
-        event
-        for event in history
-        if event["kind"] == "prompt.compiled"
-        and event["payload"]["compiled_prompt"] == "read my upload"
-    )
-    assert audit_event["payload"]["compiled_prompt"] == "read my upload"
-    assert audit_event["payload"]["context"]["attachment_count"] == 1
-    assert audit_event["payload"]["context"]["attachments"][0]["path"] == attachment["path"]
+    # middleware.applied and prompt.compiled are no longer persisted.
+    history_kinds = {event["kind"] for event in history}
+    assert "middleware.applied" not in history_kinds
+    assert "prompt.compiled" not in history_kinds
 
 
 def test_upload_context_message_replays_from_database_when_checkpoint_missing(

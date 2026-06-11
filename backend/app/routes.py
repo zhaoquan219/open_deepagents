@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import re
@@ -46,16 +45,16 @@ TRANSCRIPT_MESSAGE_KINDS = ("system.message", "user.message", "assistant.message
 STREAM_WORKER_QUEUE_SIZE = 256
 # Runtime event labels that are durably written to the events table, with their full
 # payloads preserved verbatim. Everything else the runtime emits while streaming
-# (per-token deltas, per-node chain start/end, *.started markers, unknown runtime steps)
-# is still streamed live over SSE but not persisted: the final assistant.message already
-# captures the reply, so writing every delta and per-node step only bloats the transcript.
+# (per-token deltas, per-node chain start/end, *.started markers, unknown runtime steps,
+# the always-empty skill.completed marker, the run.started/run.completed status pings)
+# is still streamed live over SSE but not persisted: the durable transcript only keeps
+# the messages and the completed tool calls that carry real content.
 DURABLE_RUNTIME_LABELS = frozenset(
     {
         "assistant.message",
         "tool.completed",
         "sandbox.completed",
         "subagent.completed",
-        "skill.completed",
         "run.failed",
     }
 )
@@ -472,7 +471,6 @@ def _start_run(
         )
         events = _initial_run_events(
             db,
-            settings,
             session,
             run,
             payload.prompt,
@@ -618,16 +616,13 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
                 yield chunk
             await asyncio.sleep(0)
         if not terminal_emitted and not registry.is_cancelled(run_id):
-            event = _append_event(
-                request,
-                session_id=state["session_id"],
-                run_id=run_id,
-                kind="run.completed",
-                type="status",
-                payload={"status": "completed", "terminal": True},
-            )
+            # The terminal status is streamed live so the client closes the connection,
+            # but it is not persisted: the run's final state lives in the runs table and
+            # the durable transcript ends at the last assistant.message.
             _finish_run(request, run_id, "completed", None)
-            yield sse_payload(event)
+            yield _live_status_chunk(
+                run_id, state["session_id"], "run.completed", "completed", terminal=True
+            )
     except asyncio.CancelledError:
         LOGGER.info("run cancelled run_id=%s session_id=%s", run_id, state["session_id"])
         if not registry.is_cancelled(run_id):
@@ -771,28 +766,17 @@ def _persist_runtime_envelope(
 
 def _initial_run_events(
     db: DbSession,
-    settings: Settings,
     session: SessionRecord,
     run: RunRecord,
     prompt: str,
     attachments: list[dict[str, Any]],
     agent: dict[str, Any],
 ) -> list[EventRecord]:
-    middleware = agent["middleware"]
+    # Only the user's message is persisted up front. The run.started/middleware.applied/
+    # prompt.compiled markers carried no readable content and duplicated the runs table,
+    # so they are no longer written; run.started is not streamed either (the client
+    # already shows the run as running once it opens the stream).
     events = [
-        append_event(
-            db,
-            session_id=session.id,
-            run_id=run.id,
-            kind="run.started",
-            type="status",
-            payload={
-                "status": "running",
-                "run_id": run.id,
-                "agent_id": run.agent_id,
-                "model_id": run.model_id,
-            },
-        ),
         append_event(
             db,
             session_id=session.id,
@@ -810,42 +794,9 @@ def _initial_run_events(
     session_attachments = _session_attachments(db, run.user_id, session.id)
     events.extend(
         _middleware_initial_run_events(
-            db, session, run, prompt, attachments, session_attachments, middleware
+            db, session, run, prompt, attachments, session_attachments, agent["middleware"]
         )
     )
-    events.append(
-        append_event(
-            db,
-            session_id=session.id,
-            run_id=run.id,
-            kind="middleware.applied",
-            type="step",
-            visibility="internal",
-            redaction="hash",
-            payload={
-                "middleware": "DeepAgentsRunContext",
-                "target": "runtime.context",
-                "operation": "attach_upload_metadata",
-                "content_hash": _sha256(prompt),
-                "attachment_count": len(attachments),
-                "attachment_paths": [attachment["path"] for attachment in attachments],
-                "redacted": True,
-            },
-        )
-    )
-    audit = _prompt_audit(
-        db,
-        settings,
-        session.id,
-        run.id,
-        run.agent_id,
-        run.model_id,
-        prompt,
-        attachments,
-        agent["system_prompt"],
-    )
-    if audit is not None:
-        events.append(audit)
     return events
 
 
@@ -894,59 +845,6 @@ def _middleware_initial_run_events(
                 )
             )
     return events
-
-
-def _prompt_audit(
-    db: DbSession,
-    settings: Settings,
-    session_id: str,
-    run_id: str,
-    agent_id: str,
-    model_id: str,
-    prompt: str,
-    attachments: list[dict[str, Any]],
-    system_prompt: str,
-) -> EventRecord | None:
-    mode = settings.audit_compiled_prompts
-    if mode == "off":
-        return None
-    payload: dict[str, Any] = {
-        "agent_id": agent_id,
-        "model_id": model_id,
-        "message_count": 1 + int(bool(attachments)),
-        "system_prompt_hash": _sha256(system_prompt),
-        "compiled_prompt_hash": _sha256(prompt),
-        "context": {
-            "attachment_count": len(attachments),
-            "attachments": [
-                {
-                    "id": attachment.get("id"),
-                    "session_id": attachment.get("session_id"),
-                    "name": attachment.get("name"),
-                    "path": attachment.get("path"),
-                    "size": attachment.get("size"),
-                    "content_type": attachment.get("content_type"),
-                }
-                for attachment in attachments
-            ],
-        },
-        "redaction": mode,
-    }
-    if mode == "redacted":
-        payload["preview"] = "[redacted prompt preview]"
-    if mode == "full":
-        payload["compiled_prompt"] = prompt
-    return append_event(
-        db,
-        session_id=session_id,
-        run_id=run_id,
-        kind="prompt.compiled",
-        type="step",
-        visibility="internal",
-        redaction=mode,
-        content=prompt if mode == "full" else None,
-        payload=payload,
-    )
 
 
 def _load_run_state(request: Request, run_id: str) -> dict[str, Any]:
@@ -1444,6 +1342,28 @@ def _stream_event(
     )
 
 
+def _live_status_chunk(
+    run_id: str,
+    session_id: str,
+    label: str,
+    status_: str,
+    *,
+    terminal: bool = False,
+) -> str:
+    # A live-only run-status signal (e.g. run.completed). Streamed so the client can
+    # close the connection, but never written to the events table.
+    return _sse_chunk(
+        event_id=f"live:{run_id}:{label}",
+        type="status",
+        run_id=run_id,
+        session_id=session_id,
+        timestamp=now().isoformat(),
+        label=label,
+        detail=label,
+        data={"status": status_, "terminal": terminal},
+    )
+
+
 async def _flush_event_writer(request: Request, run_id: str) -> None:
     writer = getattr(request.app.state, "event_writer", None)
     if writer is None:
@@ -1493,14 +1413,16 @@ def _render(value: Any) -> str:
 
 
 def _event_content(envelope: Any) -> str | None:
-    """Readable label for the ``content`` column. Tool events show ``name(input)`` so the
-    call is visible; the full result (the tool message) is preserved verbatim in payload.
-    Skill events list the prepared skill names. No truncation is applied anywhere."""
+    """Readable label for the ``content`` column. Tool events show the full
+    ``name(input) -> output`` so both the call and its result (the tool message) are
+    visible. Skill events list the prepared skill names. No truncation is applied."""
     data = envelope.data if isinstance(envelope.data, Mapping) else {}
     if envelope.label in TOOL_EVENT_LABELS:
         name = str(data.get("tool_name") or data.get("name") or envelope.detail or "tool")
         args = data.get("input")
-        return f"{name}({_render(args)})" if args not in (None, "", {}, []) else name
+        head = f"{name}({_render(args)})" if args not in (None, "", {}, []) else name
+        output = data.get("output")
+        return f"{head} -> {_render(output)}" if output not in (None, "") else head
     if envelope.label == "skill.completed":
         skills = data.get("skills")
         names = [
@@ -1622,5 +1544,3 @@ def sse_payload(event: EventRecord | EventSpec) -> str:
     )
 
 
-def _sha256(value: str) -> str:
-    return "sha256:" + hashlib.sha256(value.encode()).hexdigest()
