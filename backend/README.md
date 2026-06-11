@@ -117,7 +117,8 @@ Recommended flow:
   `DEEPAGENTS_CHECKPOINT_BACKEND=sqlite` or `postgresql`.
 
 Product tables never store checkpoint internals. Runtime state is restored by
-the LangGraph checkpointer/store through `sessions.thread_id`.
+the LangGraph checkpointer/store keyed on `sessions.id` (the session id is used
+directly as the LangGraph `thread_id`).
 The sqlite checkpoint mode defaults to `./data/checkpoints.db`. Postgresql
 requires `DEEPAGENTS_CHECKPOINT_DATABASE_URL`. Checkpoint stores refuse to share
 `DATABASE_URL`; `/ready` validates the product schema without repairing it and
@@ -214,7 +215,7 @@ DEEPAGENTS_CHECKPOINT_BACKEND=sqlite
 | `GET /api/auth/me` | Return the current user. |
 | `GET /api/models` | Return safe model selector metadata. |
 | `GET /api/sessions` | List the current user's sessions. |
-| `POST /api/sessions` | Create a session with a stable LangGraph `thread_id`. |
+| `POST /api/sessions` | Create a session whose id doubles as the LangGraph `thread_id`. |
 | `PATCH /api/sessions/{session_id}` | Update session `title` or `metadata`. |
 | `DELETE /api/sessions/{session_id}` | Archive an owned session, hide normal history, and revoke its uploads. |
 | `GET /api/sessions/{session_id}/events?after_seq=N` | Load durable ordered history. |

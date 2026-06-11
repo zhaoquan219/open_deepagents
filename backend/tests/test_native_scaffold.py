@@ -228,7 +228,8 @@ def test_schema_is_product_projection(
     created = client.post("/api/sessions", headers=auth_headers, json={"title": "Demo"})
     assert created.status_code == 201
     session = created.json()
-    assert session["thread_id"].startswith("thread-")
+    assert "thread_id" not in session
+    assert re.match(r"^[a-f0-9]{12}$", session["id"])
     assert session["owner_user_id"]
 
     with client.app.state.database.session() as db:
@@ -1079,7 +1080,7 @@ def test_event_sequence_allocation_is_atomic_in_process(tmp_path: Path) -> None:
         user = UserRecord(username="admin", password_hash="hash")
         db.add(user)
         db.flush()
-        session = SessionRecord(owner_user_id=user.id, title="Seq", thread_id="thread-seq")
+        session = SessionRecord(owner_user_id=user.id, title="Seq")
         db.add(session)
         db.flush()
         session_id = session.id
@@ -1107,13 +1108,12 @@ def test_event_append_integrity_error_preserves_outer_transaction(tmp_path: Path
             user = UserRecord(username="admin", password_hash="hash")
             db.add(user)
             db.flush()
-            session = SessionRecord(owner_user_id=user.id, title="Seq", thread_id="thread-seq")
+            session = SessionRecord(owner_user_id=user.id, title="Seq")
             db.add(session)
             db.flush()
             run = RunRecord(
                 session_id=session.id,
                 user_id=user.id,
-                thread_id=session.thread_id,
                 agent_id="agent",
                 model_id="model",
                 status="running",
@@ -1168,17 +1168,38 @@ def test_run_lifecycle_persists_runs_events_and_native_context(
     ]
     assert labels[-1] == "run.completed"
     assert labels.count("run.completed") == 1
-    assert "step.completed" in labels
     assert labels.count("assistant.message") == 1
+    # Per-node chain end, *.started markers and streaming deltas are still streamed
+    # live over SSE for the UI.
+    assert "step.completed" in labels
     assert "sandbox.started" in labels
+    assert "assistant.delta" in labels
     assert "sandbox.completed" in labels
-    assert [event["id"] for event in payloads] == [str(i) for i in range(1, len(payloads) + 1)]
-    assert graph.configs[0]["configurable"]["thread_id"] == session["thread_id"]
+    # Live-only events carry a non-numeric id; persisted events keep a contiguous
+    # integer seq.
+    persisted_ids = [event["id"] for event in payloads if not event["id"].startswith("live:")]
+    assert persisted_ids == [str(i) for i in range(1, len(persisted_ids) + 1)]
+    assert graph.configs[0]["configurable"]["thread_id"] == session["id"]
     assert graph.contexts[0].session_id == session["id"]
     assert graph.contexts[0].session_metadata == {"topic": "tests"}
 
     history = client.get(f"/api/sessions/{session['id']}/events", headers=auth_headers).json()
-    assert [event["kind"] for event in history] == labels
+    # The durable transcript drops streaming deltas and per-node step noise; only
+    # messages, completed process steps, lifecycle and audit events are persisted.
+    assert [event["kind"] for event in history] == [
+        "run.started",
+        "user.message",
+        "middleware.applied",
+        "prompt.compiled",
+        "tool.completed",
+        "sandbox.completed",
+        "assistant.message",
+        "run.completed",
+    ]
+    history_kinds = {event["kind"] for event in history}
+    assert "assistant.delta" not in history_kinds
+    assert "step.completed" not in history_kinds
+    assert "step.started" not in history_kinds
     prompt_audit = next(event for event in history if event["kind"] == "prompt.compiled")
     assert prompt_audit["redaction"] == "hash"
     assert "compiled_prompt_hash" in prompt_audit["payload"]
@@ -1203,7 +1224,7 @@ def test_run_lifecycle_persists_runs_events_and_native_context(
         run = db.scalar(select(RunRecord).where(RunRecord.session_id == session["id"]))
         assert run is not None
         assert run.status == "completed"
-        assert run.thread_id == session["thread_id"]
+        assert run.session_id == session["id"]
         assert run.model_id == "test/fake"
         assert run.ended_at is not None
 
@@ -1385,7 +1406,7 @@ def test_database_backed_session_accepts_second_turn_with_same_thread_context(
             .order_by(RunRecord.started_at)
         ).all()
         assert [run.status for run in runs] == ["completed", "completed"]
-        assert {run.thread_id for run in runs} == {session["thread_id"]}
+        assert {run.session_id for run in runs} == {session["id"]}
 
 
 def test_session_context_survives_backend_restart_from_product_events(
@@ -1809,10 +1830,13 @@ def test_runtime_stops_persisting_events_after_run_is_cancelled(
             context: Any,
         ) -> AsyncIterator[dict[str, Any]]:
             del agent_input, config
+            # A durable process event before cancellation, so the persisted
+            # transcript has evidence of pre-cancel work (streaming deltas are no
+            # longer persisted).
             yield {
-                "event": "on_chat_model_stream",
-                "name": "model",
-                "data": {"chunk": {"content": "before-cancel"}},
+                "event": "on_tool_end",
+                "name": "echo",
+                "data": {"output": {"text": "before-cancel"}},
             }
             client.app.state.run_registry.request_cancel(context.run_id)
             with client.app.state.database.session() as db:
@@ -1878,10 +1902,12 @@ def test_delete_session_cancels_active_run_and_stops_runtime_persistence(
             context: Any,
         ) -> AsyncIterator[dict[str, Any]]:
             del agent_input, config
+            # A durable process event before archival; streaming deltas are no longer
+            # persisted, so this is the pre-delete evidence in the transcript.
             yield {
-                "event": "on_chat_model_stream",
-                "name": "model",
-                "data": {"chunk": {"content": "before-delete"}},
+                "event": "on_tool_end",
+                "name": "echo",
+                "data": {"output": {"text": "before-delete"}},
             }
             with client.app.state.database.session() as db:
                 session = db.get(SessionRecord, context.session_id)

@@ -44,13 +44,32 @@ PLACEHOLDER_SESSION_TITLES = {"", "new session", "untitled", "untitled session",
 MAX_DERIVED_TITLE_CHARS = 32
 TRANSCRIPT_MESSAGE_KINDS = ("system.message", "user.message", "assistant.message")
 STREAM_WORKER_QUEUE_SIZE = 256
+# Runtime event labels that are durably written to the events table. Everything else
+# the runtime emits while streaming (per-token deltas, per-node chain start/end,
+# *.started markers, unknown runtime steps) is still streamed live over SSE but not
+# persisted: the final assistant.message already captures the reply, so writing every
+# delta and per-node step only bloats the durable transcript.
+DURABLE_RUNTIME_LABELS = frozenset(
+    {
+        "assistant.message",
+        "tool.completed",
+        "sandbox.completed",
+        "subagent.completed",
+        "skill.completed",
+        "run.failed",
+    }
+)
+# Process events whose input/output payloads are capped before persistence so a single
+# large tool output does not bloat the transcript; the live SSE stream keeps the full
+# payload.
+TRIMMED_PAYLOAD_LABELS = frozenset({"tool.completed", "sandbox.completed", "subagent.completed"})
+MAX_PERSISTED_PAYLOAD_TEXT = 8000
 
 USER_FIELDS = ("id", "username", "email", "role", "is_active")
 SESSION_FIELDS = (
     "id",
     "owner_user_id",
     "title",
-    "thread_id",
     "status",
     "metadata",
     "created_at",
@@ -61,7 +80,6 @@ RUN_FIELDS = (
     "id",
     "session_id",
     "user_id",
-    "thread_id",
     "agent_id",
     "model_id",
     "status",
@@ -173,7 +191,6 @@ def create_session(payload: SessionIn, db: DbSession, user: CurrentUser) -> dict
     session = SessionRecord(
         owner_user_id=user.id,
         title=payload.title or "New session",
-        thread_id=f"thread-{uuid4()}",
         metadata_=payload.metadata,
     )
     db.add(session)
@@ -438,7 +455,6 @@ def _start_run(
         run = RunRecord(
             session_id=session.id,
             user_id=user_id,
-            thread_id=session.thread_id,
             agent_id=str(agent["id"]),
             model_id=model_id,
             status="running",
@@ -554,7 +570,7 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
         session_id=state["session_id"],
         run_id=run_id,
         username=state["username"],
-        thread_id=state["thread_id"],
+        thread_id=state["session_id"],
         session_metadata=state["metadata"],
         current_attachments=tuple(state["attachments"]),
         session_attachments=tuple(state["session_attachments"]),
@@ -563,7 +579,7 @@ async def _execute_run_sse(request: Request, run_id: str) -> AsyncIterator[str]:
     try:
         graph = await asyncio.to_thread(_get_compiled_graph, request, state["model_id"])
         config = {
-            "configurable": {"thread_id": state["thread_id"]},
+            "configurable": {"thread_id": state["session_id"]},
             "recursion_limit": settings.deepagents_recursion_limit,
         }
         messages = await _runtime_input_messages(settings, config, state)
@@ -666,6 +682,7 @@ def _process_runtime_event(
         request,
         run_id=run_id,
         session_id=session_id,
+        sequence=sequence,
         envelope=envelope,
         final_emitted=final_emitted,
         terminal_emitted=terminal_emitted,
@@ -690,6 +707,7 @@ def _persist_runtime_envelope(
     *,
     run_id: str,
     session_id: str,
+    sequence: int,
     envelope: Any,
     final_emitted: bool,
     terminal_emitted: bool,
@@ -716,17 +734,18 @@ def _persist_runtime_envelope(
             )
         )
 
+    # Per-node chain completion: a live-only progress marker, never persisted.
     if envelope.label == "run.completed":
         envelope.data["status"] = "completed"
         chunks.append(
-            _append_event_chunk(
-                request,
-                session_id=session_id,
+            _stream_only_chunk(
                 run_id=run_id,
-                kind="step.completed",
+                session_id=session_id,
+                sequence=sequence,
                 type="step",
-                content=_event_content(envelope),
-                payload=envelope.data,
+                label="step.completed",
+                detail=_event_content(envelope),
+                data=envelope.data,
             )
         )
         return "".join(chunks), final_emitted, terminal_emitted
@@ -735,20 +754,40 @@ def _persist_runtime_envelope(
         terminal_emitted = True
         envelope.data["terminal"] = True
 
-    chunks.append(
-        _append_event_chunk(
-            request,
-            session_id=session_id,
-            run_id=run_id,
-            kind=envelope.label,
-            type=envelope.type,
-            role="assistant" if envelope.type in {"message.delta", "message.final"} else None,
-            content=_event_content(envelope),
-            tool_name=envelope.data.get("tool_name"),
-            tool_call_id=envelope.data.get("tool_call_id"),
-            payload=envelope.data,
+    if envelope.label in DURABLE_RUNTIME_LABELS:
+        payload = (
+            _truncate_payload(envelope.data)
+            if envelope.label in TRIMMED_PAYLOAD_LABELS
+            else envelope.data
         )
-    )
+        chunks.append(
+            _append_event_chunk(
+                request,
+                session_id=session_id,
+                run_id=run_id,
+                kind=envelope.label,
+                type=envelope.type,
+                role="assistant" if envelope.type in {"message.delta", "message.final"} else None,
+                content=_event_content(envelope),
+                tool_name=envelope.data.get("tool_name"),
+                tool_call_id=envelope.data.get("tool_call_id"),
+                payload=payload,
+            )
+        )
+    else:
+        chunks.append(
+            _stream_only_chunk(
+                run_id=run_id,
+                session_id=session_id,
+                sequence=sequence,
+                type=envelope.type,
+                label=envelope.label,
+                detail=_event_content(envelope),
+                data=envelope.data,
+                tool_name=envelope.data.get("tool_name"),
+                tool_call_id=envelope.data.get("tool_call_id"),
+            )
+        )
     if terminal_emitted:
         _finish_run(request, run_id, "failed", envelope.detail)
     return "".join(chunks), final_emitted, terminal_emitted
@@ -846,7 +885,7 @@ def _middleware_initial_run_events(
     context = {
         "session_id": session.id,
         "run_id": run.id,
-        "thread_id": session.thread_id,
+        "thread_id": session.id,
         "agent_id": run.agent_id,
         "model_id": run.model_id,
         "prompt": prompt,
@@ -947,7 +986,6 @@ def _load_run_state(request: Request, run_id: str) -> dict[str, Any]:
         )
         return {
             "session_id": run.session_id,
-            "thread_id": run.thread_id,
             "model_id": run.model_id,
             "username": run.user.username,
             "metadata": run.session.metadata_,
@@ -1404,6 +1442,49 @@ def _append_event(request: Request, **kwargs: Any) -> EventSpec:
     # blocks on the database. The writer batches the actual INSERTs off this path.
     writer: EventWriter = request.app.state.event_writer
     return writer.enqueue(**kwargs)
+
+
+def _stream_only_chunk(
+    *,
+    run_id: str,
+    session_id: str,
+    sequence: int,
+    type: str,
+    label: str,
+    detail: str | None,
+    data: dict[str, Any],
+    tool_name: str | None = None,
+    tool_call_id: str | None = None,
+) -> str:
+    # A live-only SSE chunk that is never written to the events table. Its id lives in
+    # a separate string namespace (``live:<run>:<seq>``) so it can never collide with a
+    # persisted event's integer seq when the client de-duplicates by event id.
+    token = f"live:{run_id}:{sequence}"
+    payload = {
+        "id": token,
+        "event_id": token,
+        "type": type,
+        "run_id": run_id,
+        "session_id": session_id,
+        "timestamp": now().isoformat(),
+        "label": label,
+        "detail": detail or tool_name or label,
+        "data": dict(data or {}),
+    }
+    return f"id: {token}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _truncate_payload(value: Any) -> Any:
+    if isinstance(value, str):
+        if len(value) <= MAX_PERSISTED_PAYLOAD_TEXT:
+            return value
+        omitted = len(value) - MAX_PERSISTED_PAYLOAD_TEXT
+        return value[:MAX_PERSISTED_PAYLOAD_TEXT] + f"...[truncated {omitted} chars]"
+    if isinstance(value, Mapping):
+        return {str(key): _truncate_payload(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_truncate_payload(item) for item in value]
+    return value
 
 
 async def _flush_event_writer(request: Request, run_id: str) -> None:
