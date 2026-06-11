@@ -1210,8 +1210,14 @@ def test_run_lifecycle_persists_runs_events_and_native_context(
         for event in history
         if event["kind"] == "tool.completed" and event["tool_name"] == "echo"
     )
+    # Payloads are preserved verbatim (no truncation): the full tool call input and the
+    # full result (the tool message) are persisted.
     assert tool_event["payload"]["input"] == {"text": "hello"}
     assert tool_event["payload"]["output"] == {"text": "echo:hello"}
+    # The durable ``content`` shows the call as ``name(input)`` so the tool call is
+    # visible without digging into the payload.
+    assert tool_event["content"].startswith("echo(")
+    assert "hello" in tool_event["content"]
     sandbox_event = next(
         event
         for event in history

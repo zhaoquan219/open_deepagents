@@ -44,11 +44,11 @@ PLACEHOLDER_SESSION_TITLES = {"", "new session", "untitled", "untitled session",
 MAX_DERIVED_TITLE_CHARS = 32
 TRANSCRIPT_MESSAGE_KINDS = ("system.message", "user.message", "assistant.message")
 STREAM_WORKER_QUEUE_SIZE = 256
-# Runtime event labels that are durably written to the events table. Everything else
-# the runtime emits while streaming (per-token deltas, per-node chain start/end,
-# *.started markers, unknown runtime steps) is still streamed live over SSE but not
-# persisted: the final assistant.message already captures the reply, so writing every
-# delta and per-node step only bloats the durable transcript.
+# Runtime event labels that are durably written to the events table, with their full
+# payloads preserved verbatim. Everything else the runtime emits while streaming
+# (per-token deltas, per-node chain start/end, *.started markers, unknown runtime steps)
+# is still streamed live over SSE but not persisted: the final assistant.message already
+# captures the reply, so writing every delta and per-node step only bloats the transcript.
 DURABLE_RUNTIME_LABELS = frozenset(
     {
         "assistant.message",
@@ -59,11 +59,8 @@ DURABLE_RUNTIME_LABELS = frozenset(
         "run.failed",
     }
 )
-# Process events whose input/output payloads are capped before persistence so a single
-# large tool output does not bloat the transcript; the live SSE stream keeps the full
-# payload.
-TRIMMED_PAYLOAD_LABELS = frozenset({"tool.completed", "sandbox.completed", "subagent.completed"})
-MAX_PERSISTED_PAYLOAD_TEXT = 8000
+# Tool-style events whose content summary is rendered as ``name(input)``.
+TOOL_EVENT_LABELS = frozenset({"tool.completed", "sandbox.completed", "subagent.completed"})
 
 USER_FIELDS = ("id", "username", "email", "role", "is_active")
 SESSION_FIELDS = (
@@ -716,6 +713,8 @@ def _persist_runtime_envelope(
     if envelope.label == "assistant.message":
         final_emitted = True
 
+    # Synthesize the canonical reply from the main agent's run output when streamed
+    # deltas never produced a final assistant.message.
     if _is_main_completion(request, envelope) and envelope.detail and not final_emitted:
         final_emitted = True
         chunks.append(
@@ -734,20 +733,11 @@ def _persist_runtime_envelope(
             )
         )
 
-    # Per-node chain completion: a live-only progress marker, never persisted.
+    # Graph-level completion is a live-only progress marker; the durable terminal event
+    # is written separately by the lifecycle path.
     if envelope.label == "run.completed":
         envelope.data["status"] = "completed"
-        chunks.append(
-            _stream_only_chunk(
-                run_id=run_id,
-                session_id=session_id,
-                sequence=sequence,
-                type="step",
-                label="step.completed",
-                detail=_event_content(envelope),
-                data=envelope.data,
-            )
-        )
+        chunks.append(_stream_event(run_id, session_id, sequence, "step", "step.completed", envelope))
         return "".join(chunks), final_emitted, terminal_emitted
 
     if envelope.label == "run.failed":
@@ -755,11 +745,6 @@ def _persist_runtime_envelope(
         envelope.data["terminal"] = True
 
     if envelope.label in DURABLE_RUNTIME_LABELS:
-        payload = (
-            _truncate_payload(envelope.data)
-            if envelope.label in TRIMMED_PAYLOAD_LABELS
-            else envelope.data
-        )
         chunks.append(
             _append_event_chunk(
                 request,
@@ -771,23 +756,14 @@ def _persist_runtime_envelope(
                 content=_event_content(envelope),
                 tool_name=envelope.data.get("tool_name"),
                 tool_call_id=envelope.data.get("tool_call_id"),
-                payload=payload,
+                payload=envelope.data,
             )
         )
     else:
         chunks.append(
-            _stream_only_chunk(
-                run_id=run_id,
-                session_id=session_id,
-                sequence=sequence,
-                type=envelope.type,
-                label=envelope.label,
-                detail=_event_content(envelope),
-                data=envelope.data,
-                tool_name=envelope.data.get("tool_name"),
-                tool_call_id=envelope.data.get("tool_call_id"),
-            )
+            _stream_event(run_id, session_id, sequence, envelope.type, envelope.label, envelope)
         )
+
     if terminal_emitted:
         _finish_run(request, run_id, "failed", envelope.detail)
     return "".join(chunks), final_emitted, terminal_emitted
@@ -1444,47 +1420,28 @@ def _append_event(request: Request, **kwargs: Any) -> EventSpec:
     return writer.enqueue(**kwargs)
 
 
-def _stream_only_chunk(
-    *,
+def _stream_event(
     run_id: str,
     session_id: str,
     sequence: int,
     type: str,
     label: str,
-    detail: str | None,
-    data: dict[str, Any],
-    tool_name: str | None = None,
-    tool_call_id: str | None = None,
+    envelope: Any,
 ) -> str:
-    # A live-only SSE chunk that is never written to the events table. Its id lives in
-    # a separate string namespace (``live:<run>:<seq>``) so it can never collide with a
+    # A live-only SSE chunk that is never written to the events table. Its id lives in a
+    # separate string namespace (``live:<run>:<seq>``) so it can never collide with a
     # persisted event's integer seq when the client de-duplicates by event id.
-    token = f"live:{run_id}:{sequence}"
-    payload = {
-        "id": token,
-        "event_id": token,
-        "type": type,
-        "run_id": run_id,
-        "session_id": session_id,
-        "timestamp": now().isoformat(),
-        "label": label,
-        "detail": detail or tool_name or label,
-        "data": dict(data or {}),
-    }
-    return f"id: {token}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-
-def _truncate_payload(value: Any) -> Any:
-    if isinstance(value, str):
-        if len(value) <= MAX_PERSISTED_PAYLOAD_TEXT:
-            return value
-        omitted = len(value) - MAX_PERSISTED_PAYLOAD_TEXT
-        return value[:MAX_PERSISTED_PAYLOAD_TEXT] + f"...[truncated {omitted} chars]"
-    if isinstance(value, Mapping):
-        return {str(key): _truncate_payload(child) for key, child in value.items()}
-    if isinstance(value, list):
-        return [_truncate_payload(item) for item in value]
-    return value
+    data = dict(envelope.data or {})
+    return _sse_chunk(
+        event_id=f"live:{run_id}:{sequence}",
+        type=type,
+        run_id=run_id,
+        session_id=session_id,
+        timestamp=now().isoformat(),
+        label=label,
+        detail=_event_content(envelope) or data.get("tool_name") or label,
+        data=data,
+    )
 
 
 async def _flush_event_writer(request: Request, run_id: str) -> None:
@@ -1523,10 +1480,36 @@ def _is_main_completion(request: Request, envelope: Any) -> bool:
     )
 
 
+def _render(value: Any) -> str:
+    """Render a value to a single-line string with no truncation."""
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            text = str(value)
+    return " ".join(text.split())
+
+
 def _event_content(envelope: Any) -> str | None:
-    value = envelope.data.get("delta") or envelope.data.get("text") or envelope.data.get("error")
-    if value is None:
-        value = envelope.detail
+    """Readable label for the ``content`` column. Tool events show ``name(input)`` so the
+    call is visible; the full result (the tool message) is preserved verbatim in payload.
+    Skill events list the prepared skill names. No truncation is applied anywhere."""
+    data = envelope.data if isinstance(envelope.data, Mapping) else {}
+    if envelope.label in TOOL_EVENT_LABELS:
+        name = str(data.get("tool_name") or data.get("name") or envelope.detail or "tool")
+        args = data.get("input")
+        return f"{name}({_render(args)})" if args not in (None, "", {}, []) else name
+    if envelope.label == "skill.completed":
+        skills = data.get("skills")
+        names = [
+            str(s.get("name") or s.get("id") or s.get("title") if isinstance(s, Mapping) else s)
+            for s in (skills if isinstance(skills, list) else [])
+            if s
+        ]
+        return "Skills ready: " + ", ".join(names) if names else (envelope.detail or "Skills ready")
+    value = data.get("delta") or data.get("text") or data.get("error") or envelope.detail
     return str(value) if value else None
 
 
@@ -1595,6 +1578,31 @@ def _record_out(record: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     return payload
 
 
+def _sse_chunk(
+    *,
+    event_id: str,
+    type: str,
+    run_id: str,
+    session_id: str,
+    timestamp: str,
+    label: str,
+    detail: str | None,
+    data: dict[str, Any],
+) -> str:
+    payload = {
+        "id": event_id,
+        "event_id": event_id,
+        "type": type,
+        "run_id": run_id,
+        "session_id": session_id,
+        "timestamp": timestamp,
+        "label": label,
+        "detail": detail,
+        "data": data,
+    }
+    return f"id: {event_id}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
 def sse_payload(event: EventRecord | EventSpec) -> str:
     data = dict(event.payload or {})
     if event.type == "message.final":
@@ -1602,18 +1610,16 @@ def sse_payload(event: EventRecord | EventSpec) -> str:
         message.setdefault("id", event.id)
         message.setdefault("created_at", event.created_at.isoformat())
         data["message"] = message
-    payload = {
-        "id": str(event.seq),
-        "event_id": str(event.seq),
-        "type": event.type,
-        "run_id": event.run_id,
-        "session_id": event.session_id,
-        "timestamp": event.created_at.isoformat(),
-        "label": event.kind,
-        "detail": event.content or event.tool_name or event.kind,
-        "data": data,
-    }
-    return f"id: {event.seq}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    return _sse_chunk(
+        event_id=str(event.seq),
+        type=event.type,
+        run_id=event.run_id,
+        session_id=event.session_id,
+        timestamp=event.created_at.isoformat(),
+        label=event.kind,
+        detail=event.content or event.tool_name or event.kind,
+        data=data,
+    )
 
 
 def _sha256(value: str) -> str:
