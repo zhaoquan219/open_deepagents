@@ -1,0 +1,47 @@
+[project]
+name = "deepagents-agent-platform-backend"
+version = "1.0.0"
+description = "FastAPI backend foundation for the DeepAgents agent platform scaffold"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "deepagents>=0.5.2,<0.6",
+    "fastapi>=0.116.1,<0.117",
+    "langchain-openai>=1.1.12,<2",
+    "langgraph-checkpoint-postgres>=3.0.5",
+    "langgraph-checkpoint-sqlite>=3.0.3",
+    "psycopg[binary]>=3.3.4,<4",
+    "pydantic-settings>=2.10.1,<3",
+    "PyJWT>=2.10.1,<3",
+    "pymysql>=1.1.1,<2",
+    "python-multipart>=0.0.20,<0.1",
+    "sqlalchemy>=2.0.43,<3",
+    "uvicorn>=0.35.0,<0.36",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1,<0.29",
+    "mypy>=1.17.1,<2",
+    "pytest>=8.4.1,<9",
+    "ruff>=0.12.10,<0.13",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["agents/skills/skill-creator"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+plugins = []
+exclude = ["tests"]

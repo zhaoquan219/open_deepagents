@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+REQUIRED_DOC_FILES = ("docs/sandbox.md",)
+REQUIRED_BACKEND_FILES = (
+    "backend/app/main.py",
+    "backend/app/routes.py",
+    "backend/app/settings.py",
+    "backend/app/db.py",
+    "backend/app/auth.py",
+    "backend/app/catalog.py",
+    "backend/app/agent.py",
+    "backend/app/runtime/extensions.py",
+    "backend/app/runtime/sse_bridge.py",
+)
+REQUIRED_FRONTEND_DIRS = (
+    "frontend/src/api",
+    "frontend/src/components",
+    "frontend/src/lib",
+    "frontend/src/store",
+)
+REQUIRED_CONTRACT_FILES = (
+    "packages/contracts/deepagents-sse-event.json",
+    "packages/extension-manifest.template.json",
+)
+REQUIRED_AGENT_PACKAGE_TEMPLATES = (
+    "backend/agents/__init__.py",
+    "backend/agents/README.md",
+    "backend/agents/prompts/system.md",
+    "backend/agents/tools/__init__.py",
+    "backend/agents/tools/echo_tool.py",
+    "backend/agents/middleware/__init__.py",
+    "backend/agents/middleware/audit_middleware.py",
+    "backend/agents/skills/skill-creator/SKILL.md",
+    "backend/agents/memory/project.md",
+)
+@dataclass(frozen=True)
+class AuditCheck:
+    name: str
+    ok: bool
+    details: str
+
+
+@dataclass(frozen=True)
+class AuditReport:
+    ok: bool
+    checks: tuple[AuditCheck, ...]
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {"ok": self.ok, "checks": [asdict(check) for check in self.checks]},
+            indent=2,
+        )
+
+
+def _missing_paths(root: Path, relative_paths: Iterable[str]) -> list[str]:
+    return [path for path in relative_paths if not (root / path).exists()]
+
+
+def _check_paths(root: Path, name: str, relative_paths: Iterable[str]) -> AuditCheck:
+    missing = _missing_paths(root, relative_paths)
+    if missing:
+        return AuditCheck(name=name, ok=False, details=f"missing: {', '.join(missing)}")
+    return AuditCheck(name=name, ok=True, details="all required paths exist")
+
+
+def audit_repo(root: Path) -> AuditReport:
+    checks = (
+        _check_paths(root, "project-docs", REQUIRED_DOC_FILES),
+        _check_paths(root, "backend-scaffold", REQUIRED_BACKEND_FILES),
+        _check_paths(root, "frontend-scaffold", REQUIRED_FRONTEND_DIRS),
+        _check_paths(root, "contract-files", REQUIRED_CONTRACT_FILES),
+        _check_paths(root, "agent-package-templates", REQUIRED_AGENT_PACKAGE_TEMPLATES),
+    )
+    return AuditReport(ok=all(check.ok for check in checks), checks=checks)
+
+
+def main() -> int:
+    report = audit_repo(Path.cwd())
+    print(report.to_json())
+    return 0 if report.ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
